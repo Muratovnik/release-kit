@@ -13,15 +13,23 @@ They are independent of each other and of every project that uses them.
 
 ## The rule that outranks the others
 
-Nothing tracked here may name a project, a person, an organisation, a service, a
-board, a host, or a path outside this repository. Not in code, not in tests, not in
-documentation, not in a commit message. Everything specific to a user belongs in
-their configuration.
+This tool has to work for anyone, so nothing tracked here may hardcode one user's
+world: not a project it guards, not a service it expects to find, not a board, a
+host, or a path outside this repository. Everything specific belongs in the adopting
+repository's configuration. Test fixtures use invented names (`Someservice`,
+`example.invalid`) and placeholder users.
 
-This is not tidiness. The tool's whole purpose is to keep such material out of
-repositories that publish, and a tool carrying a list of what must not be published
-would leak exactly what it protects. Test fixtures use invented names
-(`Someservice`, `example.invalid`) and placeholder users.
+One case is absolute: no list of forbidden names may ever be committed here. That is
+the file that would defeat its own purpose, since a tool shipping such a list
+publishes precisely what it exists to keep out of published trees.
+
+**This is not anonymity, and must not drift into it.** The maintainer's name and
+email belong on every commit, in the LICENSE and in the package metadata, the same as
+in any other repository, and a repository that names its own author or its own
+sibling projects is doing something ordinary. What the gate is for is material that
+*cannot travel*: a path that resolves on exactly one machine, a name a project has
+declared it cannot publish yet. Confusing the two produces vaguer documents and no
+security, and it costs the reader a concrete reference in exchange for nothing.
 
 ## Design constraints
 

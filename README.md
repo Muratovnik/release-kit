@@ -80,10 +80,21 @@ repository never wrote down.
 An entry is found by its `## [version]` heading, linked or not, and runs to the next
 heading. A tag and a heading may differ by a leading `v`.
 
+## What this is not
+
+It is not anonymisation. A repository naming its own author, or its own sibling
+projects, is doing something ordinary, and hiding that buys nothing. The gate is for
+material that cannot travel: a path that resolves on exactly one machine and so is
+simply broken in anyone else's clone, and names a project has declared it cannot
+publish yet — an unreleased product, a client, an internal service. `declared-name`
+is opt-in and empty by default for that reason: only the adopting repository knows
+whether it has any such names, and most do not.
+
 ## Design rules
 
-- Nothing here names a project, a person, a service, a board, or a path outside the
-  repository it is pointed at. Everything specific is configuration.
+- Nothing here hardcodes one user's world: not a project it guards, not a service it
+  expects, not a path outside the repository it is pointed at. Everything specific is
+  configuration.
 - Every rule is an executable check. A rule written only in a checklist is not a
   control; that is the failure this exists to answer.
 - False positives are the real enemy. A relative path that climbs and comes back

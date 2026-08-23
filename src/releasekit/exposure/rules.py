@@ -19,6 +19,12 @@ ESCAPES_REPOSITORY = "escapes-repository"
 FORBIDDEN_KIND = "forbidden-kind"
 DECLARED_NAME = "declared-name"
 
+# An absolute home directory is a defect before it is anything else: it resolves on
+# exactly one machine, so a tracked file carrying one is already broken in every other
+# clone. The captured segment is the account name, and it is captured only to let the
+# placeholder accounts of documentation and CI runners through - the rule is about the
+# path being machine-local, never about whose name appears in it.
+#
 # The separator is allowed to repeat because a path embedded in JSON, in a quoted
 # command line, or in an escaped shell string arrives with its backslashes doubled.
 # A pattern that matched exactly one reported a clean repository while four absolute
