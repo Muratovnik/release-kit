@@ -83,6 +83,8 @@ def _is_placeholder(account: str, allowed: Iterable[str]) -> bool:
         return False
     return domain in RESERVED_EXAMPLE_DOMAINS or domain.endswith(RESERVED_EXAMPLE_SUFFIXES)
 
+PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc"})
+
 DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
     {".cer", ".crt", ".db", ".key", ".log", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3"}
 )
@@ -110,12 +112,22 @@ def kinds_in_text(
         if any(not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(text)):
             kinds.add(HOME_DIRECTORY)
             break
-    directory = posixpath.dirname(relative_path)
-    escaping = any(
-        _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(text)
-    ) or any(_escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text))
-    if escaping:
-        kinds.add(ESCAPES_REPOSITORY)
+    # Prose is exempt from this one. The rule detects a machine-local assumption in
+    # configuration - a command or a setting that only resolves where a particular
+    # sibling exists. Documentation legitimately prints paths that do not resolve
+    # here: an example of somebody else's layout, or of the very arrangement this
+    # tool configures. Applying it to prose fires on every project that documents
+    # one, and a check that is wrong about the common case gets switched off. What
+    # markdown is still held to: home directories, declared names, and links, which
+    # are resolved properly rather than matched.
+    if posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES:
+        directory = posixpath.dirname(relative_path)
+        if any(
+            _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(text)
+        ) or any(
+            _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text)
+        ):
+            kinds.add(ESCAPES_REPOSITORY)
     if any(name in text for name in names):
         kinds.add(DECLARED_NAME)
     return kinds

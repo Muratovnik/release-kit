@@ -17,6 +17,8 @@ from pathlib import Path
 
 from . import config as config_module
 from .exposure import audit
+from .overlay import manifest as manifest_module
+from .overlay import verify as verify_module
 from .release import changelog as changelog_module
 
 
@@ -27,6 +29,27 @@ def _exposure(arguments: argparse.Namespace) -> int:
     except config_module.ConfigError as error:
         print(f"relkit: {error}", file=sys.stderr)
         return 2
+    # A mounted surface is a private surface, so the two lists are the same list. Where
+    # the project declares an overlay, the manifest supplies it and nobody types it
+    # twice - a second copy would be the next thing to disagree.
+    private_paths = list(settings.exposure.private_paths)
+    manifest_path = settings.overlay.manifest_path(root)
+    if manifest_path is not None:
+        try:
+            mounts = manifest_module.read(manifest_path)
+        except manifest_module.ManifestError as error:
+            # Not a warning: an unreadable manifest means the mounted surfaces are
+            # silently unguarded, which is the shape of failure this exists to end.
+            print(f"relkit exposure: {error}", file=sys.stderr)
+            return 2
+        private_root = settings.overlay.private_path(root)
+        for mount in mounts:
+            try:
+                derived = mount.link_path(private_root).resolve().relative_to(root)
+            except (ValueError, OSError):
+                continue
+            private_paths.append(derived.as_posix())
+
     names = settings.exposure.names(root)
     if not names:
         print(
@@ -38,7 +61,7 @@ def _exposure(arguments: argparse.Namespace) -> int:
         names=names,
         baseline=settings.exposure.baseline,
         exclude=settings.exposure.exclude,
-        private_paths=settings.exposure.private_paths,
+        private_paths=private_paths,
         private_files=settings.exposure.private_files,
         private_suffixes=settings.exposure.private_suffixes,
         required_ignores=settings.exposure.required_ignores,
@@ -62,6 +85,37 @@ def _exposure(arguments: argparse.Namespace) -> int:
             print(f"  {line}", file=sys.stderr)
         return 1
     print("relkit exposure: passed")
+    return 0
+
+
+def _overlay(arguments: argparse.Namespace) -> int:
+    root = Path(arguments.root).resolve()
+    try:
+        settings = config_module.load(root, required=False)
+    except config_module.ConfigError as error:
+        print(f"relkit: {error}", file=sys.stderr)
+        return 2
+    private_root = settings.overlay.private_path(root)
+    manifest_path = settings.overlay.manifest_path(root)
+    if private_root is None or manifest_path is None:
+        print("relkit overlay: no [overlay] private_root configured; nothing to check")
+        return 0
+    try:
+        mounts = manifest_module.read(manifest_path)
+    except manifest_module.ManifestError as error:
+        print(f"relkit overlay: {error}", file=sys.stderr)
+        return 2
+    problems, skipped = verify_module.check(
+        mounts, public_root=root, private_root=private_root
+    )
+    for name in skipped:
+        print(f"relkit overlay: {name} links outside this repository; not checked")
+    if problems:
+        print("relkit overlay: failed", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    print(f"relkit overlay: {len(mounts) - len(skipped)} mount(s) verified")
     return 0
 
 
@@ -108,6 +162,13 @@ def build_parser() -> argparse.ArgumentParser:
     notes.add_argument("--changelog", default="CHANGELOG.md")
     notes.add_argument("--output", help="Write to this file instead of standard output")
     notes.set_defaults(handler=_notes)
+
+    overlay = subcommands.add_parser(
+        "overlay",
+        help="Check that the private surfaces linked into this checkout are still right.",
+    )
+    overlay.add_argument("--root", default=".", help="Public repository to check (default: .)")
+    overlay.set_defaults(handler=_overlay)
     return parser
 
 

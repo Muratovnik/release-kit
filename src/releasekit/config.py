@@ -62,9 +62,30 @@ class ExposureConfig:
 
 
 @dataclass(frozen=True)
+class OverlayConfig:
+    """Where the private half lives. Empty private_root means the project has none."""
+
+    private_root: str = ""
+    # Defaults to install.conf.yaml beside the private root, which is where dotbot
+    # looks when it is run with that root as its base directory.
+    manifest: str = ""
+
+    def manifest_path(self, root: Path) -> Path | None:
+        if not self.private_root:
+            return None
+        if self.manifest:
+            return (root / self.manifest).resolve()
+        return (root / self.private_root / "install.conf.yaml").resolve()
+
+    def private_path(self, root: Path) -> Path | None:
+        return (root / self.private_root).resolve() if self.private_root else None
+
+
+@dataclass(frozen=True)
 class Config:
     root: Path
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
+    overlay: OverlayConfig = field(default_factory=OverlayConfig)
 
 
 def load(root: Path, *, required: bool = True) -> Config:
@@ -81,6 +102,9 @@ def load(root: Path, *, required: bool = True) -> Config:
     section = raw.get("exposure", {})
     if not isinstance(section, dict):
         raise ConfigError("[exposure] must be a table")
+    overlay_section = raw.get("overlay", {})
+    if not isinstance(overlay_section, dict):
+        raise ConfigError("[overlay] must be a table")
     baseline = section.get("baseline", {})
     if not isinstance(baseline, dict) or not all(
         isinstance(value, list) for value in baseline.values()
@@ -100,5 +124,9 @@ def load(root: Path, *, required: bool = True) -> Config:
             allowed_users=[str(item) for item in section.get("allowed_users", [])],
             check_links=bool(section.get("check_links", True)),
             include_candidates=bool(section.get("include_candidates", True)),
+        ),
+        overlay=OverlayConfig(
+            private_root=str(overlay_section.get("private_root", "")),
+            manifest=str(overlay_section.get("manifest", "")),
         ),
     )

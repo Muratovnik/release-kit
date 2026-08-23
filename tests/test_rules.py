@@ -85,23 +85,34 @@ class EscapingPathTests(unittest.TestCase):
     def test_a_path_that_climbs_and_comes_back_inside_is_not_a_finding(self) -> None:
         """Ordinary. Flagging it is how a gate earns its way to being switched off."""
         found = rules.kinds_in_text(
-            'run "../../web/build.sh" from here', relative_path="docs/audits/review.md"
+            'run "../../web/build.sh" from here', relative_path="tools/config/task.json"
         )
 
         self.assertNotIn(rules.ESCAPES_REPOSITORY, found)
 
     def test_the_same_path_from_the_root_does_escape(self) -> None:
-        found = rules.kinds_in_text('run "../../web/build.sh"', relative_path="README.md")
+        found = rules.kinds_in_text('run "../../web/build.sh"', relative_path="task.json")
 
         self.assertIn(rules.ESCAPES_REPOSITORY, found)
 
-    def test_a_markdown_link_is_left_to_the_link_check(self) -> None:
-        """Both rules firing on one target would report a single defect twice."""
-        found = rules.kinds_in_text(
-            "see [the view](../../elsewhere/App.vue)", relative_path="README.md"
+    def test_prose_may_print_a_path_that_does_not_resolve_here(self) -> None:
+        """Documenting an arrangement is not making a machine-local assumption.
+
+        A README showing `private_root = "../thing-private"` describes a layout; it
+        does not depend on one. Reporting it would fire on every project that
+        documents the arrangement this tool configures.
+        """
+        text = 'private_root = "../thing-private"'
+
+        self.assertIn(rules.ESCAPES_REPOSITORY, rules.kinds_in_text(text, relative_path="a.toml"))
+        self.assertNotIn(
+            rules.ESCAPES_REPOSITORY, rules.kinds_in_text(text, relative_path="README.md")
         )
 
-        self.assertNotIn(rules.ESCAPES_REPOSITORY, found)
+    def test_prose_is_still_held_to_the_other_rules(self) -> None:
+        found = rules.kinds_in_text(r"install into C:\Users\someone\tools", relative_path="a.md")
+
+        self.assertIn(rules.HOME_DIRECTORY, found)
 
 
 class DeclaredNameTests(unittest.TestCase):

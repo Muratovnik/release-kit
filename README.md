@@ -6,6 +6,9 @@ Two gates any repository can adopt, neither of which knows anything about yours.
   machine they were written on: an absolute home directory, a relative path that
   climbs out of the repository, a file kind no repository should publish, or a name
   the project declared off-limits.
+- **`relkit overlay`** — checks that private surfaces linked into a public checkout
+  are still links, still point where they should, and are still kept out of the
+  public history.
 - **`relkit notes`** — prints the changelog entry a repository already wrote for a
   version, for use as release notes.
 
@@ -63,6 +66,44 @@ The baseline exists because a gate that is red on the day it is adopted is a gat
 somebody turns off. Recording what is already there stops the bleeding immediately
 and leaves the debt visible; fixing a finding forces the record to be updated in the
 same change, because a record that no longer matches is itself a failure.
+
+## Overlay
+
+Some projects keep their private files in a second repository and link the few
+surfaces a tool insists on finding inside the public checkout, so that the public
+checkout can still be worked in normally. Creating those links is
+[dotbot](https://github.com/anishathalye/dotbot)'s job and stays there; this checks
+that they are still true, which is the half that is usually missing.
+
+```toml
+[overlay]
+private_root = "../myproject-private"
+# Defaults to install.conf.yaml beside the private root, where dotbot looks.
+manifest = "../myproject-private/install.conf.yaml"
+```
+
+```bash
+relkit overlay
+```
+
+Four failures, each of which looks like success until much later:
+
+- **missing** — `git clean` in the public checkout removes the links. The directory
+  is simply absent and the tool falls back to its defaults without saying so.
+- **not-a-link** — something wrote a copy where the link was, so there are now two of
+  the file and they begin to drift.
+- **not-ignored** — a surface was added to the manifest but not to the public ignore
+  rules, so the next `git add -A` commits what was meant to stay out.
+- **target-not-tracked** — the link was made but its target was never committed
+  privately, so it works here and is absent on the next machine.
+
+Where an overlay is configured, `relkit exposure` reads the same manifest and treats
+every mounted surface as private. The mount list is written once; a second copy would
+be the next thing to disagree with the first.
+
+The manifest reader understands dotbot's `target: source` form. It refuses anything
+else rather than skipping it, because a mount that is quietly not read is a mount
+that is quietly not verified.
 
 ## Notes
 
