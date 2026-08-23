@@ -1,0 +1,14 @@
+# Build and packaging output
+/dist/
+/build/
+*.egg-info/
+
+# Tool caches, all pointed at one directory this repository ignores
+/.cache/
+__pycache__/
+*.py[cod]
+
+# The names an adopting repository declares. This repository declares none, and a
+# file of them must never appear here: the tool exists to keep such lists out of
+# published trees, and shipping one would be the failure it detects.
+/.publication-names

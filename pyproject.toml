@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "release-kit"
+version = "0.1.0"
+description = "Release-cycle and publication-exposure gates for any repository"
+readme = "README.md"
+requires-python = ">=3.11"
+license = "MIT"
+# No runtime dependencies on purpose. This runs inside other repositories' gates and
+# pre-commit hooks, where a dependency tree is a reason not to adopt it.
+dependencies = []
+
+[project.scripts]
+relkit = "releasekit.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 100
+cache-dir = ".cache/ruff"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
