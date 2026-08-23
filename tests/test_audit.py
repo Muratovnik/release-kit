@@ -23,9 +23,17 @@ def _repository(files: dict[str, str]) -> tempfile.TemporaryDirectory[str]:
     return handle
 
 
-class TrackedOnlyTests(unittest.TestCase):
-    def test_an_untracked_file_is_not_this_gate_s_business(self) -> None:
+class ScopeTests(unittest.TestCase):
+    def test_an_untracked_unignored_file_is_this_gate_s_business(self) -> None:
+        """Uncommitted is not safe. It is one `git add -A` from the history."""
         with _repository({"kept.md": "clean\n"}) as name:
+            (Path(name) / "scratch.md").write_text(LEAK, encoding="utf-8")
+            report = audit.scan(Path(name))
+
+        self.assertEqual(["scratch.md: home-directory"], report.failures)
+
+    def test_an_ignored_file_is_not(self) -> None:
+        with _repository({"kept.md": "clean\n", ".gitignore": "scratch.md\n"}) as name:
             (Path(name) / "scratch.md").write_text(LEAK, encoding="utf-8")
             report = audit.scan(Path(name))
 

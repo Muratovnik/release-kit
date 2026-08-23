@@ -38,8 +38,14 @@ def _exposure(arguments: argparse.Namespace) -> int:
         names=names,
         baseline=settings.exposure.baseline,
         exclude=settings.exposure.exclude,
+        private_paths=settings.exposure.private_paths,
+        private_files=settings.exposure.private_files,
+        private_suffixes=settings.exposure.private_suffixes,
+        required_ignores=settings.exposure.required_ignores,
         forbidden_suffixes=settings.exposure.forbidden_suffixes,
         allowed_users=settings.exposure.allowed_users,
+        check_links=settings.exposure.check_links,
+        include_candidates=settings.exposure.include_candidates,
     )
     if report.excluded:
         print(f"relkit exposure: {len(report.excluded)} path(s) excluded by configuration")

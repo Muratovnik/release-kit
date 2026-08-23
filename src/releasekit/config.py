@@ -32,8 +32,21 @@ class ExposureConfig:
     # to contain the very thing the rule detects. Anything broader hollows out the
     # gate while still reporting that it passed.
     exclude: list[str] = field(default_factory=list)
+    # Surfaces that must never be tracked, whatever they contain. This is the blunt
+    # instrument and the one that actually keeps a workflow out of a repository:
+    # judging file by file cannot, because the next file added to the surface is
+    # judged from scratch.
+    private_paths: list[str] = field(default_factory=list)
+    private_files: list[str] = field(default_factory=list)
+    private_suffixes: list[str] = field(default_factory=list)
+    # Paths the repository must actually ignore. A surface removed from the index but
+    # left unignored comes back with the next `git add -A`.
+    required_ignores: list[str] = field(default_factory=list)
     forbidden_suffixes: list[str] = field(default_factory=list)
     allowed_users: list[str] = field(default_factory=list)
+    check_links: bool = True
+    # A file that is neither tracked nor ignored is not safe, only uncommitted.
+    include_candidates: bool = True
 
     def names(self, root: Path) -> tuple[str, ...]:
         """Declared names, or nothing when the file is absent - which a clone expects."""
@@ -79,7 +92,13 @@ def load(root: Path, *, required: bool = True) -> Config:
             names_file=str(section.get("names_file", ExposureConfig.names_file)),
             baseline={str(key): [str(kind) for kind in value] for key, value in baseline.items()},
             exclude=[str(item) for item in section.get("exclude", [])],
+            private_paths=[str(item) for item in section.get("private_paths", [])],
+            private_files=[str(item) for item in section.get("private_files", [])],
+            private_suffixes=[str(item) for item in section.get("private_suffixes", [])],
+            required_ignores=[str(item) for item in section.get("required_ignores", [])],
             forbidden_suffixes=[str(item) for item in section.get("forbidden_suffixes", [])],
             allowed_users=[str(item) for item in section.get("allowed_users", [])],
+            check_links=bool(section.get("check_links", True)),
+            include_candidates=bool(section.get("include_candidates", True)),
         ),
     )

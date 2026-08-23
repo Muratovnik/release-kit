@@ -18,6 +18,8 @@ HOME_DIRECTORY = "home-directory"
 ESCAPES_REPOSITORY = "escapes-repository"
 FORBIDDEN_KIND = "forbidden-kind"
 DECLARED_NAME = "declared-name"
+PRIVATE_PATH = "private-path"
+NOT_IGNORED = "not-ignored"
 
 # An absolute home directory is a defect before it is anything else: it resolves on
 # exactly one machine, so a tracked file carrying one is already broken in every other
@@ -46,8 +48,13 @@ POSIX_USER_ROOT = re.compile(r"(?i)(?:^|[\s\"'(=])/(?:Users|home)/([^/\s\"'<>:]+
 # The two forms differ in what they resolve against. A path behind a variable such as
 # ${PROJECT_DIR}/ is anchored at the root the variable names, not at the file, which
 # is exactly how a hook command escapes while looking harmless in a nested file.
+#
+# An opening parenthesis is deliberately not a prefix here. It would match the target
+# of every markdown link, and links are checked precisely elsewhere, against where
+# they actually land; reporting both turns one defect into two lines and teaches the
+# reader to skim the output.
 VARIABLE_ANCHORED_PATH = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}/((?:\.\./)+[A-Za-z0-9_.\-/]*)")
-FILE_RELATIVE_PATH = re.compile(r"[\"'\s=(]((?:\.\./)+[A-Za-z0-9_.\-/]*)")
+FILE_RELATIVE_PATH = re.compile(r"[\"'\s=]((?:\.\./)+[A-Za-z0-9_.\-/]*)")
 
 
 def _escapes(candidate: str, base: str) -> bool:
@@ -58,6 +65,23 @@ def _escapes(candidate: str, base: str) -> bool:
 DEFAULT_ALLOWED_USERS = frozenset(
     {"alice", "bob", "example", "owner", "user", "runner", "runneradmin", "vagrant"}
 )
+
+# An account written as an address under a domain the standards reserve for
+# documentation is a placeholder by definition rather than by local convention, so it
+# needs no per-project declaration. RFC 2606 reserves the three second-level names and
+# the first three suffixes; RFC 6761 adds localhost.
+RESERVED_EXAMPLE_DOMAINS = frozenset({"example.com", "example.org", "example.net"})
+RESERVED_EXAMPLE_SUFFIXES = (".example", ".invalid", ".test", ".localhost")
+
+
+def _is_placeholder(account: str, allowed: Iterable[str]) -> bool:
+    lowered = account.lower()
+    if lowered in allowed:
+        return True
+    _, separator, domain = lowered.partition("@")
+    if not separator or not domain:
+        return False
+    return domain in RESERVED_EXAMPLE_DOMAINS or domain.endswith(RESERVED_EXAMPLE_SUFFIXES)
 
 DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
     {".cer", ".crt", ".db", ".key", ".log", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3"}
@@ -76,10 +100,14 @@ def kinds_in_text(
     `relative_path` is the file's own path within the repository; it decides where a
     relative path resolves from. Left empty, the file is treated as sitting at the root.
     """
-    allowed = {user.lower() for user in allowed_users}
+    # Additive, never replacing: a project declaring the one placeholder its own domain
+    # uses must not thereby lose alice, bob and the CI runners. Replacing was the first
+    # behaviour, and pointing the scan at a real repository turned one finding into
+    # eleven.
+    allowed = DEFAULT_ALLOWED_USERS | {user.lower() for user in allowed_users}
     kinds: set[str] = set()
     for pattern in (WINDOWS_USER_ROOT, POSIX_USER_ROOT):
-        if any(match.group(1).lower() not in allowed for match in pattern.finditer(text)):
+        if any(not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(text)):
             kinds.add(HOME_DIRECTORY)
             break
     directory = posixpath.dirname(relative_path)
@@ -93,9 +121,32 @@ def kinds_in_text(
     return kinds
 
 
-def kinds_in_path(relative: str, *, forbidden_suffixes: Iterable[str] = ()) -> set[str]:
-    """Kinds a path carries on its own, before its content is read."""
-    suffixes = {suffix.lower() for suffix in forbidden_suffixes} or set(
-        DEFAULT_FORBIDDEN_SUFFIXES
-    )
-    return {FORBIDDEN_KIND} if PurePosixPath(relative).suffix.lower() in suffixes else set()
+def kinds_in_path(
+    relative: str,
+    *,
+    forbidden_suffixes: Iterable[str] = (),
+    private_paths: Iterable[str] = (),
+    private_files: Iterable[str] = (),
+    private_suffixes: Iterable[str] = (),
+) -> set[str]:
+    """Kinds a path carries on its own, before its content is read.
+
+    A private path is the blunt instrument and the important one. Judging a file by
+    what it contains cannot keep a whole surface out of a repository, because the next
+    file added to it is judged again from scratch; declaring the surface private
+    settles it once, for everything now in it and everything later.
+    """
+    normalized = PurePosixPath(relative).as_posix()
+    suffix = PurePosixPath(normalized).suffix.lower()
+    kinds: set[str] = set()
+    suffixes = DEFAULT_FORBIDDEN_SUFFIXES | {item.lower() for item in forbidden_suffixes}
+    if suffix in suffixes:
+        kinds.add(FORBIDDEN_KIND)
+    private_prefixes = tuple(item if item.endswith("/") else f"{item}/" for item in private_paths)
+    if (
+        normalized in set(private_files)
+        or normalized.startswith(private_prefixes)
+        or any(normalized.endswith(item) for item in private_suffixes)
+    ):
+        kinds.add(PRIVATE_PATH)
+    return kinds

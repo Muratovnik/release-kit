@@ -1,4 +1,4 @@
-"""Scan a repository's tracked files and report what must not be published.
+"""Scan a repository and report what must not be published.
 
 The gate is a ratchet, not a verdict. A repository that adopts it usually already
 carries findings, and a gate that is red on its first day is a gate somebody turns
@@ -6,6 +6,10 @@ off. So the findings present at adoption are recorded in the project's own confi
 the scan fails on anything outside that record, and it also fails when a recorded
 finding stops matching - otherwise the record quietly becomes fiction. The record can
 only shrink.
+
+What is scanned is what Git would publish, and by default also what is one `git add
+-A` away from it: a file that is neither tracked nor ignored is not safe, it is
+merely not committed yet.
 """
 
 from __future__ import annotations
@@ -16,16 +20,20 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from . import rules
+from . import links, rules
 
 
 @dataclass(frozen=True)
 class Finding:
     path: str
     kind: str
+    # What exactly was found, when the kind alone would not be actionable - which
+    # link, which rule. The baseline is keyed on path and kind only, so a detail can
+    # change without anyone having to re-record it.
+    detail: str = ""
 
     def __str__(self) -> str:
-        return f"{self.path}: {self.kind}"
+        return f"{self.path}: {self.kind}" + (f" ({self.detail})" if self.detail else "")
 
 
 @dataclass
@@ -45,20 +53,44 @@ class Report:
         return not self.failures
 
 
-def tracked_paths(root: Path) -> tuple[str, ...]:
-    """Paths Git would publish. Untracked files are not this gate's business."""
-    result = subprocess.run(
-        ["git", "ls-files", "-z"],
+def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
+    return subprocess.run(
+        ["git", *arguments],
         cwd=root,
+        input=stdin,
         check=False,
         capture_output=True,
         encoding="utf-8",
         errors="replace",
         timeout=120,
     )
+
+
+def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str, ...]:
+    """What Git would publish, plus what is one `git add -A` from being published."""
+    arguments = ["ls-files", "-z", "--cached"]
+    if include_candidates:
+        arguments += ["--others", "--exclude-standard"]
+    result = _git(root, arguments)
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git ls-files failed")
     return tuple(sorted(item for item in result.stdout.split("\0") if item))
+
+
+def unignored(root: Path, required: Sequence[str]) -> list[str]:
+    """Which of the paths that must be ignored are not.
+
+    `--no-index` matters: a path already tracked is still answered against the ignore
+    rules, so a surface that must never come back is verified even while it is still
+    there. Without it a tracked path reports as not-ignored no matter what the rules
+    say, and the check would fire on exactly the repositories mid-migration.
+    """
+    missing: list[str] = []
+    for path in required:
+        result = _git(root, ["check-ignore", "--quiet", "--no-index", "--", path])
+        if result.returncode != 0:
+            missing.append(path)
+    return missing
 
 
 def scan(
@@ -68,24 +100,45 @@ def scan(
     baseline: dict[str, Sequence[str]] | None = None,
     exclude: Sequence[str] = (),
     forbidden_suffixes: Sequence[str] = (),
+    private_paths: Sequence[str] = (),
+    private_files: Sequence[str] = (),
+    private_suffixes: Sequence[str] = (),
+    required_ignores: Sequence[str] = (),
     allowed_users: Sequence[str] = (),
+    check_links: bool = True,
+    include_candidates: bool = True,
     paths: Sequence[str] | None = None,
 ) -> Report:
     recorded = {path: set(kinds) for path, kinds in (baseline or {}).items()}
     unmatched = {path: set(kinds) for path, kinds in recorded.items()}
     report = Report()
 
-    for relative in tracked_paths(root) if paths is None else paths:
+    def record(finding: Finding) -> None:
+        if finding.kind in recorded.get(finding.path, set()):
+            unmatched.get(finding.path, set()).discard(finding.kind)
+            report.baselined.append(finding)
+        else:
+            report.new.append(finding)
+
+    candidates = (
+        scannable_paths(root, include_candidates=include_candidates) if paths is None else paths
+    )
+    for relative in candidates:
         if any(fnmatch(relative, pattern) for pattern in exclude):
             report.excluded.append(relative)
             unmatched.pop(relative, None)
             continue
-        found = rules.kinds_in_path(relative, forbidden_suffixes=forbidden_suffixes)
+        found = rules.kinds_in_path(
+            relative,
+            forbidden_suffixes=forbidden_suffixes,
+            private_paths=private_paths,
+            private_files=private_files,
+            private_suffixes=private_suffixes,
+        )
         try:
             text = (root / relative).read_text(encoding="utf-8")
         except UnicodeDecodeError:
-            # Binary content: the path rules above still applied to it.
-            text = ""
+            text = ""  # Binary content; the path rules above still applied to it.
         except OSError:
             report.unreadable.append(relative)
             text = ""
@@ -94,15 +147,16 @@ def scan(
                 text,
                 relative_path=relative,
                 names=names,
-                allowed_users=allowed_users or rules.DEFAULT_ALLOWED_USERS,
+                allowed_users=allowed_users,
             )
-        known = recorded.get(relative, set())
         for kind in sorted(found):
-            if kind in known:
-                unmatched[relative].discard(kind)
-                report.baselined.append(Finding(relative, kind))
-            else:
-                report.new.append(Finding(relative, kind))
+            record(Finding(relative, kind))
+        if text and check_links and Path(relative).suffix.lower() in links.MARKDOWN_SUFFIXES:
+            for kind, detail in links.findings(text, relative, root):
+                record(Finding(relative, kind, detail))
+
+    for path in unignored(root, required_ignores):
+        record(Finding(path, rules.NOT_IGNORED))
 
     # A recorded finding that no longer matches was fixed, or its file was renamed or
     # untracked. Either way the record now describes something that is not there.

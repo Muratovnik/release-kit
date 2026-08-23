@@ -35,6 +35,37 @@ class HomeDirectoryTests(unittest.TestCase):
 
         self.assertNotIn(rules.HOME_DIRECTORY, found)
 
+    def test_a_declared_placeholder_adds_to_the_defaults_rather_than_replacing_them(self) -> None:
+        """Declaring one must not cost the built-in ones; the first version did."""
+        found = rules.kinds_in_text(r"C:\Users\alice\x", allowed_users={"buildbot"})
+
+        self.assertNotIn(rules.HOME_DIRECTORY, found)
+
+    def test_an_account_under_a_reserved_example_domain_needs_no_declaration(self) -> None:
+        """RFC 2606 and 6761 reserve these, so they are placeholders by definition."""
+        for path in (
+            r"C:\Users\alice@example.com\x",
+            "/home/someone@example.org/x",
+            "/home/dev@company.invalid/x",
+            "/home/qa@host.test/x",
+        ):
+            with self.subTest(path=path):
+                self.assertNotIn(rules.HOME_DIRECTORY, rules.kinds_in_text(path))
+
+    def test_a_real_looking_domain_is_not_reserved(self) -> None:
+        found = rules.kinds_in_text("/home/dev@acme.com/x")
+
+        self.assertIn(rules.HOME_DIRECTORY, found)
+
+    def test_a_project_placeholder_is_declared_by_the_project(self) -> None:
+        """Only the project knows that its domain calls its example account this."""
+        text = "path: 'C:\\\\Users\\\\Player\\\\Documents'"
+
+        self.assertIn(rules.HOME_DIRECTORY, rules.kinds_in_text(text))
+        self.assertNotIn(
+            rules.HOME_DIRECTORY, rules.kinds_in_text(text, allowed_users={"player"})
+        )
+
 
 class EscapingPathTests(unittest.TestCase):
     def test_a_climb_into_a_sibling_is_a_finding(self) -> None:
@@ -51,21 +82,26 @@ class EscapingPathTests(unittest.TestCase):
 
         self.assertIn(rules.ESCAPES_REPOSITORY, found)
 
-    def test_a_link_that_climbs_and_comes_back_inside_is_not_a_finding(self) -> None:
-        """Ordinary documentation. Flagging it is how a gate earns its way to being off."""
+    def test_a_path_that_climbs_and_comes_back_inside_is_not_a_finding(self) -> None:
+        """Ordinary. Flagging it is how a gate earns its way to being switched off."""
         found = rules.kinds_in_text(
-            "see [the view](../../web/src/App.vue) for the markup",
-            relative_path="docs/audits/review.md",
+            'run "../../web/build.sh" from here', relative_path="docs/audits/review.md"
         )
 
         self.assertNotIn(rules.ESCAPES_REPOSITORY, found)
 
-    def test_the_same_link_from_the_root_does_escape(self) -> None:
-        found = rules.kinds_in_text(
-            "see [the view](../../web/src/App.vue)", relative_path="README.md"
-        )
+    def test_the_same_path_from_the_root_does_escape(self) -> None:
+        found = rules.kinds_in_text('run "../../web/build.sh"', relative_path="README.md")
 
         self.assertIn(rules.ESCAPES_REPOSITORY, found)
+
+    def test_a_markdown_link_is_left_to_the_link_check(self) -> None:
+        """Both rules firing on one target would report a single defect twice."""
+        found = rules.kinds_in_text(
+            "see [the view](../../elsewhere/App.vue)", relative_path="README.md"
+        )
+
+        self.assertNotIn(rules.ESCAPES_REPOSITORY, found)
 
 
 class DeclaredNameTests(unittest.TestCase):
@@ -88,9 +124,9 @@ class PathKindTests(unittest.TestCase):
     def test_ordinary_source_is_not(self) -> None:
         self.assertEqual(set(), rules.kinds_in_path("src/main.go"))
 
-    def test_the_caller_may_replace_the_suffix_list(self) -> None:
-        self.assertEqual(set(), rules.kinds_in_path("a.key", forbidden_suffixes=[".zip"]))
+    def test_the_caller_adds_to_the_suffix_list(self) -> None:
         self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path("a.zip", forbidden_suffixes=[".zip"]))
+        self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path("a.key", forbidden_suffixes=[".zip"]))
 
 
 if __name__ == "__main__":
