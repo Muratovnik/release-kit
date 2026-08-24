@@ -2,7 +2,7 @@
 # of what must not be published would leak exactly what it protects, so the list is
 # always the adopting repository's, never this one's.
 [exposure]
-betterleaks_config = ".betterleaks.toml"
+betterleaks_config = ".gitleaks.toml"
 
 # The tests have to contain the material the rules detect - a fake home directory, a
 # path that climbs out of a repository - or they would not be testing anything. That
