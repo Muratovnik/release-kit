@@ -29,14 +29,86 @@ PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
 HISTORY_REFS = ("HEAD", "--branches", "--remotes", "--tags")
 
 
-def _wrapped_name_probes(names: Sequence[str]) -> tuple[str, ...]:
-    """Distinctive tokens that make Git surface blobs with wrapped owner values."""
-    probes: set[str] = set()
-    for name in names:
-        parts = name.split()
-        if len(parts) > 1:
-            probes.add(max(parts, key=len))
-    return tuple(sorted(probes))
+def _batch_blobs(root: Path, object_ids: Sequence[str]) -> list[tuple[str, bytes]]:
+    if not object_ids:
+        return []
+    process = subprocess.run(
+        ["git", "cat-file", "--batch"],
+        cwd=root,
+        input=("\n".join(object_ids) + "\n").encode(),
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+    if process.returncode != 0:
+        raise RuntimeError(
+            process.stderr.decode("utf-8", errors="replace").strip()
+            or "git cat-file --batch failed"
+        )
+    answer: list[tuple[str, bytes]] = []
+    offset = 0
+    for _expected in object_ids:
+        line_end = process.stdout.find(b"\n", offset)
+        if line_end < 0:
+            raise RuntimeError("git cat-file returned a truncated header")
+        header = process.stdout[offset:line_end].decode("ascii", errors="replace")
+        fields = header.rsplit(" ", maxsplit=2)
+        if len(fields) != 3 or fields[1] != "blob":
+            raise RuntimeError(f"git cat-file returned an unexpected header: {header}")
+        object_id, _kind, raw_size = fields
+        size = int(raw_size)
+        start = line_end + 1
+        end = start + size
+        if end >= len(process.stdout):
+            raise RuntimeError("git cat-file returned a truncated blob")
+        answer.append((object_id, process.stdout[start:end]))
+        offset = end + 1
+    return answer
+
+
+def _wrapped_history_failures(
+    root: Path,
+    *,
+    names: Sequence[str],
+    exclude: Sequence[str],
+) -> list[str]:
+    if not any(len(name.split()) > 1 for name in names):
+        return []
+    inventory = _git(root, ["rev-list", "--objects", *HISTORY_REFS])
+    if inventory.returncode != 0:
+        return [inventory.stderr.strip() or "Git history object inventory failed"]
+    paths: dict[str, str] = {}
+    for record in inventory.stdout.splitlines():
+        object_id, separator, relative = record.partition(" ")
+        if separator and not any(fnmatch(relative, pattern) for pattern in exclude):
+            paths.setdefault(object_id, relative)
+    checks = _git(
+        root,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        stdin="\n".join(paths) + "\n",
+    )
+    if checks.returncode != 0:
+        return [checks.stderr.strip() or "Git history object type inventory failed"]
+    blob_ids = [
+        record.partition(" ")[0]
+        for record in checks.stdout.splitlines()
+        if record.endswith(" blob")
+    ]
+    failures: list[str] = []
+    try:
+        blobs = _batch_blobs(root, blob_ids)
+    except (RuntimeError, ValueError) as error:
+        return [str(error)]
+    for object_id, payload in blobs:
+        try:
+            text = payload.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if rules.contains_wrapped_declared_name(text, names):
+            failures.append(
+                f"history blob {object_id[:12]}:{paths[object_id]}: {rules.DECLARED_NAME}"
+            )
+    return failures
 
 
 @dataclass(frozen=True)
@@ -314,12 +386,8 @@ def history_failures(
     commits = [commit for commit in revisions.stdout.splitlines() if commit]
     patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]
     patterns.extend(re.escape(name) for name in names)
-    wrapped_probes = _wrapped_name_probes(names)
-    patterns.extend(re.escape(probe) for probe in wrapped_probes)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
-    declared_blobs: set[tuple[str, str]] = set()
-    wrapped_candidates: set[tuple[str, str]] = set()
     for offset in range(0, len(commits), 24):
         batch = commits[offset : offset + 24]
         result = _git(root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"])
@@ -333,8 +401,6 @@ def history_failures(
             commit, relative, line_number, content = fields
             if any(fnmatch(relative, pattern) for pattern in exclude):
                 continue
-            if wrapped_probes:
-                wrapped_candidates.add((commit, relative))
             for kind in sorted(
                 rules.kinds_in_text(
                     content,
@@ -344,29 +410,8 @@ def history_failures(
                 )
             ):
                 finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
-                if kind == rules.DECLARED_NAME:
-                    declared_blobs.add((commit, relative))
                 if finding not in seen:
                     seen.add(finding)
                     failures.append(finding)
-    for commit, relative in sorted(wrapped_candidates - declared_blobs):
-        result = _git_bytes(root, ["show", f"{commit}:{relative}"])
-        if result.returncode != 0:
-            failures.append(
-                result.stderr.decode("utf-8", errors="replace").strip()
-                or "Git history wrapped-value scan failed"
-            )
-            continue
-        try:
-            text = result.stdout.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        kinds = rules.kinds_in_text(
-            text,
-            relative_path=relative,
-            names=names,
-            allowed_users=allowed_users,
-        )
-        if rules.DECLARED_NAME in kinds:
-            failures.append(f"history {commit[:12]}:{relative}: {rules.DECLARED_NAME}")
+    failures.extend(_wrapped_history_failures(root, names=names, exclude=exclude))
     return failures

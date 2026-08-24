@@ -94,6 +94,17 @@ DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
 WHITESPACE = re.compile(r"\s+")
 
 
+def contains_wrapped_declared_name(text: str, names: Sequence[str]) -> bool:
+    """Whether whitespace wrapping hides a declared value from raw matching."""
+    folded = text.casefold()
+    normalized = WHITESPACE.sub(" ", folded)
+    return any(
+        name.casefold() not in folded and WHITESPACE.sub(" ", name.casefold()) in normalized
+        for name in names
+        if len(name.split()) > 1
+    )
+
+
 def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
     """Match owner values even when prose wrapping changes the whitespace.
 
@@ -104,12 +115,9 @@ def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
     tokens into a match.
     """
     folded = text.casefold()
-    normalized = WHITESPACE.sub(" ", folded)
-    for name in names:
-        declared = name.casefold()
-        if declared in folded or WHITESPACE.sub(" ", declared) in normalized:
-            return True
-    return False
+    return any(name.casefold() in folded for name in names) or contains_wrapped_declared_name(
+        text, names
+    )
 
 
 def kinds_in_text(
