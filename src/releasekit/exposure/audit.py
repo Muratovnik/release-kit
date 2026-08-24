@@ -29,6 +29,16 @@ PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
 HISTORY_REFS = ("HEAD", "--branches", "--remotes", "--tags")
 
 
+def _wrapped_name_probes(names: Sequence[str]) -> tuple[str, ...]:
+    """Distinctive tokens that make Git surface blobs with wrapped owner values."""
+    probes: set[str] = set()
+    for name in names:
+        parts = name.split()
+        if len(parts) > 1:
+            probes.add(max(parts, key=len))
+    return tuple(sorted(probes))
+
+
 @dataclass(frozen=True)
 class Finding:
     path: str
@@ -304,8 +314,12 @@ def history_failures(
     commits = [commit for commit in revisions.stdout.splitlines() if commit]
     patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]
     patterns.extend(re.escape(name) for name in names)
+    wrapped_probes = _wrapped_name_probes(names)
+    patterns.extend(re.escape(probe) for probe in wrapped_probes)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
+    declared_blobs: set[tuple[str, str]] = set()
+    wrapped_candidates: set[tuple[str, str]] = set()
     for offset in range(0, len(commits), 24):
         batch = commits[offset : offset + 24]
         result = _git(root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"])
@@ -319,6 +333,8 @@ def history_failures(
             commit, relative, line_number, content = fields
             if any(fnmatch(relative, pattern) for pattern in exclude):
                 continue
+            if wrapped_probes:
+                wrapped_candidates.add((commit, relative))
             for kind in sorted(
                 rules.kinds_in_text(
                     content,
@@ -328,7 +344,29 @@ def history_failures(
                 )
             ):
                 finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
+                if kind == rules.DECLARED_NAME:
+                    declared_blobs.add((commit, relative))
                 if finding not in seen:
                     seen.add(finding)
                     failures.append(finding)
+    for commit, relative in sorted(wrapped_candidates - declared_blobs):
+        result = _git_bytes(root, ["show", f"{commit}:{relative}"])
+        if result.returncode != 0:
+            failures.append(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "Git history wrapped-value scan failed"
+            )
+            continue
+        try:
+            text = result.stdout.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        kinds = rules.kinds_in_text(
+            text,
+            relative_path=relative,
+            names=names,
+            allowed_users=allowed_users,
+        )
+        if rules.DECLARED_NAME in kinds:
+            failures.append(f"history {commit[:12]}:{relative}: {rules.DECLARED_NAME}")
     return failures

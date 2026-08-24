@@ -133,6 +133,15 @@ class PrivateValueTests(unittest.TestCase):
 
         self.assertEqual(["example.md: private-value"], report.failures)
 
+    def test_a_wrapped_owner_value_is_still_private(self) -> None:
+        value = "already holds records, so renaming it would orphan them"
+        with _repository(
+            {"README.md": "already holds records, so renaming it would\norphan them\n"}
+        ) as name:
+            report = audit.scan(Path(name), names=(value,))
+
+        self.assertEqual(["README.md: private-value"], report.failures)
+
     def test_a_clone_without_the_list_does_not_fail_on_records_it_cannot_check(self) -> None:
         """A checkout that has no name list runs the structural rules and stays green."""
         with _repository({"README.md": "built on Someservice\n"}) as name:
@@ -197,6 +206,17 @@ class PathTests(unittest.TestCase):
 
 
 class HistoryTests(unittest.TestCase):
+    def test_history_checks_wrapped_owner_values(self) -> None:
+        value = "already holds records, so renaming it would orphan them"
+        with _repository(
+            {"README.md": "already holds records, so renaming it would\norphan them\n"}
+        ) as name:
+            root = Path(name)
+            _commit(root)
+            failures = audit.history_failures(root, names=(value,))
+
+        self.assertTrue(any("private-value" in item for item in failures), failures)
+
     def test_history_checks_commit_messages_for_declared_names(self) -> None:
         with _repository({"kept.md": "clean\n"}) as name:
             root = Path(name)

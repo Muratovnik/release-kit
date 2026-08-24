@@ -91,6 +91,26 @@ DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
     {".cer", ".crt", ".db", ".key", ".log", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3"}
 )
 
+WHITESPACE = re.compile(r"\s+")
+
+
+def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
+    """Match owner values even when prose wrapping changes the whitespace.
+
+    Owner policy entries are deliberately one value per line. Markdown formatters
+    may wrap a multi-word value across lines without changing what a reader sees,
+    so a raw substring check alone lets the same private value evade the gate.
+    Collapsing whitespace preserves word boundaries and does not turn separated
+    tokens into a match.
+    """
+    folded = text.casefold()
+    normalized = WHITESPACE.sub(" ", folded)
+    for name in names:
+        declared = name.casefold()
+        if declared in folded or WHITESPACE.sub(" ", declared) in normalized:
+            return True
+    return False
+
 
 def kinds_in_text(
     text: str,
@@ -137,8 +157,7 @@ def kinds_in_text(
             _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text)
         ):
             kinds.add(ESCAPES_REPOSITORY)
-    folded = text.casefold()
-    if any(name.casefold() in folded for name in names):
+    if _contains_declared_name(text, names):
         kinds.add(DECLARED_NAME)
     return kinds
 

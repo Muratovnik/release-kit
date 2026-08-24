@@ -60,6 +60,6 @@ class ProjectionTests(unittest.TestCase):
 
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)
         self.assertEqual(0, invoked.returncode, invoked.stdout + invoked.stderr)
-        self.assertIn("release-kit 0.3.1", invoked.stdout)
+        self.assertIn("release-kit 0.3.2", invoked.stdout)
         self.assertIn("Betterleaks 1.8.1", invoked.stdout)
         self.assertIn("Lychee 0.24.2", invoked.stdout)

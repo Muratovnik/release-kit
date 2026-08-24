@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2] - 2026-08-24
+
+### Fixed
+
+- Detect declared private values after harmless whitespace wrapping, including
+  values split across lines in reachable history.
+
 ## [0.3.1] - 2026-08-24
 
 ### Fixed
