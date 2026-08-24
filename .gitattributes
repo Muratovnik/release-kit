@@ -1,0 +1,3 @@
+# Authored text is stored as LF on every platform; binary projections are exact.
+* text=auto eol=lf
+*.pyz binary

@@ -52,8 +52,12 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 
 ## Verification
 
-```bash
+```powershell
+$env:PYTHONPATH = "src"
 python -m unittest discover -s tests -p "test_*.py"
+python -m ruff check src tests tools
+python -m ruff format --check src tests tools
+python -m releasekit.cli audit
 ```
 
 Every change to a rule needs a test that fails without it. A regression that a real
