@@ -205,6 +205,14 @@ class HistoryTests(unittest.TestCase):
 
         self.assertTrue(any("commit-message: private-value" in item for item in failures))
 
+    def test_history_commit_messages_may_describe_a_traversal_fixture(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root, "test: reject an ../ traversal attempt")
+            failures = audit.history_failures(root)
+
+        self.assertFalse(any("commit-message" in item for item in failures), failures)
+
     def test_history_scope_ignores_synthetic_client_checkpoint_refs(self) -> None:
         with _repository({"kept.md": "clean\n"}) as name:
             root = Path(name)

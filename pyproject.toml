@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "release-kit"
-version = "0.3.0"
+version = "0.3.1"
 description = "Release-cycle and publication-exposure gates for any repository"
 readme = "README.md"
 requires-python = ">=3.11"

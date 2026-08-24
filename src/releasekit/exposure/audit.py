@@ -291,9 +291,10 @@ def history_failures(
             commit, separator, message = record.strip().partition("\x1f")
             if not separator:
                 continue
-            for kind in sorted(
-                rules.kinds_in_text(message, names=names, allowed_users=allowed_users)
-            ):
+            message_kinds = rules.kinds_in_text(
+                message, names=names, allowed_users=allowed_users
+            ) & {rules.DECLARED_NAME, rules.HOME_DIRECTORY}
+            for kind in sorted(message_kinds):
                 failures.append(f"history {commit[:12]}: commit-message: {kind}")
 
     revisions = _git(root, ["rev-list", *HISTORY_REFS])

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1] - 2026-08-24
+
+### Fixed
+
+- Commit-message history checks now apply only privacy rules; prose describing
+  a traversal fixture no longer fails the publication gate.
+
 ## [0.3.0] - 2026-08-24
 
 ### Added
