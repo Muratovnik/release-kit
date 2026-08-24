@@ -14,13 +14,19 @@ merely not committed yet.
 
 from __future__ import annotations
 
+import re
+import struct
 import subprocess
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from . import links, rules
+from . import rules
+
+PNG_METADATA = "png-metadata"
+PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
+HISTORY_REFS = ("HEAD", "--branches", "--remotes", "--tags")
 
 
 @dataclass(frozen=True)
@@ -66,6 +72,16 @@ def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
     )
 
 
+def _git_bytes(root: Path, arguments: Sequence[str]) -> subprocess.CompletedProcess[bytes]:
+    return subprocess.run(
+        ["git", *arguments],
+        cwd=root,
+        check=False,
+        capture_output=True,
+        timeout=120,
+    )
+
+
 def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str, ...]:
     """What Git would publish, plus what is one `git add -A` from being published."""
     arguments = ["ls-files", "-z", "--cached"]
@@ -75,6 +91,14 @@ def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git ls-files failed")
     return tuple(sorted(item for item in result.stdout.split("\0") if item))
+
+
+def worktree_changes(root: Path) -> tuple[str, ...]:
+    """Tracked or untracked changes that make a history verdict non-reproducible."""
+    result = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr.strip() or "git status failed")
+    return tuple(item for item in result.stdout.split("\0") if item)
 
 
 def unignored(root: Path, required: Sequence[str]) -> list[str]:
@@ -93,6 +117,32 @@ def unignored(root: Path, required: Sequence[str]) -> list[str]:
     return missing
 
 
+def _png_metadata(payload: bytes) -> set[str]:
+    if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
+        return set()
+    offset = 8
+    while offset + 12 <= len(payload):
+        length = struct.unpack(">I", payload[offset : offset + 4])[0]
+        chunk_type = payload[offset + 4 : offset + 8]
+        offset += 12 + length
+        if offset > len(payload):
+            return {PNG_METADATA}
+        if chunk_type in PNG_METADATA_CHUNKS:
+            return {PNG_METADATA}
+        if chunk_type == b"IEND":
+            break
+    return set()
+
+
+def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> bytes:
+    if staged and relative in tracked:
+        result = _git_bytes(root, ["show", f":{relative}"])
+        if result.returncode != 0:
+            raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
+        return result.stdout
+    return (root / relative).read_bytes()
+
+
 def scan(
     root: Path,
     *,
@@ -105,8 +155,9 @@ def scan(
     private_suffixes: Sequence[str] = (),
     required_ignores: Sequence[str] = (),
     allowed_users: Sequence[str] = (),
-    check_links: bool = True,
+    forbid_png_metadata: bool = False,
     include_candidates: bool = True,
+    staged: bool = False,
     paths: Sequence[str] | None = None,
 ) -> Report:
     recorded = {path: set(kinds) for path, kinds in (baseline or {}).items()}
@@ -123,6 +174,10 @@ def scan(
     candidates = (
         scannable_paths(root, include_candidates=include_candidates) if paths is None else paths
     )
+    tracked_result = _git(root, ["ls-files", "-z", "--cached"])
+    if tracked_result.returncode != 0:
+        raise RuntimeError(tracked_result.stderr.strip() or "git ls-files failed")
+    tracked = {item for item in tracked_result.stdout.split("\0") if item}
     for relative in candidates:
         if any(fnmatch(relative, pattern) for pattern in exclude):
             report.excluded.append(relative)
@@ -136,7 +191,10 @@ def scan(
             private_suffixes=private_suffixes,
         )
         try:
-            text = (root / relative).read_text(encoding="utf-8")
+            payload = _payload(root, relative, staged=staged, tracked=tracked)
+            if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
+                found |= _png_metadata(payload)
+            text = payload.decode("utf-8")
         except UnicodeDecodeError:
             text = ""  # Binary content; the path rules above still applied to it.
         except OSError:
@@ -151,9 +209,6 @@ def scan(
             )
         for kind in sorted(found):
             record(Finding(relative, kind))
-        if text and check_links and Path(relative).suffix.lower() in links.MARKDOWN_SUFFIXES:
-            for kind, detail in links.findings(text, relative, root):
-                record(Finding(relative, kind, detail))
 
     for path in unignored(root, required_ignores):
         record(Finding(path, rules.NOT_IGNORED))
@@ -171,3 +226,83 @@ def scan(
                 f"{relative}: no longer carries '{kind}'; remove it from the baseline"
             )
     return report
+
+
+def history_failures(
+    root: Path,
+    *,
+    names: Sequence[str] = (),
+    private_paths: Sequence[str] = (),
+    private_files: Sequence[str] = (),
+    private_suffixes: Sequence[str] = (),
+    forbidden_suffixes: Sequence[str] = (),
+    allowed_users: Sequence[str] = (),
+    allowed_identities: Sequence[str] = (),
+    exclude: Sequence[str] = (),
+) -> list[str]:
+    """Rules that must hold for every reachable commit before publication."""
+    failures: list[str] = []
+    names_result = _git(root, ["log", *HISTORY_REFS, "--name-only", "--format="])
+    if names_result.returncode != 0:
+        return [names_result.stderr.strip() or "Git history path inventory failed"]
+    history_paths = {line.strip() for line in names_result.stdout.splitlines() if line.strip()}
+    for relative in sorted(history_paths):
+        if any(fnmatch(relative, pattern) for pattern in exclude):
+            continue
+        for kind in sorted(
+            rules.kinds_in_path(
+                relative,
+                forbidden_suffixes=forbidden_suffixes,
+                private_paths=private_paths,
+                private_files=private_files,
+                private_suffixes=private_suffixes,
+            )
+        ):
+            failures.append(f"history {relative}: {kind}")
+
+    if allowed_identities:
+        allowed = set(allowed_identities)
+        identities = _git(root, ["log", *HISTORY_REFS, "--format=%an <%ae>%x1f%cn <%ce>"])
+        if identities.returncode != 0:
+            failures.append(identities.stderr.strip() or "Git history identity inventory failed")
+        else:
+            for record in identities.stdout.splitlines():
+                author, separator, committer = record.partition("\x1f")
+                if not separator or author not in allowed or committer not in allowed:
+                    failures.append(f"history identity is not allowed: {record}")
+
+    revisions = _git(root, ["rev-list", *HISTORY_REFS])
+    if revisions.returncode != 0:
+        failures.append(revisions.stderr.strip() or "Git revision inventory failed")
+        return failures
+    commits = [commit for commit in revisions.stdout.splitlines() if commit]
+    patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]
+    patterns.extend(re.escape(name) for name in names)
+    expression = "(" + "|".join(patterns) + ")"
+    seen: set[str] = set()
+    for offset in range(0, len(commits), 24):
+        batch = commits[offset : offset + 24]
+        result = _git(root, ["grep", "-I", "-n", "-E", expression, *batch, "--"])
+        if result.returncode not in {0, 1}:
+            failures.append(result.stderr.strip() or "Git history content scan failed")
+            break
+        for line in result.stdout.splitlines():
+            fields = line.split(":", maxsplit=3)
+            if len(fields) != 4:
+                continue
+            commit, relative, line_number, content = fields
+            if any(fnmatch(relative, pattern) for pattern in exclude):
+                continue
+            for kind in sorted(
+                rules.kinds_in_text(
+                    content,
+                    relative_path=relative,
+                    names=names,
+                    allowed_users=allowed_users,
+                )
+            ):
+                finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
+                if finding not in seen:
+                    seen.add(finding)
+                    failures.append(finding)
+    return failures

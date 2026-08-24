@@ -7,7 +7,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from releasekit.exposure import audit, links, rules
+from releasekit.exposure import audit, rules
 
 
 def _repository(files: dict[str, str], *, ignore: str = "") -> tempfile.TemporaryDirectory[str]:
@@ -104,54 +104,6 @@ class CandidateTests(unittest.TestCase):
         self.assertTrue(report.ok, report.failures)
 
 
-class LinkTests(unittest.TestCase):
-    def test_a_link_out_of_the_repository_is_a_finding(self) -> None:
-        with _repository({"README.md": "see [it](../neighbour/file.md)\n"}) as name:
-            report = audit.scan(Path(name))
-
-        self.assertEqual(1, len(report.new))
-        self.assertEqual(links.LINK_ESCAPES, report.new[0].kind)
-        self.assertIn("../neighbour/file.md", report.new[0].detail)
-
-    def test_a_link_to_a_missing_file_is_a_finding(self) -> None:
-        with _repository({"README.md": "see [it](docs/absent.md)\n"}) as name:
-            report = audit.scan(Path(name))
-
-        self.assertEqual([links.BROKEN_LINK], [finding.kind for finding in report.new])
-
-    def test_a_working_relative_link_passes(self) -> None:
-        with _repository({"README.md": "see [it](docs/there.md)\n", "docs/there.md": "x\n"}) as name:
-            report = audit.scan(Path(name))
-
-        self.assertTrue(report.ok, report.failures)
-
-    def test_a_url_and_a_fragment_are_not_links_to_check(self) -> None:
-        text = "[a](https://example.invalid/x) and [b](#section) and [c](mailto:a@example.invalid)\n"
-        with _repository({"README.md": text}) as name:
-            report = audit.scan(Path(name))
-
-        self.assertTrue(report.ok, report.failures)
-
-    def test_an_absolute_link_is_a_finding(self) -> None:
-        with _repository({"README.md": "see [it](C:/Somewhere/file.md)\n"}) as name:
-            report = audit.scan(Path(name))
-
-        self.assertIn(links.LINK_ESCAPES, [finding.kind for finding in report.new])
-
-    def test_link_checking_can_be_switched_off(self) -> None:
-        with _repository({"README.md": "see [it](docs/absent.md)\n"}) as name:
-            report = audit.scan(Path(name), check_links=False)
-
-        self.assertTrue(report.ok, report.failures)
-
-    def test_a_recorded_link_finding_stays_recorded_when_its_detail_changes(self) -> None:
-        """The baseline is keyed on path and kind, so a moved link needs no re-recording."""
-        with _repository({"README.md": "see [it](docs/absent.md)\n"}) as name:
-            report = audit.scan(Path(name), baseline={"README.md": [links.BROKEN_LINK]})
-
-        self.assertTrue(report.ok, report.failures)
-
-
 class KindNameTests(unittest.TestCase):
     def test_the_reported_kinds_are_the_documented_ones(self) -> None:
         """These strings are the public contract: they appear in every baseline."""
@@ -163,8 +115,7 @@ class KindNameTests(unittest.TestCase):
                 "declared-name",
                 "private-path",
                 "not-ignored",
-                "link-escapes-repository",
-                "broken-link",
+                "png-metadata",
             },
             {
                 rules.HOME_DIRECTORY,
@@ -173,8 +124,7 @@ class KindNameTests(unittest.TestCase):
                 rules.DECLARED_NAME,
                 rules.PRIVATE_PATH,
                 rules.NOT_IGNORED,
-                links.LINK_ESCAPES,
-                links.BROKEN_LINK,
+                audit.PNG_METADATA,
             },
         )
 

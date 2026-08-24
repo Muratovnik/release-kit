@@ -23,6 +23,15 @@ def _repository(files: dict[str, str]) -> tempfile.TemporaryDirectory[str]:
     return handle
 
 
+def _commit(root: Path) -> None:
+    for key, value in (
+        ("user.name", "Example Writer"),
+        ("user.email", "writer@example.invalid"),
+    ):
+        subprocess.run(["git", "config", key, value], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", "test: fixture"], cwd=root, check=True)
+
+
 class ScopeTests(unittest.TestCase):
     def test_an_untracked_unignored_file_is_this_gate_s_business(self) -> None:
         """Uncommitted is not safe. It is one `git add -A` from the history."""
@@ -135,6 +144,106 @@ class PathTests(unittest.TestCase):
             report = audit.scan(root)
 
         self.assertEqual(["store.sqlite3: forbidden-kind"], report.failures)
+
+    def test_staged_scan_reads_the_index_not_a_cleaner_worktree_copy(self) -> None:
+        with _repository({"config.toml": LEAK}) as name:
+            root = Path(name)
+            (root / "config.toml").write_text("clean = true\n", encoding="utf-8")
+            report = audit.scan(root, staged=True)
+
+        self.assertEqual(["config.toml: home-directory"], report.failures)
+
+    def test_png_metadata_can_be_forbidden_once_for_all_fixtures(self) -> None:
+        with _repository({"placeholder.md": "x\n"}) as name:
+            root = Path(name)
+            payload = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00tEXt" + b"\x00\x00\x00\x00"
+            (root / "fixture.png").write_bytes(payload)
+            subprocess.run(["git", "add", "fixture.png"], cwd=root, check=True)
+            report = audit.scan(root, forbid_png_metadata=True, staged=True)
+
+        self.assertEqual(["fixture.png: png-metadata"], report.failures)
+
+
+class HistoryTests(unittest.TestCase):
+    def test_history_scope_ignores_synthetic_client_checkpoint_refs(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            branch = subprocess.run(
+                ["git", "branch", "--show-current"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "-q", "-c", "client-checkpoint"], cwd=root, check=True)
+            private = root / ".someclient" / "settings.json"
+            private.parent.mkdir()
+            private.write_text("{}\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            _commit(root)
+            checkpoint = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "-q", branch], cwd=root, check=True)
+            subprocess.run(
+                ["git", "branch", "-D", "client-checkpoint"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            subprocess.run(
+                ["git", "update-ref", "refs/codex/checkpoints/test", checkpoint],
+                cwd=root,
+                check=True,
+            )
+
+            failures = audit.history_failures(root, private_paths=[".someclient"])
+
+        self.assertEqual([], failures)
+
+    def test_history_verdict_can_require_a_clean_worktree(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            self.assertEqual((), audit.worktree_changes(root))
+            (root / "kept.md").write_text("changed\n", encoding="utf-8")
+
+            changes = audit.worktree_changes(root)
+
+        self.assertEqual(1, len(changes))
+        self.assertIn("kept.md", changes[0])
+
+    def test_history_checks_paths_content_and_identities(self) -> None:
+        with _repository(
+            {
+                ".someclient/settings.json": "{}\n",
+                "config.toml": LEAK,
+            }
+        ) as name:
+            root = Path(name)
+            _commit(root)
+            failures = audit.history_failures(
+                root,
+                private_paths=[".someclient"],
+                allowed_identities=["Somebody Else <else@example.invalid>"],
+            )
+
+        self.assertTrue(any("private-path" in failure for failure in failures), failures)
+        self.assertTrue(any("home-directory" in failure for failure in failures), failures)
+        self.assertTrue(any("identity is not allowed" in failure for failure in failures), failures)
+
+    def test_history_exclusions_are_for_deliberate_rule_fixtures(self) -> None:
+        with _repository({"tests/fixture.toml": LEAK}) as name:
+            root = Path(name)
+            _commit(root)
+            failures = audit.history_failures(root, exclude=["tests/*"])
+
+        self.assertEqual([], failures)
 
 
 if __name__ == "__main__":

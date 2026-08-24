@@ -15,6 +15,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
+from . import __version__, publication, toolchain
 from . import config as config_module
 from .exposure import audit
 from .overlay import manifest as manifest_module
@@ -67,7 +68,7 @@ def _exposure(arguments: argparse.Namespace) -> int:
         required_ignores=settings.exposure.required_ignores,
         forbidden_suffixes=settings.exposure.forbidden_suffixes,
         allowed_users=settings.exposure.allowed_users,
-        check_links=settings.exposure.check_links,
+        forbid_png_metadata=settings.exposure.forbid_png_metadata,
         include_candidates=settings.exposure.include_candidates,
     )
     if report.excluded:
@@ -88,6 +89,17 @@ def _exposure(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _audit(arguments: argparse.Namespace) -> int:
+    return publication.run(
+        Path(arguments.root).resolve(),
+        history=arguments.history,
+        staged=arguments.staged,
+        strict=arguments.strict,
+        require_overlay=arguments.require_overlay,
+        allow_download=not arguments.no_download,
+    )
+
+
 def _overlay(arguments: argparse.Namespace) -> int:
     root = Path(arguments.root).resolve()
     try:
@@ -105,9 +117,7 @@ def _overlay(arguments: argparse.Namespace) -> int:
     except manifest_module.ManifestError as error:
         print(f"relkit overlay: {error}", file=sys.stderr)
         return 2
-    problems, skipped = verify_module.check(
-        mounts, public_root=root, private_root=private_root
-    )
+    problems, skipped = verify_module.check(mounts, public_root=root, private_root=private_root)
     for name in skipped:
         print(f"relkit overlay: {name} links outside this repository; not checked")
     if problems:
@@ -142,7 +152,41 @@ def _notes(arguments: argparse.Namespace) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="relkit", description=__doc__.splitlines()[0])
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"release-kit {__version__} ({toolchain.versions()})",
+    )
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    publication_audit = subcommands.add_parser(
+        "audit",
+        help="Run the complete publication gate: policy, secrets, links, history, overlay.",
+    )
+    publication_audit.add_argument("--root", default=".", help="Repository to audit")
+    scope = publication_audit.add_mutually_exclusive_group()
+    scope.add_argument(
+        "--history",
+        action="store_true",
+        help="Inspect publishable branches and tags; requires a clean worktree",
+    )
+    scope.add_argument(
+        "--staged", action="store_true", help="Read tracked content from the Git index"
+    )
+    publication_audit.add_argument(
+        "--strict", action="store_true", help="Fail on every baselined policy finding"
+    )
+    publication_audit.add_argument(
+        "--require-overlay",
+        action="store_true",
+        help="Fail when the configured private overlay is unavailable",
+    )
+    publication_audit.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Require the pinned engines to be present in the release-kit cache",
+    )
+    publication_audit.set_defaults(handler=_audit)
 
     exposure = subcommands.add_parser(
         "exposure", help="Fail when tracked files carry material that must not be published."

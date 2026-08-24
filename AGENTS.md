@@ -8,8 +8,9 @@ staged there as a gitlink or a submodule.
 
 ## What this repository is for
 
-Two gates other repositories adopt: an exposure check and a release-notes reader.
-They are independent of each other and of every project that uses them.
+One publication gate other repositories adopt, plus focused diagnostic commands and a
+release-notes reader. The gate composes maintained engines for secrets and links with
+the policy and overlay facts only an adopting repository can declare.
 
 ## The rule that outranks the others
 
@@ -33,9 +34,11 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 
 ## Design constraints
 
-- No runtime dependencies. This runs inside other repositories' pre-commit hooks and
-  CI, where a dependency tree is a reason not to adopt it. The standard library is
-  the budget; a new dependency needs a recorded decision.
+- No Python runtime dependencies. This runs inside other repositories' pre-commit
+  hooks and CI, where a dependency tree is a reason not to adopt it. Betterleaks and
+  Lychee are pinned external engines provisioned from verified official archives;
+  do not reimplement their parsers or duplicate their pins in adopters. Any other
+  dependency needs a recorded decision.
 - Every rule is an executable check with a test. A rule stated only in prose is not a
   control, which is the failure this repository exists to answer.
 - False positives are the primary risk. A gate that cries wolf is switched off, and a

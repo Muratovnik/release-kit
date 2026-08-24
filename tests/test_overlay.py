@@ -33,8 +33,10 @@ class ParseTests(unittest.TestCase):
         mounts = manifest.read(self._manifest(MANIFEST))
 
         self.assertEqual(
-            [("../public/.someclient", "local/.someclient"),
-             ("../public/NOTES.local.md", "local/NOTES.local.md")],
+            [
+                ("../public/.someclient", "local/.someclient"),
+                ("../public/NOTES.local.md", "local/NOTES.local.md"),
+            ],
             [(mount.link, mount.target) for mount in mounts],
         )
 
@@ -139,6 +141,20 @@ class VerifyTests(unittest.TestCase):
 
         self.assertIn(verify.NOT_IGNORED, [problem.kind for problem in problems])
 
+    def test_a_publicly_tracked_mount_is_reported_even_when_ignored_now(self) -> None:
+        overlay = _overlay()
+        self.addCleanup(overlay.handle.cleanup)
+        subprocess.run(
+            ["git", "add", "-f", ".someclient"],
+            cwd=overlay.public,
+            check=True,
+            capture_output=True,
+        )
+
+        problems, _ = overlay.check()
+
+        self.assertIn(verify.TRACKED_PUBLICLY, [problem.kind for problem in problems])
+
     def test_a_target_the_private_repository_never_committed_is_reported(self) -> None:
         """It works here and is simply absent on the next workstation."""
         overlay = _overlay()
@@ -153,6 +169,18 @@ class VerifyTests(unittest.TestCase):
         problems, _ = overlay.check()
 
         self.assertIn(verify.TARGET_NOT_TRACKED, [problem.kind for problem in problems])
+
+    def test_a_link_to_the_wrong_tracked_private_target_is_reported(self) -> None:
+        overlay = _overlay()
+        self.addCleanup(overlay.handle.cleanup)
+        wrong = overlay.private / "local" / "wrong"
+        wrong.mkdir()
+        (overlay.public / ".someclient").unlink()
+        (overlay.public / ".someclient").symlink_to(wrong, target_is_directory=True)
+
+        problems, _ = overlay.check()
+
+        self.assertIn(verify.WRONG_TARGET, [problem.kind for problem in problems])
 
     def test_a_mount_landing_elsewhere_is_named_rather_than_silently_passed(self) -> None:
         overlay = _overlay()

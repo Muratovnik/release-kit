@@ -28,7 +28,9 @@ from .manifest import Mount
 MISSING = "missing"
 NOT_A_LINK = "not-a-link"
 OUTSIDE_PRIVATE_ROOT = "outside-private-root"
+WRONG_TARGET = "wrong-target"
 NOT_IGNORED = "not-ignored"
+TRACKED_PUBLICLY = "tracked-publicly"
 TARGET_NOT_TRACKED = "target-not-tracked"
 
 
@@ -101,13 +103,18 @@ def check(
             destination = Path(os.path.realpath(link))
             if resolved_private not in destination.parents:
                 problems.append(Problem(name, OUTSIDE_PRIVATE_ROOT, str(destination)))
+            expected = mount.target_path(private_root).resolve()
+            if destination.resolve() != expected:
+                problems.append(
+                    Problem(name, WRONG_TARGET, f"expected {expected}, got {destination}")
+                )
 
         if _git(public_root, ["check-ignore", "--quiet", "--no-index", "--", name]).returncode:
             problems.append(Problem(name, NOT_IGNORED, "the public repository would commit it"))
+        if not _git(public_root, ["ls-files", "--error-unmatch", "--", name]).returncode:
+            problems.append(Problem(name, TRACKED_PUBLICLY, "the public repository tracks it"))
 
-        target = _git(
-            private_root, ["ls-files", "--error-unmatch", "--", mount.target]
-        )
+        target = _git(private_root, ["ls-files", "--error-unmatch", "--", mount.target])
         if target.returncode:
             problems.append(Problem(name, TARGET_NOT_TRACKED, mount.target))
 

@@ -61,6 +61,7 @@ def _escapes(candidate: str, base: str) -> bool:
     resolved = posixpath.normpath(posixpath.join(base, candidate))
     return resolved == ".." or resolved.startswith("../")
 
+
 # Placeholder accounts that legitimately appear in documentation and CI runners.
 DEFAULT_ALLOWED_USERS = frozenset(
     {"alice", "bob", "example", "owner", "user", "runner", "runneradmin", "vagrant"}
@@ -82,6 +83,7 @@ def _is_placeholder(account: str, allowed: Iterable[str]) -> bool:
     if not separator or not domain:
         return False
     return domain in RESERVED_EXAMPLE_DOMAINS or domain.endswith(RESERVED_EXAMPLE_SUFFIXES)
+
 
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc"})
 
@@ -120,7 +122,14 @@ def kinds_in_text(
     # one, and a check that is wrong about the common case gets switched off. What
     # markdown is still held to: home directories, declared names, and links, which
     # are resolved properly rather than matched.
-    if posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES:
+    # release-kit's own config may deliberately name a sibling private repository.
+    # Those paths are resolved and ownership-checked by the overlay verifier, so the
+    # generic text heuristic would be a duplicate and a false positive here.
+    checks_relative_paths = (
+        posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES
+        and relative_path != "relkit.toml"
+    )
+    if checks_relative_paths:
         directory = posixpath.dirname(relative_path)
         if any(
             _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(text)

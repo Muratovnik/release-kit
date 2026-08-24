@@ -42,7 +42,9 @@ class EntryTests(unittest.TestCase):
         self.assertIn("something repaired", entry)
 
     def test_a_tag_and_a_heading_differ_only_by_the_v(self) -> None:
-        self.assertEqual(changelog.entry_for(SAMPLE, "v1.2.0"), changelog.entry_for(SAMPLE, "1.2.0"))
+        self.assertEqual(
+            changelog.entry_for(SAMPLE, "v1.2.0"), changelog.entry_for(SAMPLE, "1.2.0")
+        )
 
     def test_an_unlinked_heading_is_found_too(self) -> None:
         self.assertIsNotNone(changelog.entry_for(SAMPLE, "1.1.0"))

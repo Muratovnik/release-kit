@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "release-kit"
-version = "0.1.0"
+version = "0.2.0"
 description = "Release-cycle and publication-exposure gates for any repository"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "MIT"
-# No runtime dependencies on purpose. This runs inside other repositories' gates and
-# pre-commit hooks, where a dependency tree is a reason not to adopt it.
+# No Python runtime dependencies. Betterleaks and Lychee are verified, pinned binary
+# engines provisioned by release-kit itself rather than duplicated by every adopter.
 dependencies = []
 
 [project.scripts]

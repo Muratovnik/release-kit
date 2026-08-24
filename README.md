@@ -1,150 +1,145 @@
 # release-kit
 
-Two gates any repository can adopt, neither of which knows anything about yours.
-
-- **`relkit exposure`** — fails when tracked files carry material that belongs to the
-  machine they were written on: an absolute home directory, a relative path that
-  climbs out of the repository, a file kind no repository should publish, or a name
-  the project declared off-limits.
-- **`relkit overlay`** — checks that private surfaces linked into a public checkout
-  are still links, still point where they should, and are still kept out of the
-  public history.
-- **`relkit notes`** — prints the changelog entry a repository already wrote for a
-  version, for use as release notes.
-
-They are independent. A project that publishes nothing still wants the first; a
-project with nothing private still wants the second. A release pipeline may run the
-exposure gate before it tags, which is the only order that helps: the tag is what
-triggers publication, so a check that runs after it reports on something already
-published.
-
-## Install
+One publication gate for repositories with different languages and release systems:
 
 ```bash
-pip install release-kit
+python .github/relkit.pyz audit --history
 ```
 
-## Exposure
+The command owns the complete verdict:
 
-Add `relkit.toml` to the repository being guarded:
+- repository policy: private paths, forbidden file kinds, portable paths, ignored
+  surfaces, optional PNG metadata and allowed Git identities;
+- secret detection by **Betterleaks 1.8.1** over the Git index or full history;
+- offline local-link validation by **Lychee 0.24.2** over Git-owned Markdown;
+- exact private-overlay validation when the private repository is present.
+
+Betterleaks and Lychee remain the engines for domains they already solve. release-kit
+owns their versions, official release URLs, SHA-256 digests, platform selection and
+invocation. An adopting repository owns only `relkit.toml` and, where needed, a narrow
+`.betterleaks.toml`. It does not carry download snippets or another secret/link parser.
+
+## Distribution
+
+Until the package has a public release channel, the source repository builds a
+deterministic standard-library zipapp:
+
+```bash
+python tools/build_zipapp.py dist/relkit.pyz
+```
+
+Adopters track that projection at `.github/relkit.pyz`. The same file runs on Windows,
+Linux and macOS with Python 3.11 or newer, and reports its release-kit and engine
+versions with `--version`. Engines are cached below the guarded repository's ignored
+`.cache/release-kit/` directory after their official archives pass SHA-256 and version
+checks. Set `RELKIT_CACHE_DIR` to share a cache, or `RELKIT_BETTERLEAKS` /
+`RELKIT_LYCHEE` to point at pre-provisioned verified executables.
+
+Once release-kit has a public package or Git release, projects may replace the tracked
+projection with a digest-pinned download without changing their command or config.
+
+## Configuration
+
+`relkit.toml` lives in the guarded public repository:
 
 ```toml
 [exposure]
-# Names that must not appear, one per line in this file. Keep it out of the
-# repository's own history: a list of what must not be published cannot itself
-# be published. Absent, only the structural rules run - which is what a clone
-# should do.
 names_file = ".publication-names"
+private_paths = [".private", ".codex"]
+private_files = ["AGENTS.local.md", ".mcp.json"]
+private_suffixes = [".local.md"]
+required_ignores = [".private", ".codex", "AGENTS.local.md", ".mcp.json"]
+allowed_users = ["example-owner"]
+allowed_identities = [
+  "Example Maintainer <maintainer@example.invalid>",
+  "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+]
+forbid_png_metadata = true
+betterleaks_config = ".betterleaks.toml"
 
-# Paths the rules do not apply to: a test fixture that has to contain the very
-# thing a rule detects. Not a baseline, and not a place to put debt.
-exclude = ["tests/*"]
+# Deliberate fixtures where structural policy is not meaningful. This does not
+# suppress Betterleaks; its exclusions stay in .betterleaks.toml and must be narrow.
+exclude = ["tests/fixtures/*"]
 
-# What was already there when the gate was adopted. The gate fails on anything
-# new, and on an entry that stops matching, so this can only shrink.
+# Adoption debt. It can only shrink: a stale entry is itself a failure.
 [exposure.baseline]
-".someclient/settings.json" = ["home-directory", "escapes-repository"]
+"legacy/config.toml" = ["home-directory"]
+
+[overlay]
+private_root = "../example-private"
+manifest = "../example-private/install.conf.yaml"
 ```
 
-`exclude` and `baseline` answer different questions and must not be swapped. A
-baseline entry says *this is debt and it will go*; the gate makes it impossible to
-forget, because clearing the finding without clearing the record is a failure. An
-exclusion says *the rules were never meaningful here*, and nothing will ever make it
-go. Using an exclusion for debt hollows out the gate while it still reports success.
+The forbidden-name file is intentionally outside public history. If it is absent in a
+clean clone, declared-name checks are skipped while every structural and external
+engine still runs.
 
-Then run it from the repository's own gate, its pre-commit hook, and CI:
-
-```bash
-relkit exposure
-relkit exposure --strict   # also fails on the baseline, to check it has been cleared
-```
-
-Finding kinds are `home-directory`, `escapes-repository`, `forbidden-kind` and
-`declared-name`.
-
-The baseline exists because a gate that is red on the day it is adopted is a gate
-somebody turns off. Recording what is already there stops the bleeding immediately
-and leaves the debt visible; fixing a finding forces the record to be updated in the
-same change, because a record that no longer matches is itself a failure.
-
-## Overlay
-
-Some projects keep their private files in a second repository and link the few
-surfaces a tool insists on finding inside the public checkout, so that the public
-checkout can still be worked in normally. Creating those links is
-[dotbot](https://github.com/anishathalye/dotbot)'s job and stays there; this checks
-that they are still true, which is the half that is usually missing.
+`.betterleaks.toml` normally only extends the maintained defaults:
 
 ```toml
-[overlay]
-private_root = "../myproject-private"
-# Defaults to install.conf.yaml beside the private root, where dotbot looks.
-manifest = "../myproject-private/install.conf.yaml"
+title = "project secret scanning"
+betterleaksMinVersion = "1.8.1"
+
+[extend]
+useDefault = true
 ```
+
+Project allowlists belong there and should target one rule/path/value instead of
+disabling a directory.
+
+## Scopes
+
+Use the same command at each lifecycle point:
 
 ```bash
-relkit overlay
+# Worktree plus untracked/unignored publication candidates.
+python .github/relkit.pyz audit
+
+# Pre-commit: policy and Markdown read the Git index; Betterleaks scans staged changes.
+python .github/relkit.pyz audit --staged
+
+# Before a tag or first push: clean branch/tag history, current links and optional overlay.
+python .github/relkit.pyz audit --history --require-overlay
 ```
 
-Four failures, each of which looks like success until much later:
+CI runs `--history` without `--require-overlay`: a clean public clone does not contain
+the private repository. The public config still forbids and requires ignores for its
+private surfaces. The workstation pre-tag command adds the exact link/target/tracking
+oracle by requiring the overlay. History mode refuses a dirty worktree; use `--staged`
+while preparing a commit, then run `--history` against the committed release candidate.
+Current `HEAD`, local and remote branches, and tags are publication history;
+synthetic client checkpoint refs are deliberately outside that scope.
 
-- **missing** — `git clean` in the public checkout removes the links. The directory
-  is simply absent and the tool falls back to its defaults without saying so.
-- **not-a-link** — something wrote a copy where the link was, so there are now two of
-  the file and they begin to drift.
-- **not-ignored** — a surface was added to the manifest but not to the public ignore
-  rules, so the next `git add -A` commits what was meant to stay out.
-- **target-not-tracked** — the link was made but its target was never committed
-  privately, so it works here and is absent on the next machine.
+`--no-download` turns missing cached engines into an operational error, useful in
+sealed environments. `--strict` also fails on adoption baselines.
 
-Where an overlay is configured, `relkit exposure` reads the same manifest and treats
-every mounted surface as private. The mount list is written once; a second copy would
-be the next thing to disagree with the first.
+## Overlay contract
 
-The manifest reader understands dotbot's `target: source` form. It refuses anything
-else rather than skipping it, because a mount that is quietly not read is a mount
-that is quietly not verified.
+The Dotbot manifest is the single mount list. release-kit reads its `target: source`
+entries and verifies that every mount:
 
-## Notes
+- exists and is a symlink or Windows junction;
+- resolves to the exact manifest source, not merely somewhere under the private root;
+- is ignored and untracked by the public repository;
+- points at a path tracked by the private repository.
 
-```bash
-relkit notes v1.2.0                          # print the entry
-relkit notes v1.2.0 --output notes.md        # write it, for gh release create --notes-file
-```
+Dotbot still creates links. release-kit verifies them and supplies the release verdict.
+Repositories that currently use a copy/sync overlay can adopt the publication checks
+independently; migrating that ownership model is a separate change.
 
-It reads; it does not generate. Generating the entry from the commit log is a
-changelog tool's job and belongs before the commit. Re-rendering at publish time
-would publish the uncurated text and throw away the editing pass that makes a
-changelog worth reading, and it would let a release describe a version the
-repository never wrote down.
+## Other commands
 
-An entry is found by its `## [version]` heading, linked or not, and runs to the next
-heading. A tag and a heading may differ by a leading `v`.
+`relkit exposure` runs only the built-in policy ratchet. It remains for diagnosis and
+backward compatibility; release and CI gates should use `relkit audit`.
 
-## What this is not
+`relkit overlay` diagnoses only the configured link overlay.
 
-It is not anonymisation. A repository naming its own author, or its own sibling
-projects, is doing something ordinary, and hiding that buys nothing. The gate is for
-material that cannot travel: a path that resolves on exactly one machine and so is
-simply broken in anyone else's clone, and names a project has declared it cannot
-publish yet — an unreleased product, a client, an internal service. `declared-name`
-is opt-in and empty by default for that reason: only the adopting repository knows
-whether it has any such names, and most do not.
-
-## Design rules
-
-- Nothing here hardcodes one user's world: not a project it guards, not a service it
-  expects, not a path outside the repository it is pointed at. Everything specific is
-  configuration.
-- Every rule is an executable check. A rule written only in a checklist is not a
-  control; that is the failure this exists to answer.
-- False positives are the real enemy. A relative path that climbs and comes back
-  inside the repository is ordinary documentation, so paths are resolved rather than
-  matched, and only a result outside the root is reported.
-- No runtime dependencies. This runs inside other repositories' pre-commit hooks.
+`relkit notes v1.2.0 --output notes.md` extracts the human-curated changelog entry for
+a release. It does not regenerate release notes from commits.
 
 ## Development
 
 ```bash
-python -m unittest discover -s tests -p "test_*.py"
+PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
+python -m ruff check src tests tools
 ```

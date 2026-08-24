@@ -62,9 +62,7 @@ class HomeDirectoryTests(unittest.TestCase):
         text = "path: 'C:\\\\Users\\\\Player\\\\Documents'"
 
         self.assertIn(rules.HOME_DIRECTORY, rules.kinds_in_text(text))
-        self.assertNotIn(
-            rules.HOME_DIRECTORY, rules.kinds_in_text(text, allowed_users={"player"})
-        )
+        self.assertNotIn(rules.HOME_DIRECTORY, rules.kinds_in_text(text, allowed_users={"player"}))
 
 
 class EscapingPathTests(unittest.TestCase):
@@ -114,6 +112,14 @@ class EscapingPathTests(unittest.TestCase):
 
         self.assertIn(rules.HOME_DIRECTORY, found)
 
+    def test_release_kit_config_defers_overlay_paths_to_the_exact_verifier(self) -> None:
+        text = 'private_root = "../example-private"\n'
+
+        self.assertNotIn(
+            rules.ESCAPES_REPOSITORY,
+            rules.kinds_in_text(text, relative_path="relkit.toml"),
+        )
+
 
 class DeclaredNameTests(unittest.TestCase):
     def test_a_declared_name_is_a_finding(self) -> None:
@@ -136,8 +142,12 @@ class PathKindTests(unittest.TestCase):
         self.assertEqual(set(), rules.kinds_in_path("src/main.go"))
 
     def test_the_caller_adds_to_the_suffix_list(self) -> None:
-        self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path("a.zip", forbidden_suffixes=[".zip"]))
-        self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path("a.key", forbidden_suffixes=[".zip"]))
+        self.assertIn(
+            rules.FORBIDDEN_KIND, rules.kinds_in_path("a.zip", forbidden_suffixes=[".zip"])
+        )
+        self.assertIn(
+            rules.FORBIDDEN_KIND, rules.kinds_in_path("a.key", forbidden_suffixes=[".zip"])
+        )
 
 
 if __name__ == "__main__":
