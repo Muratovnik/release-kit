@@ -6,21 +6,23 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import engines
+from . import engines, owner, protection
 from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
 
 
-def _mounted_private_paths(settings: config_module.Config, root: Path) -> list[str]:
+def _mounted_private_paths(
+    settings: config_module.Config,
+    root: Path,
+    policy: owner.OwnerPolicy | None,
+) -> list[str]:
     private_paths = list(settings.exposure.private_paths)
-    manifest_path = settings.overlay.manifest_path(root)
-    private_root = settings.overlay.private_path(root)
-    if manifest_path is None or private_root is None or not manifest_path.is_file():
+    if policy is None or not policy.manifest_path.is_file():
         return private_paths
-    mounts = manifest_module.read(manifest_path)
+    mounts = manifest_module.read(policy.manifest_path)
     for mount in mounts:
-        link = mount.link_path(private_root)
+        link = mount.link_path(policy.root)
         try:
             derived = link.absolute().relative_to(root)
         except ValueError:
@@ -35,17 +37,23 @@ def run(
     history: bool,
     staged: bool,
     strict: bool,
+    owner_mode: bool,
     require_overlay: bool,
     allow_download: bool,
 ) -> int:
     try:
         settings = config_module.load(root)
-        private_paths = _mounted_private_paths(settings, root)
-    except (config_module.ConfigError, manifest_module.ManifestError) as error:
+        policy = owner.discover(root) if owner_mode or require_overlay else None
+        names = policy.values() if policy is not None else ()
+        private_paths = _mounted_private_paths(settings, root, policy)
+    except (
+        config_module.ConfigError,
+        manifest_module.ManifestError,
+        owner.OwnerPolicyError,
+    ) as error:
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
-    names = settings.exposure.names(root)
     report = audit.scan(
         root,
         names=names,
@@ -62,6 +70,8 @@ def run(
         staged=staged,
     )
     failures = list(report.failures)
+    if policy is not None and (guard_problem := protection.problem(root)):
+        failures.append(guard_problem)
     if history:
         try:
             changes = audit.worktree_changes(root)
@@ -89,14 +99,12 @@ def run(
             )
         )
 
-    overlay_root = settings.overlay.private_path(root)
-    overlay_manifest = settings.overlay.manifest_path(root)
-    if overlay_root is not None and overlay_manifest is not None:
-        if overlay_root.is_dir() and overlay_manifest.is_file():
+    if policy is not None and policy.manifest_path.is_file():
+        if policy.root.is_dir():
             try:
-                mounts = manifest_module.read(overlay_manifest)
+                mounts = manifest_module.read(policy.manifest_path)
                 problems, skipped = verify_module.check(
-                    mounts, public_root=root, private_root=overlay_root
+                    mounts, public_root=root, private_root=policy.root
                 )
             except manifest_module.ManifestError as error:
                 print(f"relkit audit: {error}", file=sys.stderr)
@@ -105,10 +113,8 @@ def run(
             failures.extend(
                 f"overlay mount not owned by this repository: {item}" for item in skipped
             )
-        elif require_overlay:
-            failures.append(f"private overlay is unavailable: {overlay_root}")
     elif require_overlay:
-        failures.append("[overlay] is not configured")
+        failures.append(f"private overlay manifest is unavailable: {policy.manifest_path}")
 
     for item in report.unreadable:
         failures.append(f"could not read {item}")
@@ -142,5 +148,8 @@ def run(
         for failure in sorted(dict.fromkeys(failures)):
             print(f"  {failure}", file=sys.stderr)
         return 1
-    print("relkit audit: passed" + (" (including history)" if history else ""))
+    suffix = " (including history)" if history else ""
+    if policy is not None:
+        suffix += " (owner policy enforced)"
+    print("relkit audit: passed" + suffix)
     return 0

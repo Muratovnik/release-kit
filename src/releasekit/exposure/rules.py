@@ -17,7 +17,7 @@ from pathlib import PurePosixPath
 HOME_DIRECTORY = "home-directory"
 ESCAPES_REPOSITORY = "escapes-repository"
 FORBIDDEN_KIND = "forbidden-kind"
-DECLARED_NAME = "declared-name"
+DECLARED_NAME = "private-value"
 PRIVATE_PATH = "private-path"
 NOT_IGNORED = "not-ignored"
 
@@ -137,7 +137,8 @@ def kinds_in_text(
             _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text)
         ):
             kinds.add(ESCAPES_REPOSITORY)
-    if any(name in text for name in names):
+    folded = text.casefold()
+    if any(name.casefold() in folded for name in names):
         kinds.add(DECLARED_NAME)
     return kinds
 
@@ -145,6 +146,7 @@ def kinds_in_text(
 def kinds_in_path(
     relative: str,
     *,
+    names: Iterable[str] = (),
     forbidden_suffixes: Iterable[str] = (),
     private_paths: Iterable[str] = (),
     private_files: Iterable[str] = (),
@@ -160,6 +162,9 @@ def kinds_in_path(
     normalized = PurePosixPath(relative).as_posix()
     suffix = PurePosixPath(normalized).suffix.lower()
     kinds: set[str] = set()
+    folded = relative.casefold()
+    if any(name.casefold() in folded for name in names):
+        kinds.add(DECLARED_NAME)
     suffixes = DEFAULT_FORBIDDEN_SUFFIXES | {item.lower() for item in forbidden_suffixes}
     if suffix in suffixes:
         kinds.add(FORBIDDEN_KIND)

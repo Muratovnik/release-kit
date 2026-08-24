@@ -15,12 +15,11 @@ class LoadTests(unittest.TestCase):
             with self.assertRaises(config.ConfigError):
                 config.load(root)
 
-    def test_it_reads_the_baseline_and_the_names_file(self) -> None:
+    def test_it_reads_public_policy_without_a_private_location(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             (root / config.CONFIG_NAME).write_text(
-                '[exposure]\nnames_file = "private-names"\n'
-                'betterleaks_config = "security.toml"\n'
+                '[exposure]\nbetterleaks_config = "security.toml"\n'
                 'allowed_identities = ["Example Maintainer <owner@example.invalid>"]\n'
                 "forbid_png_metadata = true\n\n"
                 '[exposure.baseline]\n"a/b.json" = ["home-directory"]\n',
@@ -28,7 +27,6 @@ class LoadTests(unittest.TestCase):
             )
             settings = config.load(root)
 
-        self.assertEqual("private-names", settings.exposure.names_file)
         self.assertEqual("security.toml", settings.exposure.betterleaks_config)
         self.assertEqual(
             ["Example Maintainer <owner@example.invalid>"],
@@ -82,22 +80,24 @@ class LoadTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "check_secrets"):
                 config.load(root)
 
-
-class NamesTests(unittest.TestCase):
-    def test_comments_and_blank_lines_are_not_names(self) -> None:
+    def test_a_public_names_file_location_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
-            (root / ".publication-names").write_text(
-                "# a comment\n\n  Someservice  \nOther\n", encoding="utf-8"
+            (root / config.CONFIG_NAME).write_text(
+                '[exposure]\nnames_file = "../private/.publication-private-values"\n',
+                encoding="utf-8",
             )
-            names = config.ExposureConfig().names(root)
+            with self.assertRaisesRegex(config.ConfigError, "names_file"):
+                config.load(root)
 
-        self.assertEqual(("Someservice", "Other"), names)
-
-    def test_an_absent_file_declares_nothing(self) -> None:
-        """A clone is expected not to carry it; the structural rules still run."""
+    def test_a_public_overlay_location_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as name:
-            self.assertEqual((), config.ExposureConfig().names(Path(name)))
+            root = Path(name)
+            (root / config.CONFIG_NAME).write_text(
+                '[overlay]\nprivate_root = "../private"\n', encoding="utf-8"
+            )
+            with self.assertRaisesRegex(config.ConfigError, "overlay"):
+                config.load(root)
 
 
 if __name__ == "__main__":

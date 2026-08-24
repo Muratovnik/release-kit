@@ -195,6 +195,7 @@ def scan(
             continue
         found = rules.kinds_in_path(
             relative,
+            names=names,
             forbidden_suffixes=forbidden_suffixes,
             private_paths=private_paths,
             private_files=private_files,
@@ -262,6 +263,7 @@ def history_failures(
         for kind in sorted(
             rules.kinds_in_path(
                 relative,
+                names=names,
                 forbidden_suffixes=forbidden_suffixes,
                 private_paths=private_paths,
                 private_files=private_files,
@@ -281,6 +283,19 @@ def history_failures(
                 if not separator or author not in allowed or committer not in allowed:
                     failures.append(f"history identity is not allowed: {record}")
 
+    messages = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%B%x1e"])
+    if messages.returncode != 0:
+        failures.append(messages.stderr.strip() or "Git history message inventory failed")
+    else:
+        for record in messages.stdout.split("\x1e"):
+            commit, separator, message = record.strip().partition("\x1f")
+            if not separator:
+                continue
+            for kind in sorted(
+                rules.kinds_in_text(message, names=names, allowed_users=allowed_users)
+            ):
+                failures.append(f"history {commit[:12]}: commit-message: {kind}")
+
     revisions = _git(root, ["rev-list", *HISTORY_REFS])
     if revisions.returncode != 0:
         failures.append(revisions.stderr.strip() or "Git revision inventory failed")
@@ -292,7 +307,7 @@ def history_failures(
     seen: set[str] = set()
     for offset in range(0, len(commits), 24):
         batch = commits[offset : offset + 24]
-        result = _git(root, ["grep", "-I", "-n", "-E", expression, *batch, "--"])
+        result = _git(root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"])
         if result.returncode not in {0, 1}:
             failures.append(result.stderr.strip() or "Git history content scan failed")
             break

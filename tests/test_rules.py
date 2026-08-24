@@ -121,7 +121,7 @@ class EscapingPathTests(unittest.TestCase):
         )
 
 
-class DeclaredNameTests(unittest.TestCase):
+class PrivateValueTests(unittest.TestCase):
     def test_a_declared_name_is_a_finding(self) -> None:
         found = rules.kinds_in_text("routed through Someservice", names=("Someservice",))
 

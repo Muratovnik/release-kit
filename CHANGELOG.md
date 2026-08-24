@@ -1,6 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [0.3.0] - 2026-08-24
+
+### Added
+
+- Mandatory owner mode that discovers private values from the sibling private
+  repository and refuses a missing or empty policy.
+- A managed pre-push guard installed and verified by `relkit protect`.
+- Private-value checks for Git paths and commit messages, case-insensitively.
+
+### Changed
+
+- Private-root, manifest, and private-value locations are no longer valid public
+  `relkit.toml` configuration. The conventional sibling or `RELKIT_PRIVATE_ROOT`
+  owns those facts.
+
+## [0.2.1] - 2026-08-24
 
 ### Added
 
@@ -24,5 +39,3 @@ What a version protects: the `relkit` command line, its exit codes, the finding 
 it reports, and the `relkit.toml` schema.
 
 This file starts at the first published version.
-
-## [Unreleased]

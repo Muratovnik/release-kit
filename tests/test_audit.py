@@ -23,13 +23,13 @@ def _repository(files: dict[str, str]) -> tempfile.TemporaryDirectory[str]:
     return handle
 
 
-def _commit(root: Path) -> None:
+def _commit(root: Path, message: str = "test: fixture") -> None:
     for key, value in (
         ("user.name", "Example Writer"),
         ("user.email", "writer@example.invalid"),
     ):
         subprocess.run(["git", "config", key, value], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", "test: fixture"], cwd=root, check=True)
+    subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True)
 
 
 class ScopeTests(unittest.TestCase):
@@ -107,14 +107,31 @@ class RatchetTests(unittest.TestCase):
         self.assertTrue(settled.ok, settled.failures)
 
 
-class DeclaredNameTests(unittest.TestCase):
+class PrivateValueTests(unittest.TestCase):
     def test_names_come_from_the_caller(self) -> None:
         with _repository({"README.md": "built on Someservice\n"}) as name:
             without = audit.scan(Path(name))
             with_names = audit.scan(Path(name), names=("Someservice",))
 
         self.assertTrue(without.ok)
-        self.assertEqual(["README.md: declared-name"], with_names.failures)
+        self.assertEqual(["README.md: private-value"], with_names.failures)
+
+    def test_names_are_case_insensitive_and_cover_paths(self) -> None:
+        with _repository({"internalservice/README.md": "clean\n"}) as name:
+            report = audit.scan(Path(name), names=("InternalService",))
+
+        self.assertEqual(["internalservice/README.md: private-value"], report.failures)
+
+    def test_provider_contract_is_public_but_owner_data_is_private(self) -> None:
+        with _repository(
+            {
+                "provider.md": "AgentMemory supplies opaque memory references.\n",
+                "example.md": "namespace = owner/private-workflow\n",
+            }
+        ) as name:
+            report = audit.scan(Path(name), names=("owner/private-workflow",))
+
+        self.assertEqual(["example.md: private-value"], report.failures)
 
     def test_a_clone_without_the_list_does_not_fail_on_records_it_cannot_check(self) -> None:
         """A checkout that has no name list runs the structural rules and stays green."""
@@ -180,6 +197,14 @@ class PathTests(unittest.TestCase):
 
 
 class HistoryTests(unittest.TestCase):
+    def test_history_checks_commit_messages_for_declared_names(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root, "docs: explain InternalService workflow")
+            failures = audit.history_failures(root, names=("InternalService",))
+
+        self.assertTrue(any("commit-message: private-value" in item for item in failures))
+
     def test_history_scope_ignores_synthetic_client_checkpoint_refs(self) -> None:
         with _repository({"kept.md": "clean\n"}) as name:
             root = Path(name)

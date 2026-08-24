@@ -15,7 +15,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import __version__, publication, toolchain
+from . import __version__, owner, protection, publication, toolchain
 from . import config as config_module
 from .exposure import audit
 from .overlay import manifest as manifest_module
@@ -30,33 +30,26 @@ def _exposure(arguments: argparse.Namespace) -> int:
     except config_module.ConfigError as error:
         print(f"relkit: {error}", file=sys.stderr)
         return 2
-    # A mounted surface is a private surface, so the two lists are the same list. Where
-    # the project declares an overlay, the manifest supplies it and nobody types it
-    # twice - a second copy would be the next thing to disagree.
     private_paths = list(settings.exposure.private_paths)
-    manifest_path = settings.overlay.manifest_path(root)
-    if manifest_path is not None:
+    policy = None
+    if arguments.owner:
         try:
-            mounts = manifest_module.read(manifest_path)
-        except manifest_module.ManifestError as error:
-            # Not a warning: an unreadable manifest means the mounted surfaces are
-            # silently unguarded, which is the shape of failure this exists to end.
+            policy = owner.discover(root)
+            names = policy.values()
+            mounts = (
+                manifest_module.read(policy.manifest_path) if policy.manifest_path.is_file() else ()
+            )
+        except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
             print(f"relkit exposure: {error}", file=sys.stderr)
             return 2
-        private_root = settings.overlay.private_path(root)
         for mount in mounts:
             try:
-                derived = mount.link_path(private_root).resolve().relative_to(root)
+                derived = mount.link_path(policy.root).resolve().relative_to(root)
             except (ValueError, OSError):
                 continue
             private_paths.append(derived.as_posix())
-
-    names = settings.exposure.names(root)
-    if not names:
-        print(
-            f"relkit exposure: no names declared in {settings.exposure.names_file}; "
-            "structural rules only"
-        )
+    else:
+        names = ()
     report = audit.scan(
         root,
         names=names,
@@ -95,6 +88,7 @@ def _audit(arguments: argparse.Namespace) -> int:
         history=arguments.history,
         staged=arguments.staged,
         strict=arguments.strict,
+        owner_mode=arguments.owner,
         require_overlay=arguments.require_overlay,
         allow_download=not arguments.no_download,
     )
@@ -103,21 +97,12 @@ def _audit(arguments: argparse.Namespace) -> int:
 def _overlay(arguments: argparse.Namespace) -> int:
     root = Path(arguments.root).resolve()
     try:
-        settings = config_module.load(root, required=False)
-    except config_module.ConfigError as error:
-        print(f"relkit: {error}", file=sys.stderr)
-        return 2
-    private_root = settings.overlay.private_path(root)
-    manifest_path = settings.overlay.manifest_path(root)
-    if private_root is None or manifest_path is None:
-        print("relkit overlay: no [overlay] private_root configured; nothing to check")
-        return 0
-    try:
-        mounts = manifest_module.read(manifest_path)
-    except manifest_module.ManifestError as error:
+        policy = owner.discover(root)
+        mounts = manifest_module.read(policy.manifest_path)
+    except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
         print(f"relkit overlay: {error}", file=sys.stderr)
         return 2
-    problems, skipped = verify_module.check(mounts, public_root=root, private_root=private_root)
+    problems, skipped = verify_module.check(mounts, public_root=root, private_root=policy.root)
     for name in skipped:
         print(f"relkit overlay: {name} links outside this repository; not checked")
     if problems:
@@ -126,6 +111,23 @@ def _overlay(arguments: argparse.Namespace) -> int:
             print(f"  {problem}", file=sys.stderr)
         return 1
     print(f"relkit overlay: {len(mounts) - len(skipped)} mount(s) verified")
+    return 0
+
+
+def _protect(arguments: argparse.Namespace) -> int:
+    root = Path(arguments.root).resolve()
+    if arguments.action == "check":
+        if problem := protection.problem(root):
+            print(f"relkit protect: {problem}", file=sys.stderr)
+            return 1
+        print("relkit protect: owner pre-push guard is installed")
+        return 0
+    try:
+        path = protection.install(root)
+    except protection.ProtectionError as error:
+        print(f"relkit protect: {error}", file=sys.stderr)
+        return 2
+    print(f"relkit protect: installed {path}")
     return 0
 
 
@@ -177,9 +179,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--strict", action="store_true", help="Fail on every baselined policy finding"
     )
     publication_audit.add_argument(
+        "--owner",
+        action="store_true",
+        help="Require the private sibling policy and the managed pre-push guard",
+    )
+    publication_audit.add_argument(
         "--require-overlay",
         action="store_true",
-        help="Fail when the configured private overlay is unavailable",
+        help="Also require and verify the private sibling's mount manifest",
     )
     publication_audit.add_argument(
         "--no-download",
@@ -192,6 +199,11 @@ def build_parser() -> argparse.ArgumentParser:
         "exposure", help="Fail when tracked files carry material that must not be published."
     )
     exposure.add_argument("--root", default=".", help="Repository to scan (default: .)")
+    exposure.add_argument(
+        "--owner",
+        action="store_true",
+        help="Load private values from the sibling owner policy",
+    )
     exposure.add_argument(
         "--strict",
         action="store_true",
@@ -213,6 +225,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     overlay.add_argument("--root", default=".", help="Public repository to check (default: .)")
     overlay.set_defaults(handler=_overlay)
+
+    protect = subcommands.add_parser(
+        "protect", help="Install or verify the owner-side pre-push publication guard."
+    )
+    protect.add_argument("action", choices=("install", "check"))
+    protect.add_argument("--root", default=".", help="Repository to protect (default: .)")
+    protect.set_defaults(handler=_protect)
     return parser
 
 

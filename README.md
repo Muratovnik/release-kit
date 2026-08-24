@@ -12,7 +12,8 @@ The command owns the complete verdict:
   surfaces, optional PNG metadata and allowed Git identities;
 - secret detection by **Betterleaks 1.8.1** over the Git index or full history;
 - offline local-link validation by **Lychee 0.24.2** over Git-owned Markdown;
-- exact private-overlay validation when the private repository is present.
+- owner-only forbidden-name checks and exact private-overlay validation from an
+  automatically discovered sibling private repository.
 
 Betterleaks and Lychee remain the engines for domains they already solve. release-kit
 owns their versions, official release URLs, SHA-256 digests, platform selection and
@@ -44,7 +45,6 @@ projection with a digest-pinned download without changing their command or confi
 
 ```toml
 [exposure]
-names_file = ".publication-names"
 private_paths = [".private", ".codex"]
 private_files = ["AGENTS.local.md", ".mcp.json"]
 private_suffixes = [".local.md"]
@@ -65,14 +65,16 @@ exclude = ["tests/fixtures/*"]
 [exposure.baseline]
 "legacy/config.toml" = ["home-directory"]
 
-[overlay]
-private_root = "../example-private"
-manifest = "../example-private/install.conf.yaml"
 ```
 
-The forbidden-name file is intentionally outside public history. If it is absent in a
-clean clone, declared-name checks are skipped while every structural and external
-engine still runs.
+Private topology and forbidden names are not valid public configuration. Owner mode
+discovers `../<checkout-name>-private` by convention, or the directory named by
+`RELKIT_PRIVATE_ROOT`. That private root owns `.publication-private-values` and, when it uses a
+link overlay, `install.conf.yaml`. The file contains exact private values: workspace
+names, provider namespaces, record identifiers, and path fragments. A provider's public
+name does not belong there merely because the owner's configuration uses that provider.
+A missing or empty value file is an error in owner
+mode rather than a structural-only green result.
 
 `.betterleaks.toml` normally only extends the maintained defaults:
 
@@ -99,13 +101,18 @@ python .github/relkit.pyz audit
 python .github/relkit.pyz audit --staged
 
 # Before a tag or first push: clean branch/tag history, current links and optional overlay.
-python .github/relkit.pyz audit --history --require-overlay
+python .github/relkit.pyz protect install
+python .github/relkit.pyz audit --history --owner
+
+# A project with mounted private files additionally requires their exact manifest links.
+python .github/relkit.pyz audit --history --owner --require-overlay
 ```
 
-CI runs `--history` without `--require-overlay`: a clean public clone does not contain
-the private repository. The public config still forbids and requires ignores for its
-private surfaces. The workstation pre-tag command adds the exact link/target/tracking
-oracle by requiring the overlay. History mode refuses a dirty worktree; use `--staged`
+CI runs `--history` without `--owner`: a clean public clone cannot know private names.
+The public config still forbids and requires ignores for private surfaces. On the
+owner's machine, `protect install` installs a managed pre-push hook that runs the
+history gate with the mandatory private-value policy. `--require-overlay` adds the exact
+link/target/tracking oracle. History mode refuses a dirty worktree; use `--staged`
 while preparing a commit, then run `--history` against the committed release candidate.
 Current `HEAD`, local and remote branches, and tags are publication history;
 synthetic client checkpoint refs are deliberately outside that scope.
@@ -115,7 +122,7 @@ sealed environments. `--strict` also fails on adoption baselines.
 
 ## Overlay contract
 
-The Dotbot manifest is the single mount list. release-kit reads its `target: source`
+The private sibling's Dotbot manifest is the single mount list. release-kit reads its `target: source`
 entries and verifies that every mount:
 
 - exists and is a symlink or Windows junction;

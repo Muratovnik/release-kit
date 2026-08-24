@@ -30,6 +30,7 @@ class HistoryScopeTests(unittest.TestCase):
                     history=True,
                     staged=False,
                     strict=False,
+                    owner_mode=False,
                     require_overlay=False,
                     allow_download=False,
                 )

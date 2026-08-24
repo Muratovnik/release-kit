@@ -112,7 +112,7 @@ class KindNameTests(unittest.TestCase):
                 "home-directory",
                 "escapes-repository",
                 "forbidden-kind",
-                "declared-name",
+                "private-value",
                 "private-path",
                 "not-ignored",
                 "png-metadata",

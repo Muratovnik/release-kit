@@ -1,10 +1,4 @@
-"""The project's own configuration. The tool knows nothing until this is read.
-
-Everything specific to a repository - which names must not appear, what is already
-known to be there, where the version lives - is stated by that repository in
-`relkit.toml`. Nothing in this package names a project, a person, a board, a service
-or a path outside the repository it is pointed at.
-"""
+"""Public repository policy, containing no private locations or forbidden names."""
 
 from __future__ import annotations
 
@@ -15,7 +9,6 @@ from pathlib import Path
 CONFIG_NAME = "relkit.toml"
 EXPOSURE_KEYS = frozenset(
     {
-        "names_file",
         "baseline",
         "exclude",
         "private_paths",
@@ -32,7 +25,6 @@ EXPOSURE_KEYS = frozenset(
         "include_candidates",
     }
 )
-OVERLAY_KEYS = frozenset({"private_root", "manifest"})
 
 
 class ConfigError(Exception):
@@ -62,10 +54,6 @@ def _boolean(section: dict[str, object], key: str, default: bool) -> bool:
 
 @dataclass(frozen=True)
 class ExposureConfig:
-    # The file listing names that must not appear. It is deliberately a path rather
-    # than a list: a list of what must not be published cannot itself be published,
-    # so the file belongs outside the guarded repository's history.
-    names_file: str = ".publication-names"
     baseline: dict[str, list[str]] = field(default_factory=dict)
     # Paths the rules do not apply to, as glob patterns. This is not the baseline and
     # must not be used as one: the baseline records debt that has to shrink, while an
@@ -100,44 +88,11 @@ class ExposureConfig:
     # A file that is neither tracked nor ignored is not safe, only uncommitted.
     include_candidates: bool = True
 
-    def names(self, root: Path) -> tuple[str, ...]:
-        """Declared names, or nothing when the file is absent - which a clone expects."""
-        try:
-            lines = (root / self.names_file).read_text(encoding="utf-8").splitlines()
-        except OSError:
-            return ()
-        return tuple(
-            stripped
-            for line in lines
-            if (stripped := line.strip()) and not stripped.startswith("#")
-        )
-
-
-@dataclass(frozen=True)
-class OverlayConfig:
-    """Where the private half lives. Empty private_root means the project has none."""
-
-    private_root: str = ""
-    # Defaults to install.conf.yaml beside the private root, which is where dotbot
-    # looks when it is run with that root as its base directory.
-    manifest: str = ""
-
-    def manifest_path(self, root: Path) -> Path | None:
-        if not self.private_root:
-            return None
-        if self.manifest:
-            return (root / self.manifest).resolve()
-        return (root / self.private_root / "install.conf.yaml").resolve()
-
-    def private_path(self, root: Path) -> Path | None:
-        return (root / self.private_root).resolve() if self.private_root else None
-
 
 @dataclass(frozen=True)
 class Config:
     root: Path
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
-    overlay: OverlayConfig = field(default_factory=OverlayConfig)
 
 
 def load(root: Path, *, required: bool = True) -> Config:
@@ -151,7 +106,7 @@ def load(root: Path, *, required: bool = True) -> Config:
     except (OSError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"{CONFIG_NAME} could not be read: {error}") from error
 
-    unknown_top_level = sorted(set(raw) - {"exposure", "overlay"})
+    unknown_top_level = sorted(set(raw) - {"exposure"})
     if unknown_top_level:
         raise ConfigError(f"unknown top-level key(s): {', '.join(unknown_top_level)}")
     section = raw.get("exposure", {})
@@ -160,12 +115,6 @@ def load(root: Path, *, required: bool = True) -> Config:
     unknown_exposure = sorted(set(section) - EXPOSURE_KEYS)
     if unknown_exposure:
         raise ConfigError(f"unknown [exposure] key(s): {', '.join(unknown_exposure)}")
-    overlay_section = raw.get("overlay", {})
-    if not isinstance(overlay_section, dict):
-        raise ConfigError("[overlay] must be a table")
-    unknown_overlay = sorted(set(overlay_section) - OVERLAY_KEYS)
-    if unknown_overlay:
-        raise ConfigError(f"unknown [overlay] key(s): {', '.join(unknown_overlay)}")
     baseline = section.get("baseline", {})
     if not isinstance(baseline, dict) or not all(
         isinstance(key, str)
@@ -179,7 +128,6 @@ def load(root: Path, *, required: bool = True) -> Config:
     return Config(
         root=root,
         exposure=ExposureConfig(
-            names_file=_string(section, "names_file", ExposureConfig.names_file),
             baseline={key: list(value) for key, value in baseline.items()},
             exclude=_strings(section, "exclude"),
             private_paths=_strings(section, "private_paths"),
@@ -194,9 +142,5 @@ def load(root: Path, *, required: bool = True) -> Config:
             allowed_identities=_strings(section, "allowed_identities"),
             forbid_png_metadata=_boolean(section, "forbid_png_metadata", False),
             include_candidates=_boolean(section, "include_candidates", True),
-        ),
-        overlay=OverlayConfig(
-            private_root=_string(overlay_section, "private_root", ""),
-            manifest=_string(overlay_section, "manifest", ""),
         ),
     )
