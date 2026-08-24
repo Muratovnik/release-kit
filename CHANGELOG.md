@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.0] - 2026-08-24
+
+### Added
+
+- Typed private owner policy for owner workflows and deterministic personal-data or
+  workstation-observation patterns.
+- Opt-in checks for internal planning markers, machine attribution, and observations
+  derived from an owner's workstation across files, commit messages, and history.
+- Public product-provider surface contracts and provenance declarations for fixtures
+  and screenshots.
+- Bounded inspection of ZIP, WHL, JAR, and PYZ contents in the current tree and
+  reachable history.
+
+### Changed
+
+- Owner policy files are unconditionally private publication surfaces.
+- Semantic findings now carry non-sensitive explanations while preserving stable
+  finding kinds for baselines.
+
 ## [0.3.2] - 2026-08-24
 
 ### Fixed

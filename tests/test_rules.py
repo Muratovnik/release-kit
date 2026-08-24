@@ -134,6 +134,70 @@ class PrivateValueTests(unittest.TestCase):
         self.assertNotIn(rules.DECLARED_NAME, found)
 
 
+class SemanticPolicyTests(unittest.TestCase):
+    def test_an_owner_workflow_is_distinct_from_a_product_provider(self) -> None:
+        found = rules.kinds_in_text(
+            "Someservice runs the maintainer workflow",
+            owner_workflows=("Someservice",),
+        )
+
+        self.assertIn(rules.OWNER_WORKFLOW, found)
+
+    def test_an_owner_pattern_can_classify_personal_data_without_shipping_it(self) -> None:
+        pattern = rules.PrivatePattern(
+            name="opaque-record",
+            kind=rules.PERSONAL_DATA,
+            expression=r"\brec_[0-9]{4}\b",
+        )
+
+        found = rules.kinds_in_text("record rec_1234", private_patterns=(pattern,))
+
+        self.assertIn(rules.PERSONAL_DATA, found)
+
+    def test_internal_planning_markers_are_structural(self) -> None:
+        examples = ("card: 123\n", "fixed by card #123", "<!-- kb:plan-anchor -->")
+
+        for text in examples:
+            with self.subTest(text=text):
+                found = rules.kinds_in_text(text, forbid_internal_planning=True)
+                self.assertIn(rules.INTERNAL_PLANNING, found)
+
+    def test_ai_attribution_targets_machine_trailers_not_human_coauthors(self) -> None:
+        machine = "Co-" + "Authored-By: " + "Clau" + "de <bot@example.invalid>"
+        human = "Co-Authored-By: Example Writer <writer@example.invalid>"
+
+        self.assertIn(
+            rules.AI_ATTRIBUTION,
+            rules.kinds_in_text(machine, forbid_ai_attribution=True),
+        )
+        self.assertNotIn(
+            rules.AI_ATTRIBUTION,
+            rules.kinds_in_text(human, forbid_ai_attribution=True),
+        )
+
+    def test_a_real_installation_observation_is_detected_only_when_enabled(self) -> None:
+        text = "The real installation has 42 readable fixture folders."
+
+        self.assertNotIn(rules.MACHINE_OBSERVATION, rules.kinds_in_text(text))
+        self.assertIn(
+            rules.MACHINE_OBSERVATION,
+            rules.kinds_in_text(text, forbid_machine_observations=True),
+        )
+
+    def test_a_product_provider_is_limited_to_declared_surfaces(self) -> None:
+        providers = {"Someservice": ("src/*", "docs/*")}
+
+        allowed = rules.kinds_in_text(
+            "Someservice supplies records", relative_path="docs/provider.md", providers=providers
+        )
+        denied = rules.kinds_in_text(
+            "Someservice supplies records", relative_path="AGENTS.md", providers=providers
+        )
+
+        self.assertNotIn(rules.PROVIDER_SURFACE, allowed)
+        self.assertIn(rules.PROVIDER_SURFACE, denied)
+
+
 class PathKindTests(unittest.TestCase):
     def test_a_forbidden_extension_is_a_finding(self) -> None:
         self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path("state/store.sqlite3"))

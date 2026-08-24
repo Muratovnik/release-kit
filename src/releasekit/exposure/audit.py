@@ -14,10 +14,13 @@ merely not committed yet.
 
 from __future__ import annotations
 
+import io
+import posixpath
 import re
 import struct
 import subprocess
-from collections.abc import Sequence
+import zipfile
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -26,6 +29,15 @@ from . import rules
 
 PNG_METADATA = "png-metadata"
 PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
+PROVENANCE_MISSING = "provenance-missing"
+PROVENANCE_CONFLICT = "provenance-conflict"
+MACHINE_DERIVED = "machine-derived"
+ARCHIVE_PATH = "archive-path"
+ARCHIVE_LIMIT = "archive-limit"
+ARCHIVE_SUFFIXES = frozenset({".jar", ".pyz", ".whl", ".zip"})
+MAX_ARCHIVE_ENTRIES = 10_000
+MAX_ARCHIVE_ENTRY_SIZE = 16 * 1024 * 1024
+MAX_ARCHIVE_TOTAL_SIZE = 256 * 1024 * 1024
 HISTORY_REFS = ("HEAD", "--branches", "--remotes", "--tags")
 
 
@@ -66,22 +78,53 @@ def _batch_blobs(root: Path, object_ids: Sequence[str]) -> list[tuple[str, bytes
     return answer
 
 
-def _wrapped_history_failures(
+def _blob_history_failures(
     root: Path,
     *,
     names: Sequence[str],
+    owner_workflows: Sequence[str],
+    private_patterns: Sequence[rules.PrivatePattern],
+    forbidden_suffixes: Sequence[str],
+    private_paths: Sequence[str],
+    private_files: Sequence[str],
+    private_suffixes: Sequence[str],
+    allowed_users: Sequence[str],
+    forbid_ai_attribution: bool,
+    forbid_internal_planning: bool,
+    forbid_machine_observations: bool,
+    providers: dict[str, Sequence[str]],
+    inspect_archives: bool,
     exclude: Sequence[str],
 ) -> list[str]:
-    if not any(len(name.split()) > 1 for name in names):
+    semantic_scan = bool(
+        private_patterns
+        or forbid_ai_attribution
+        or forbid_internal_planning
+        or forbid_machine_observations
+    )
+    wrapped_names = tuple(name for name in names if len(name.split()) > 1)
+    wrapped_workflows = tuple(name for name in owner_workflows if len(name.split()) > 1)
+    if not semantic_scan and not wrapped_names and not wrapped_workflows and not inspect_archives:
         return []
     inventory = _git(root, ["rev-list", "--objects", *HISTORY_REFS])
     if inventory.returncode != 0:
         return [inventory.stderr.strip() or "Git history object inventory failed"]
-    paths: dict[str, str] = {}
+    paths: dict[str, set[str]] = {}
     for record in inventory.stdout.splitlines():
         object_id, separator, relative = record.partition(" ")
-        if separator and not any(fnmatch(relative, pattern) for pattern in exclude):
-            paths.setdefault(object_id, relative)
+        if (
+            separator
+            and not any(fnmatch(relative, pattern) for pattern in exclude)
+            and (
+                semantic_scan
+                or wrapped_names
+                or wrapped_workflows
+                or Path(relative).suffix.lower() in ARCHIVE_SUFFIXES
+            )
+        ):
+            paths.setdefault(object_id, set()).add(relative)
+    if not paths:
+        return []
     checks = _git(
         root,
         ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
@@ -95,19 +138,68 @@ def _wrapped_history_failures(
         if record.endswith(" blob")
     ]
     failures: list[str] = []
-    try:
-        blobs = _batch_blobs(root, blob_ids)
-    except (RuntimeError, ValueError) as error:
-        return [str(error)]
-    for object_id, payload in blobs:
+    semantic_kinds = {
+        rules.OWNER_WORKFLOW,
+        rules.PERSONAL_DATA,
+        rules.INTERNAL_PLANNING,
+        rules.AI_ATTRIBUTION,
+        rules.MACHINE_OBSERVATION,
+        rules.PROVIDER_SURFACE,
+    }
+    for offset in range(0, len(blob_ids), 128):
         try:
-            text = payload.decode("utf-8")
-        except UnicodeDecodeError:
-            continue
-        if rules.contains_wrapped_declared_name(text, names):
-            failures.append(
-                f"history blob {object_id[:12]}:{paths[object_id]}: {rules.DECLARED_NAME}"
-            )
+            blobs = _batch_blobs(root, blob_ids[offset : offset + 128])
+        except (RuntimeError, ValueError) as error:
+            return [str(error)]
+        for object_id, payload in blobs:
+            for relative in sorted(paths[object_id]):
+                details: dict[str, str] = {}
+                if semantic_scan or wrapped_names or wrapped_workflows:
+                    try:
+                        text = payload.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = ""
+                    if text and rules.contains_wrapped_declared_name(text, wrapped_names):
+                        details[rules.DECLARED_NAME] = "wrapped owner value"
+                    if text and rules.contains_wrapped_declared_name(text, wrapped_workflows):
+                        details[rules.OWNER_WORKFLOW] = "wrapped owner workflow"
+                    if text and semantic_scan:
+                        semantic = rules.text_findings(
+                            text,
+                            relative_path=relative,
+                            private_patterns=private_patterns,
+                            allowed_users=allowed_users,
+                            forbid_ai_attribution=forbid_ai_attribution,
+                            forbid_internal_planning=forbid_internal_planning,
+                            forbid_machine_observations=forbid_machine_observations,
+                        )
+                        details.update(
+                            (kind, detail)
+                            for kind, detail in semantic.items()
+                            if kind in semantic_kinds
+                        )
+                if inspect_archives:
+                    details.update(
+                        _archive_details(
+                            relative,
+                            payload,
+                            names=names,
+                            owner_workflows=owner_workflows,
+                            private_patterns=private_patterns,
+                            forbidden_suffixes=forbidden_suffixes,
+                            private_paths=private_paths,
+                            private_files=private_files,
+                            private_suffixes=private_suffixes,
+                            allowed_users=allowed_users,
+                            forbid_ai_attribution=forbid_ai_attribution,
+                            forbid_internal_planning=forbid_internal_planning,
+                            forbid_machine_observations=forbid_machine_observations,
+                            providers=providers,
+                        )
+                    )
+                for kind, detail in sorted(details.items()):
+                    suffix = f" ({detail})" if detail else ""
+                    failures.append(f"history blob {object_id[:12]}:{relative}: {kind}{suffix}")
     return failures
 
 
@@ -234,10 +326,179 @@ def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> b
     return (root / relative).read_bytes()
 
 
+def _provenance_details(
+    relative: str,
+    *,
+    required: Sequence[str],
+    declarations: Mapping[str, str],
+) -> dict[str, str]:
+    matches = {kind for pattern, kind in declarations.items() if fnmatch(relative, pattern)}
+    found: dict[str, str] = {}
+    if len(matches) > 1:
+        found[PROVENANCE_CONFLICT] = "path matches conflicting provenance declarations"
+    if any(fnmatch(relative, pattern) for pattern in required) and not matches:
+        found[PROVENANCE_MISSING] = "publication candidate has no provenance declaration"
+    if "machine-derived" in matches:
+        found[MACHINE_DERIVED] = "declared as derived from an owner's machine"
+    return found
+
+
+def _unsafe_archive_path(name: str) -> bool:
+    normalized = name.replace("\\", "/")
+    if normalized.startswith("/") or re.match(r"(?i)^[a-z]:/", normalized):
+        return True
+    resolved = posixpath.normpath(normalized)
+    return resolved == ".." or resolved.startswith("../")
+
+
+def _archive_details(
+    relative: str,
+    payload: bytes,
+    *,
+    names: Sequence[str],
+    owner_workflows: Sequence[str],
+    private_patterns: Sequence[rules.PrivatePattern],
+    forbidden_suffixes: Sequence[str],
+    private_paths: Sequence[str],
+    private_files: Sequence[str],
+    private_suffixes: Sequence[str],
+    allowed_users: Sequence[str],
+    forbid_ai_attribution: bool,
+    forbid_internal_planning: bool,
+    forbid_machine_observations: bool,
+    providers: dict[str, Sequence[str]],
+) -> dict[str, str]:
+    if Path(relative).suffix.lower() not in ARCHIVE_SUFFIXES:
+        return {}
+    source = io.BytesIO(payload)
+    if not zipfile.is_zipfile(source):
+        return {}
+    found: dict[str, str] = {}
+    try:
+        with zipfile.ZipFile(io.BytesIO(payload)) as archive:
+            entries = archive.infolist()
+            total_size = sum(entry.file_size for entry in entries)
+            if len(entries) > MAX_ARCHIVE_ENTRIES or total_size > MAX_ARCHIVE_TOTAL_SIZE:
+                return {ARCHIVE_LIMIT: "archive exceeds the safe inspection budget"}
+            for entry in entries:
+                if entry.is_dir():
+                    continue
+                if _unsafe_archive_path(entry.filename):
+                    found.setdefault(ARCHIVE_PATH, f"unsafe archive entry {entry.filename}")
+                    continue
+                if entry.file_size > MAX_ARCHIVE_ENTRY_SIZE:
+                    found.setdefault(ARCHIVE_LIMIT, f"archive entry too large: {entry.filename}")
+                    continue
+                entry_name = posixpath.normpath(entry.filename.replace("\\", "/"))
+                for kind in rules.kinds_in_path(
+                    entry_name,
+                    names=names,
+                    owner_workflows=owner_workflows,
+                    forbidden_suffixes=forbidden_suffixes,
+                    private_paths=private_paths,
+                    private_files=private_files,
+                    private_suffixes=private_suffixes,
+                ):
+                    found.setdefault(kind, f"archive entry {entry_name}")
+                entry_payload = archive.read(entry)
+                try:
+                    text = entry_payload.decode("utf-8")
+                except UnicodeDecodeError:
+                    continue
+                for kind, detail in rules.text_findings(
+                    text,
+                    relative_path=entry_name,
+                    names=names,
+                    owner_workflows=owner_workflows,
+                    private_patterns=private_patterns,
+                    allowed_users=allowed_users,
+                    forbid_ai_attribution=forbid_ai_attribution,
+                    forbid_internal_planning=forbid_internal_planning,
+                    forbid_machine_observations=forbid_machine_observations,
+                    providers={},
+                ).items():
+                    suffix = f"; {detail}" if detail else ""
+                    found.setdefault(kind, f"archive entry {entry_name}{suffix}")
+                if detail := rules.provider_surface_finding(
+                    text,
+                    relative_path=relative,
+                    providers=providers,
+                ):
+                    found.setdefault(
+                        rules.PROVIDER_SURFACE,
+                        f"archive entry {entry_name}; {detail}",
+                    )
+    except (OSError, RuntimeError, zipfile.BadZipFile):
+        found[ARCHIVE_LIMIT] = "archive could not be inspected safely"
+    return found
+
+
+def _payload_details(
+    relative: str,
+    payload: bytes,
+    *,
+    names: Sequence[str],
+    owner_workflows: Sequence[str],
+    private_patterns: Sequence[rules.PrivatePattern],
+    forbidden_suffixes: Sequence[str],
+    private_paths: Sequence[str],
+    private_files: Sequence[str],
+    private_suffixes: Sequence[str],
+    allowed_users: Sequence[str],
+    forbid_ai_attribution: bool,
+    forbid_internal_planning: bool,
+    forbid_machine_observations: bool,
+    providers: dict[str, Sequence[str]],
+    inspect_archives: bool,
+) -> dict[str, str]:
+    found: dict[str, str] = {}
+    try:
+        text = payload.decode("utf-8")
+    except UnicodeDecodeError:
+        text = ""
+    if text:
+        found.update(
+            rules.text_findings(
+                text,
+                relative_path=relative,
+                names=names,
+                owner_workflows=owner_workflows,
+                private_patterns=private_patterns,
+                allowed_users=allowed_users,
+                forbid_ai_attribution=forbid_ai_attribution,
+                forbid_internal_planning=forbid_internal_planning,
+                forbid_machine_observations=forbid_machine_observations,
+                providers=providers,
+            )
+        )
+    if inspect_archives:
+        found.update(
+            _archive_details(
+                relative,
+                payload,
+                names=names,
+                owner_workflows=owner_workflows,
+                private_patterns=private_patterns,
+                forbidden_suffixes=forbidden_suffixes,
+                private_paths=private_paths,
+                private_files=private_files,
+                private_suffixes=private_suffixes,
+                allowed_users=allowed_users,
+                forbid_ai_attribution=forbid_ai_attribution,
+                forbid_internal_planning=forbid_internal_planning,
+                forbid_machine_observations=forbid_machine_observations,
+                providers=providers,
+            )
+        )
+    return found
+
+
 def scan(
     root: Path,
     *,
     names: Sequence[str] = (),
+    owner_workflows: Sequence[str] = (),
+    private_patterns: Sequence[rules.PrivatePattern] = (),
     baseline: dict[str, Sequence[str]] | None = None,
     exclude: Sequence[str] = (),
     forbidden_suffixes: Sequence[str] = (),
@@ -247,10 +508,19 @@ def scan(
     required_ignores: Sequence[str] = (),
     allowed_users: Sequence[str] = (),
     forbid_png_metadata: bool = False,
+    forbid_ai_attribution: bool = False,
+    forbid_internal_planning: bool = False,
+    forbid_machine_observations: bool = False,
+    providers: dict[str, Sequence[str]] | None = None,
+    provenance_required: Sequence[str] = (),
+    provenance: Mapping[str, str] | None = None,
+    inspect_archives: bool = True,
     include_candidates: bool = True,
     staged: bool = False,
     paths: Sequence[str] | None = None,
 ) -> Report:
+    provider_surfaces = providers or {}
+    provenance_declarations = provenance or {}
     recorded = {path: set(kinds) for path, kinds in (baseline or {}).items()}
     unmatched = {path: set(kinds) for path, kinds in recorded.items()}
     report = Report()
@@ -278,30 +548,46 @@ def scan(
         found = rules.kinds_in_path(
             relative,
             names=names,
+            owner_workflows=owner_workflows,
             forbidden_suffixes=forbidden_suffixes,
             private_paths=private_paths,
             private_files=private_files,
             private_suffixes=private_suffixes,
+            providers=provider_surfaces,
+        )
+        details = _provenance_details(
+            relative,
+            required=provenance_required,
+            declarations=provenance_declarations,
         )
         try:
             payload = _payload(root, relative, staged=staged, tracked=tracked)
             if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
                 found |= _png_metadata(payload)
-            text = payload.decode("utf-8")
-        except UnicodeDecodeError:
-            text = ""  # Binary content; the path rules above still applied to it.
+            details.update(
+                _payload_details(
+                    relative,
+                    payload,
+                    names=names,
+                    owner_workflows=owner_workflows,
+                    private_patterns=private_patterns,
+                    forbidden_suffixes=forbidden_suffixes,
+                    private_paths=private_paths,
+                    private_files=private_files,
+                    private_suffixes=private_suffixes,
+                    allowed_users=allowed_users,
+                    forbid_ai_attribution=forbid_ai_attribution,
+                    forbid_internal_planning=forbid_internal_planning,
+                    forbid_machine_observations=forbid_machine_observations,
+                    providers=provider_surfaces,
+                    inspect_archives=inspect_archives,
+                )
+            )
         except OSError:
             report.unreadable.append(relative)
-            text = ""
-        if text:
-            found |= rules.kinds_in_text(
-                text,
-                relative_path=relative,
-                names=names,
-                allowed_users=allowed_users,
-            )
+        found |= set(details)
         for kind in sorted(found):
-            record(Finding(relative, kind))
+            record(Finding(relative, kind, details.get(kind, "")))
 
     for path in unignored(root, required_ignores):
         record(Finding(path, rules.NOT_IGNORED))
@@ -325,6 +611,8 @@ def history_failures(
     root: Path,
     *,
     names: Sequence[str] = (),
+    owner_workflows: Sequence[str] = (),
+    private_patterns: Sequence[rules.PrivatePattern] = (),
     private_paths: Sequence[str] = (),
     private_files: Sequence[str] = (),
     private_suffixes: Sequence[str] = (),
@@ -332,8 +620,17 @@ def history_failures(
     allowed_users: Sequence[str] = (),
     allowed_identities: Sequence[str] = (),
     exclude: Sequence[str] = (),
+    forbid_ai_attribution: bool = False,
+    forbid_internal_planning: bool = False,
+    forbid_machine_observations: bool = False,
+    providers: dict[str, Sequence[str]] | None = None,
+    provenance_required: Sequence[str] = (),
+    provenance: Mapping[str, str] | None = None,
+    inspect_archives: bool = True,
 ) -> list[str]:
     """Rules that must hold for every reachable commit before publication."""
+    provider_surfaces = providers or {}
+    provenance_declarations = provenance or {}
     failures: list[str] = []
     names_result = _git(root, ["log", *HISTORY_REFS, "--name-only", "--format="])
     if names_result.returncode != 0:
@@ -346,13 +643,23 @@ def history_failures(
             rules.kinds_in_path(
                 relative,
                 names=names,
+                owner_workflows=owner_workflows,
                 forbidden_suffixes=forbidden_suffixes,
                 private_paths=private_paths,
                 private_files=private_files,
                 private_suffixes=private_suffixes,
+                providers=provider_surfaces,
             )
         ):
             failures.append(f"history {relative}: {kind}")
+        for kind, detail in sorted(
+            _provenance_details(
+                relative,
+                required=provenance_required,
+                declarations=provenance_declarations,
+            ).items()
+        ):
+            failures.append(f"history {relative}: {kind} ({detail})")
 
     if allowed_identities:
         allowed = set(allowed_identities)
@@ -374,8 +681,23 @@ def history_failures(
             if not separator:
                 continue
             message_kinds = rules.kinds_in_text(
-                message, names=names, allowed_users=allowed_users
-            ) & {rules.DECLARED_NAME, rules.HOME_DIRECTORY}
+                message,
+                names=names,
+                owner_workflows=owner_workflows,
+                private_patterns=private_patterns,
+                allowed_users=allowed_users,
+                forbid_ai_attribution=forbid_ai_attribution,
+                forbid_internal_planning=forbid_internal_planning,
+                forbid_machine_observations=forbid_machine_observations,
+            ) & {
+                rules.DECLARED_NAME,
+                rules.HOME_DIRECTORY,
+                rules.OWNER_WORKFLOW,
+                rules.PERSONAL_DATA,
+                rules.INTERNAL_PLANNING,
+                rules.AI_ATTRIBUTION,
+                rules.MACHINE_OBSERVATION,
+            }
             for kind in sorted(message_kinds):
                 failures.append(f"history {commit[:12]}: commit-message: {kind}")
 
@@ -386,6 +708,8 @@ def history_failures(
     commits = [commit for commit in revisions.stdout.splitlines() if commit]
     patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]
     patterns.extend(re.escape(name) for name in names)
+    patterns.extend(re.escape(name) for name in owner_workflows)
+    patterns.extend(re.escape(name) for name in provider_surfaces)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
     for offset in range(0, len(commits), 24):
@@ -406,12 +730,32 @@ def history_failures(
                     content,
                     relative_path=relative,
                     names=names,
+                    owner_workflows=owner_workflows,
                     allowed_users=allowed_users,
+                    providers=provider_surfaces,
                 )
             ):
                 finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
                 if finding not in seen:
                     seen.add(finding)
                     failures.append(finding)
-    failures.extend(_wrapped_history_failures(root, names=names, exclude=exclude))
+    failures.extend(
+        _blob_history_failures(
+            root,
+            names=names,
+            owner_workflows=owner_workflows,
+            private_patterns=private_patterns,
+            forbidden_suffixes=forbidden_suffixes,
+            private_paths=private_paths,
+            private_files=private_files,
+            private_suffixes=private_suffixes,
+            allowed_users=allowed_users,
+            forbid_ai_attribution=forbid_ai_attribution,
+            forbid_internal_planning=forbid_internal_planning,
+            forbid_machine_observations=forbid_machine_observations,
+            providers=provider_surfaces,
+            inspect_archives=inspect_archives,
+            exclude=exclude,
+        )
+    )
     return failures

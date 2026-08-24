@@ -35,6 +35,53 @@ class LoadTests(unittest.TestCase):
         self.assertTrue(settings.exposure.forbid_png_metadata)
         self.assertEqual({"a/b.json": ["home-directory"]}, settings.exposure.baseline)
 
+    def test_it_reads_semantic_provider_and_provenance_policy(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / config.CONFIG_NAME).write_text(
+                "[exposure]\n"
+                "forbid_ai_attribution = true\n"
+                "forbid_internal_planning = true\n"
+                "forbid_machine_observations = true\n"
+                'provenance_required = ["tests/generated/*"]\n\n'
+                "[exposure.providers.Someservice]\n"
+                'role = "product-data-provider"\n'
+                'allowed_surfaces = ["src/*", "docs/*"]\n\n'
+                "[exposure.provenance]\n"
+                '"tests/generated/*" = "synthetic"\n',
+                encoding="utf-8",
+            )
+
+            settings = config.load(root).exposure
+
+        self.assertTrue(settings.forbid_ai_attribution)
+        self.assertTrue(settings.forbid_internal_planning)
+        self.assertTrue(settings.forbid_machine_observations)
+        self.assertEqual(["src/*", "docs/*"], settings.providers["Someservice"].allowed_surfaces)
+        self.assertEqual({"tests/generated/*": "synthetic"}, settings.provenance)
+
+    def test_provider_and_provenance_vocabularies_are_closed(self) -> None:
+        cases = (
+            (
+                (
+                    "[exposure.providers.Someservice]\n"
+                    'role = "owner-workflow"\n'
+                    'allowed_surfaces = ["src/*"]\n'
+                ),
+                "role",
+            ),
+            (
+                ('[exposure.provenance]\n"tests/*" = "copied-from-owner"\n'),
+                "provenance",
+            ),
+        )
+        for payload, message in cases:
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(payload, encoding="utf-8")
+                with self.assertRaisesRegex(config.ConfigError, message):
+                    config.load(root)
+
     def test_a_baseline_that_is_not_a_mapping_of_lists_is_refused(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

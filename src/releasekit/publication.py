@@ -44,7 +44,18 @@ def run(
     try:
         settings = config_module.load(root)
         policy = owner.discover(root) if owner_mode or require_overlay else None
-        names = policy.values() if policy is not None else ()
+        owner_rules = policy.load() if policy is not None else owner.OwnerRules()
+        names = owner_rules.private_values
+        providers = {
+            name: provider.allowed_surfaces
+            for name, provider in settings.exposure.providers.items()
+        }
+        workflow_names = {name.casefold() for name in owner_rules.owner_workflows}
+        overlap = sorted(name for name in providers if name.casefold() in workflow_names)
+        if overlap:
+            raise owner.OwnerPolicyError(
+                "product provider is also declared as owner workflow: " + ", ".join(overlap)
+            )
         private_paths = _mounted_private_paths(settings, root, policy)
     except (
         config_module.ConfigError,
@@ -57,6 +68,8 @@ def run(
     report = audit.scan(
         root,
         names=names,
+        owner_workflows=owner_rules.owner_workflows,
+        private_patterns=owner_rules.patterns,
         baseline=settings.exposure.baseline,
         exclude=settings.exposure.exclude,
         private_paths=private_paths,
@@ -66,6 +79,13 @@ def run(
         forbidden_suffixes=settings.exposure.forbidden_suffixes,
         allowed_users=settings.exposure.allowed_users,
         forbid_png_metadata=settings.exposure.forbid_png_metadata,
+        forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+        forbid_internal_planning=settings.exposure.forbid_internal_planning,
+        forbid_machine_observations=settings.exposure.forbid_machine_observations,
+        providers=providers,
+        provenance_required=settings.exposure.provenance_required,
+        provenance=settings.exposure.provenance,
+        inspect_archives=settings.exposure.inspect_archives,
         include_candidates=settings.exposure.include_candidates and not staged,
         staged=staged,
     )
@@ -89,6 +109,8 @@ def run(
             audit.history_failures(
                 root,
                 names=names,
+                owner_workflows=owner_rules.owner_workflows,
+                private_patterns=owner_rules.patterns,
                 private_paths=private_paths,
                 private_files=settings.exposure.private_files,
                 private_suffixes=settings.exposure.private_suffixes,
@@ -96,6 +118,13 @@ def run(
                 allowed_users=settings.exposure.allowed_users,
                 allowed_identities=settings.exposure.allowed_identities,
                 exclude=settings.exposure.exclude,
+                forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+                forbid_internal_planning=settings.exposure.forbid_internal_planning,
+                forbid_machine_observations=settings.exposure.forbid_machine_observations,
+                providers=providers,
+                provenance_required=settings.exposure.provenance_required,
+                provenance=settings.exposure.provenance,
+                inspect_archives=settings.exposure.inspect_archives,
             )
         )
 

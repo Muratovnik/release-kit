@@ -10,6 +10,10 @@ The command owns the complete verdict:
 
 - repository policy: private paths, forbidden file kinds, portable paths, ignored
   surfaces, optional PNG metadata and allowed Git identities;
+- deterministic semantic policy for owner workflows, personal-data patterns,
+  internal planning references, machine attribution and workstation observations;
+- declared product-provider surfaces, fixture provenance, and ZIP-family publication
+  artifacts, including reachable historical copies;
 - secret detection by **Betterleaks 1.8.1** over the Git index or full history;
 - offline local-link validation by **Lychee 0.24.2** over Git-owned Markdown;
 - owner-only forbidden-name checks and exact private-overlay validation from an
@@ -55,6 +59,10 @@ allowed_identities = [
   "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
 ]
 forbid_png_metadata = true
+forbid_ai_attribution = true
+forbid_internal_planning = true
+forbid_machine_observations = true
+provenance_required = ["tests/generated/*", "docs/screenshots/*"]
 betterleaks_config = ".betterleaks.toml"
 
 # Deliberate fixtures where structural policy is not meaningful. This does not
@@ -65,16 +73,54 @@ exclude = ["tests/fixtures/*"]
 [exposure.baseline]
 "legacy/config.toml" = ["home-directory"]
 
+# A provider name is public product vocabulary only on these surfaces. The role
+# vocabulary is closed so an owner-only workflow cannot be disguised as a provider.
+[exposure.providers.Someservice]
+role = "product-data-provider"
+allowed_surfaces = ["src/*", "docs/*", "tests/provider/*"]
+
+# Declaring anonymized material is the required review confirmation. Anything
+# declared machine-derived remains a finding and must be replaced before publication.
+[exposure.provenance]
+"tests/generated/*" = "synthetic"
+"docs/screenshots/*" = "anonymized"
+
 ```
 
-Private topology and forbidden names are not valid public configuration. Owner mode
+Private topology, owner workflows, and personal-data expressions are not valid public
+configuration. Owner mode
 discovers `../<checkout-name>-private` by convention, or the directory named by
 `RELKIT_PRIVATE_ROOT`. That private root owns `.publication-private-values` and, when it uses a
 link overlay, `install.conf.yaml`. The file contains exact private values: workspace
 names, provider namespaces, record identifiers, and path fragments. A provider's public
 name does not belong there merely because the owner's configuration uses that provider.
-A missing or empty value file is an error in owner
-mode rather than a structural-only green result.
+
+The same private root may carry `.publication-owner.toml` for typed semantic rules:
+
+```toml
+version = 1
+owner_workflows = ["OwnerWorkbench"]
+
+[[patterns]]
+name = "private-record-reference"
+kind = "personal-data"
+expression = '''\brec_[0-9a-f]{12}\b'''
+
+[[patterns]]
+name = "local-inventory-observation"
+kind = "machine-observation"
+expression = '''(?i)observed on the maintainer's machine'''
+```
+
+Pattern kinds are limited to `owner-workflow`, `personal-data`, and
+`machine-observation`. Owner mode requires at least one exact value, workflow, or
+pattern; a missing or empty owner policy is never a structural-only green result.
+The two owner-policy filenames are unconditionally private if they appear in a public
+tree or archive.
+
+The semantic checks are deterministic and local. release-kit does not upload the tree
+or owner policy to an LLM. A repository can extend the structural rules with private
+regular expressions without publishing those expressions or their matched values.
 
 `.betterleaks.toml` normally only extends the maintained defaults:
 
@@ -116,6 +162,11 @@ link/target/tracking oracle. History mode refuses a dirty worktree; use `--stage
 while preparing a commit, then run `--history` against the committed release candidate.
 Current `HEAD`, local and remote branches, and tags are publication history;
 synthetic client checkpoint refs are deliberately outside that scope.
+
+Tracked `.zip`, `.whl`, `.jar`, and `.pyz` files are inspected as publication
+surfaces in the worktree, index, and reachable history. Unsafe archive paths, archives
+outside the bounded inspection budget, private paths, and semantic findings inside
+their UTF-8 entries fail with the outer artifact and entry named in the diagnostic.
 
 `--no-download` turns missing cached engines into an operational error, useful in
 sealed environments. `--strict` also fails on adoption baselines.

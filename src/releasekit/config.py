@@ -23,8 +23,18 @@ EXPOSURE_KEYS = frozenset(
         "allowed_identities",
         "forbid_png_metadata",
         "include_candidates",
+        "forbid_ai_attribution",
+        "forbid_internal_planning",
+        "forbid_machine_observations",
+        "inspect_archives",
+        "providers",
+        "provenance_required",
+        "provenance",
     }
 )
+
+PROVIDER_ROLES = frozenset({"product-data-provider"})
+PROVENANCE_KINDS = frozenset({"synthetic", "anonymized", "machine-derived"})
 
 
 class ConfigError(Exception):
@@ -50,6 +60,56 @@ def _boolean(section: dict[str, object], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{key} must be true or false")
     return value
+
+
+@dataclass(frozen=True)
+class ProviderConfig:
+    role: str
+    allowed_surfaces: list[str]
+
+
+def _providers(section: dict[str, object]) -> dict[str, ProviderConfig]:
+    raw = section.get("providers", {})
+    if not isinstance(raw, dict):
+        raise ConfigError("[exposure.providers] must be a table")
+    providers: dict[str, ProviderConfig] = {}
+    for name, value in raw.items():
+        if (
+            not isinstance(name, str)
+            or not name.strip()
+            or name != name.strip()
+            or "\n" in name
+            or "\r" in name
+            or not isinstance(value, dict)
+        ):
+            raise ConfigError("[exposure.providers] must map provider names to tables")
+        unknown = sorted(set(value) - {"role", "allowed_surfaces"})
+        if unknown:
+            raise ConfigError(f"unknown [exposure.providers.{name}] key(s): {', '.join(unknown)}")
+        role = _string(value, "role", "")
+        if role not in PROVIDER_ROLES:
+            choices = ", ".join(sorted(PROVIDER_ROLES))
+            raise ConfigError(f"provider {name} role must be one of: {choices}")
+        surfaces = _strings(value, "allowed_surfaces")
+        if not surfaces or any(not surface.strip() for surface in surfaces):
+            raise ConfigError(f"provider {name} allowed_surfaces must not be empty")
+        providers[name] = ProviderConfig(role=role, allowed_surfaces=surfaces)
+    return providers
+
+
+def _provenance(section: dict[str, object]) -> dict[str, str]:
+    raw = section.get("provenance", {})
+    if not isinstance(raw, dict) or not all(
+        isinstance(pattern, str) and isinstance(kind, str) for pattern, kind in raw.items()
+    ):
+        raise ConfigError("[exposure.provenance] must map path patterns to strings")
+    for pattern, kind in raw.items():
+        if not pattern.strip():
+            raise ConfigError("[exposure.provenance] path patterns must not be empty")
+        if kind not in PROVENANCE_KINDS:
+            choices = ", ".join(sorted(PROVENANCE_KINDS))
+            raise ConfigError(f"provenance for {pattern} must be one of: {choices}")
+    return dict(raw)
 
 
 @dataclass(frozen=True)
@@ -87,6 +147,22 @@ class ExposureConfig:
     forbid_png_metadata: bool = False
     # A file that is neither tracked nor ignored is not safe, only uncommitted.
     include_candidates: bool = True
+    # Semantic rules are opt-in because the adopting repository owns whether card
+    # references, agent attribution, or workstation observations are product facts or
+    # owner-only process. Once enabled, the same rule covers the tree, commit messages,
+    # reachable history, and supported archives.
+    forbid_ai_attribution: bool = False
+    forbid_internal_planning: bool = False
+    forbid_machine_observations: bool = False
+    # ZIP-family publication artifacts are themselves a publication surface. They are
+    # inspected by default; an adopter can still exclude a deliberate binary fixture.
+    inspect_archives: bool = True
+    # A named provider is public product vocabulary only on its declared surfaces.
+    providers: dict[str, ProviderConfig] = field(default_factory=dict)
+    # Test data and screenshots can be required to declare their origin. Synthetic and
+    # explicitly anonymized material pass; machine-derived material is a finding.
+    provenance_required: list[str] = field(default_factory=list)
+    provenance: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -142,5 +218,12 @@ def load(root: Path, *, required: bool = True) -> Config:
             allowed_identities=_strings(section, "allowed_identities"),
             forbid_png_metadata=_boolean(section, "forbid_png_metadata", False),
             include_candidates=_boolean(section, "include_candidates", True),
+            forbid_ai_attribution=_boolean(section, "forbid_ai_attribution", False),
+            forbid_internal_planning=_boolean(section, "forbid_internal_planning", False),
+            forbid_machine_observations=_boolean(section, "forbid_machine_observations", False),
+            inspect_archives=_boolean(section, "inspect_archives", True),
+            providers=_providers(section),
+            provenance_required=_strings(section, "provenance_required"),
+            provenance=_provenance(section),
         ),
     )

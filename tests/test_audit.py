@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import io
 import subprocess
 import tempfile
 import unittest
+import zipfile
 from pathlib import Path
+from unittest.mock import patch
 
 from releasekit.exposure import audit, rules
 
@@ -205,6 +208,107 @@ class PathTests(unittest.TestCase):
         self.assertEqual(["fixture.png: png-metadata"], report.failures)
 
 
+class SemanticPublicationTests(unittest.TestCase):
+    def test_owner_workflow_internal_planning_and_machine_observation_are_separate(self) -> None:
+        with _repository(
+            {
+                "AGENTS.md": "Someservice coordinates local work.\n",
+                "docs/plan.md": "card: 123\n",
+                "tests/support.py": "# The real installation has 42 folders.\n",
+            }
+        ) as name:
+            report = audit.scan(
+                Path(name),
+                owner_workflows=("Someservice",),
+                forbid_internal_planning=True,
+                forbid_machine_observations=True,
+            )
+
+        self.assertTrue(any("owner-workflow" in item for item in report.failures))
+        self.assertTrue(any("internal-planning" in item for item in report.failures))
+        self.assertTrue(any("machine-observation" in item for item in report.failures))
+
+    def test_provider_contract_does_not_allow_personal_provider_data(self) -> None:
+        pattern = rules.PrivatePattern(
+            name="private-namespace",
+            kind=rules.PERSONAL_DATA,
+            expression=r"owner/private-[a-z]+",
+        )
+        with _repository(
+            {
+                "docs/provider.md": (
+                    "Someservice supplies opaque records.\nnamespace=owner/private-workflow\n"
+                )
+            }
+        ) as name:
+            report = audit.scan(
+                Path(name),
+                private_patterns=(pattern,),
+                providers={"Someservice": ("docs/*",)},
+            )
+
+        self.assertEqual(1, len(report.failures))
+        self.assertIn("personal-data", report.failures[0])
+
+    def test_provider_mentions_outside_the_public_contract_are_findings(self) -> None:
+        with _repository({"AGENTS.md": "Someservice runs local tasks.\n"}) as name:
+            report = audit.scan(Path(name), providers={"Someservice": ("src/*", "docs/*")})
+
+        self.assertIn("provider-surface", report.failures[0])
+
+
+class ProvenanceTests(unittest.TestCase):
+    def test_required_fixture_provenance_must_be_declared(self) -> None:
+        with _repository({"tests/generated/data.json": "{}\n"}) as name:
+            missing = audit.scan(Path(name), provenance_required=("tests/generated/*",))
+            synthetic = audit.scan(
+                Path(name),
+                provenance_required=("tests/generated/*",),
+                provenance={"tests/generated/*": "synthetic"},
+            )
+
+        self.assertIn("provenance-missing", missing.failures[0])
+        self.assertTrue(synthetic.ok, synthetic.failures)
+
+    def test_machine_derived_material_is_a_finding_even_when_declared(self) -> None:
+        with _repository({"tests/generated/data.json": "{}\n"}) as name:
+            report = audit.scan(Path(name), provenance={"tests/generated/*": "machine-derived"})
+
+        self.assertIn("machine-derived", report.failures[0])
+
+
+class ArchiveTests(unittest.TestCase):
+    @staticmethod
+    def _archive(entries: dict[str, str]) -> bytes:
+        output = io.BytesIO()
+        with zipfile.ZipFile(output, "w") as archive:
+            for name, text in entries.items():
+                archive.writestr(name, text)
+        return output.getvalue()
+
+    def test_private_values_inside_a_publication_archive_are_scanned(self) -> None:
+        with _repository({"keep.md": "clean\n"}) as name:
+            root = Path(name)
+            (root / "artifact.pyz").write_bytes(
+                self._archive({"package/config.txt": "uses Someservice\n"})
+            )
+            subprocess.run(["git", "add", "artifact.pyz"], cwd=root, check=True)
+            report = audit.scan(root, names=("Someservice",))
+
+        self.assertEqual(1, len(report.failures))
+        self.assertIn("private-value", report.failures[0])
+        self.assertIn("archive entry", report.failures[0])
+
+    def test_archive_entries_cannot_escape_the_artifact_root(self) -> None:
+        with _repository({"keep.md": "clean\n"}) as name:
+            root = Path(name)
+            (root / "artifact.zip").write_bytes(self._archive({"../outside.txt": "clean\n"}))
+            subprocess.run(["git", "add", "artifact.zip"], cwd=root, check=True)
+            report = audit.scan(root)
+
+        self.assertIn("archive-path", report.failures[0])
+
+
 class HistoryTests(unittest.TestCase):
     def test_history_checks_wrapped_owner_values(self) -> None:
         value = "already holds records, so renaming it would orphan them"
@@ -312,6 +416,75 @@ class HistoryTests(unittest.TestCase):
             failures = audit.history_failures(root, exclude=["tests/*"])
 
         self.assertEqual([], failures)
+
+    def test_history_checks_ai_attribution_trailers(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            original_git = audit._git
+
+            def git_with_machine_trailer(
+                repository: Path, arguments: list[str] | tuple[str, ...], *, stdin=None
+            ):
+                if "--format=%H%x1f%B%x1e" in arguments:
+                    marker = "Co-" + "Authored-By: " + "Clau" + "de <bot@example.invalid>"
+                    return subprocess.CompletedProcess(
+                        arguments,
+                        0,
+                        stdout=f"{'a' * 40}\x1ffeat: fixture\n\n{marker}\x1e",
+                        stderr="",
+                    )
+                return original_git(repository, arguments, stdin=stdin)
+
+            with patch.object(audit, "_git", side_effect=git_with_machine_trailer):
+                failures = audit.history_failures(root, forbid_ai_attribution=True)
+
+        self.assertTrue(any("commit-message: ai-attribution" in item for item in failures))
+
+    def test_history_checks_internal_planning_in_old_blobs(self) -> None:
+        with _repository({"docs/plan.md": "card: 123\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            (root / "docs/plan.md").write_text("public plan\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            _commit(root)
+            failures = audit.history_failures(root, forbid_internal_planning=True)
+
+        self.assertTrue(any("internal-planning" in item for item in failures), failures)
+
+    def test_history_checks_typed_owner_rules_in_old_blobs(self) -> None:
+        pattern = rules.PrivatePattern(
+            name="record-reference",
+            kind=rules.PERSONAL_DATA,
+            expression=r"rec_[0-9]+",
+        )
+        with _repository({"AGENTS.md": "Someservice coordinates rec_1234.\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            (root / "AGENTS.md").write_text("public instructions\n", encoding="utf-8")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            _commit(root)
+            failures = audit.history_failures(
+                root,
+                owner_workflows=("Someservice",),
+                private_patterns=(pattern,),
+            )
+
+        self.assertTrue(any("owner-workflow" in item for item in failures), failures)
+        self.assertTrue(any("personal-data" in item for item in failures), failures)
+
+    def test_history_checks_inside_archives(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            archive = io.BytesIO()
+            with zipfile.ZipFile(archive, "w") as output:
+                output.writestr("package/config.txt", "uses Someservice\n")
+            (root / "artifact.pyz").write_bytes(archive.getvalue())
+            subprocess.run(["git", "add", "artifact.pyz"], cwd=root, check=True)
+            _commit(root)
+            failures = audit.history_failures(root, names=("Someservice",))
+
+        self.assertTrue(any("archive entry" in item for item in failures), failures)
 
 
 if __name__ == "__main__":

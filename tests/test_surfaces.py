@@ -56,6 +56,13 @@ class PrivatePathTests(unittest.TestCase):
 
         self.assertTrue(report.ok, report.failures)
 
+    def test_owner_policy_files_are_private_without_project_configuration(self) -> None:
+        for relative in (".publication-owner.toml", ".publication-private-values"):
+            with self.subTest(relative=relative), _repository({relative: "private\n"}) as name:
+                report = audit.scan(Path(name))
+
+            self.assertEqual([f"{relative}: private-path"], report.failures)
+
 
 class RequiredIgnoreTests(unittest.TestCase):
     def test_a_surface_that_is_not_ignored_is_a_finding(self) -> None:
@@ -116,6 +123,17 @@ class KindNameTests(unittest.TestCase):
                 "private-path",
                 "not-ignored",
                 "png-metadata",
+                "owner-workflow",
+                "personal-data",
+                "internal-planning",
+                "ai-attribution",
+                "machine-observation",
+                "provider-surface",
+                "provenance-missing",
+                "provenance-conflict",
+                "machine-derived",
+                "archive-path",
+                "archive-limit",
             },
             {
                 rules.HOME_DIRECTORY,
@@ -125,6 +143,17 @@ class KindNameTests(unittest.TestCase):
                 rules.PRIVATE_PATH,
                 rules.NOT_IGNORED,
                 audit.PNG_METADATA,
+                rules.OWNER_WORKFLOW,
+                rules.PERSONAL_DATA,
+                rules.INTERNAL_PLANNING,
+                rules.AI_ATTRIBUTION,
+                rules.MACHINE_OBSERVATION,
+                rules.PROVIDER_SURFACE,
+                audit.PROVENANCE_MISSING,
+                audit.PROVENANCE_CONFLICT,
+                audit.MACHINE_DERIVED,
+                audit.ARCHIVE_PATH,
+                audit.ARCHIVE_LIMIT,
             },
         )
 

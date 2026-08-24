@@ -31,11 +31,15 @@ def _exposure(arguments: argparse.Namespace) -> int:
         print(f"relkit: {error}", file=sys.stderr)
         return 2
     private_paths = list(settings.exposure.private_paths)
+    providers = {
+        name: provider.allowed_surfaces for name, provider in settings.exposure.providers.items()
+    }
     policy = None
     if arguments.owner:
         try:
             policy = owner.discover(root)
-            names = policy.values()
+            owner_rules = policy.load()
+            names = owner_rules.private_values
             mounts = (
                 manifest_module.read(policy.manifest_path) if policy.manifest_path.is_file() else ()
             )
@@ -50,9 +54,12 @@ def _exposure(arguments: argparse.Namespace) -> int:
             private_paths.append(derived.as_posix())
     else:
         names = ()
+        owner_rules = owner.OwnerRules()
     report = audit.scan(
         root,
         names=names,
+        owner_workflows=owner_rules.owner_workflows,
+        private_patterns=owner_rules.patterns,
         baseline=settings.exposure.baseline,
         exclude=settings.exposure.exclude,
         private_paths=private_paths,
@@ -62,6 +69,13 @@ def _exposure(arguments: argparse.Namespace) -> int:
         forbidden_suffixes=settings.exposure.forbidden_suffixes,
         allowed_users=settings.exposure.allowed_users,
         forbid_png_metadata=settings.exposure.forbid_png_metadata,
+        forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+        forbid_internal_planning=settings.exposure.forbid_internal_planning,
+        forbid_machine_observations=settings.exposure.forbid_machine_observations,
+        providers=providers,
+        provenance_required=settings.exposure.provenance_required,
+        provenance=settings.exposure.provenance,
+        inspect_archives=settings.exposure.inspect_archives,
         include_candidates=settings.exposure.include_candidates,
     )
     if report.excluded:

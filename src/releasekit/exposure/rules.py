@@ -12,6 +12,8 @@ from __future__ import annotations
 import posixpath
 import re
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from fnmatch import fnmatch
 from pathlib import PurePosixPath
 
 HOME_DIRECTORY = "home-directory"
@@ -20,6 +22,24 @@ FORBIDDEN_KIND = "forbidden-kind"
 DECLARED_NAME = "private-value"
 PRIVATE_PATH = "private-path"
 NOT_IGNORED = "not-ignored"
+OWNER_WORKFLOW = "owner-workflow"
+PERSONAL_DATA = "personal-data"
+INTERNAL_PLANNING = "internal-planning"
+AI_ATTRIBUTION = "ai-attribution"
+MACHINE_OBSERVATION = "machine-observation"
+PROVIDER_SURFACE = "provider-surface"
+
+PRIVATE_PATTERN_KINDS = frozenset({OWNER_WORKFLOW, PERSONAL_DATA, MACHINE_OBSERVATION})
+
+
+@dataclass(frozen=True)
+class PrivatePattern:
+    """One owner-supplied semantic rule whose expression never enters public config."""
+
+    name: str
+    kind: str
+    expression: str
+
 
 # An absolute home directory is a defect before it is anything else: it resolves on
 # exactly one machine, so a tracked file carrying one is already broken in every other
@@ -90,8 +110,31 @@ PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc"})
 DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
     {".cer", ".crt", ".db", ".key", ".log", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3"}
 )
+DEFAULT_PRIVATE_FILES = frozenset({".publication-owner.toml", ".publication-private-values"})
 
 WHITESPACE = re.compile(r"\s+")
+
+INTERNAL_PLANNING_PATTERNS = (
+    re.compile(r"(?im)^\s*card\s*:\s*\d+(?:\s*,\s*\d+)*\s*$"),
+    re.compile(r"(?i)\bcard\s*#\s*\d+\b"),
+    re.compile(r"(?i)<!--\s*kb:[^>]+-->"),
+)
+
+AI_VENDOR = r"(?:claude|codex|chatgpt|copilot|gemini|cursor|windsurf|devin)"
+AI_ATTRIBUTION_PATTERNS = (
+    re.compile(
+        rf"(?im)^\s*(?:co-authored-by|generated-by|reviewed-by|tested-by):[^\n]*\b{AI_VENDOR}\b"
+    ),
+    re.compile(rf"(?im)^\s*(?:generated|written|reviewed)\s+(?:with|by)\s+{AI_VENDOR}\b"),
+)
+
+MACHINE_OBSERVATION_PATTERNS = (
+    re.compile(r"(?i)\bon\s+(?:this|my|our)\s+workstation\b"),
+    re.compile(
+        r"(?i)\b(?:the|this|my|our)\s+(?:real\s+)?(?:installation|workstation)\s+"
+        r"(?:has|had|contains?|uses?|reports?|shows?|includes?)\b"
+    ),
+)
 
 
 def contains_wrapped_declared_name(text: str, names: Sequence[str]) -> bool:
@@ -120,39 +163,41 @@ def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
     )
 
 
-def kinds_in_text(
+def provider_surface_finding(
+    text: str,
+    *,
+    relative_path: str,
+    providers: dict[str, Sequence[str]],
+) -> str:
+    for provider, surfaces in providers.items():
+        if _contains_declared_name(text, (provider,)) and not any(
+            fnmatch(relative_path, surface) for surface in surfaces
+        ):
+            return f"provider {provider} is outside its declared surfaces"
+    return ""
+
+
+def text_findings(
     text: str,
     *,
     relative_path: str = "",
     names: Sequence[str] = (),
+    owner_workflows: Sequence[str] = (),
+    private_patterns: Sequence[PrivatePattern] = (),
     allowed_users: Iterable[str] = DEFAULT_ALLOWED_USERS,
-) -> set[str]:
-    """Which kinds of non-publishable material a file's text carries.
-
-    `relative_path` is the file's own path within the repository; it decides where a
-    relative path resolves from. Left empty, the file is treated as sitting at the root.
-    """
-    # Additive, never replacing: a project declaring the one placeholder its own domain
-    # uses must not thereby lose alice, bob and the CI runners. Replacing was the first
-    # behaviour, and pointing the scan at a real repository turned one finding into
-    # eleven.
+    forbid_ai_attribution: bool = False,
+    forbid_internal_planning: bool = False,
+    forbid_machine_observations: bool = False,
+    providers: dict[str, Sequence[str]] | None = None,
+) -> dict[str, str]:
+    """Return stable finding kinds with non-sensitive explanations."""
     allowed = DEFAULT_ALLOWED_USERS | {user.lower() for user in allowed_users}
-    kinds: set[str] = set()
+    found: dict[str, str] = {}
     for pattern in (WINDOWS_USER_ROOT, POSIX_USER_ROOT):
         if any(not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(text)):
-            kinds.add(HOME_DIRECTORY)
+            found[HOME_DIRECTORY] = ""
             break
-    # Prose is exempt from this one. The rule detects a machine-local assumption in
-    # configuration - a command or a setting that only resolves where a particular
-    # sibling exists. Documentation legitimately prints paths that do not resolve
-    # here: an example of somebody else's layout, or of the very arrangement this
-    # tool configures. Applying it to prose fires on every project that documents
-    # one, and a check that is wrong about the common case gets switched off. What
-    # markdown is still held to: home directories, declared names, and links, which
-    # are resolved properly rather than matched.
-    # release-kit's own config may deliberately name a sibling private repository.
-    # Those paths are resolved and ownership-checked by the overlay verifier, so the
-    # generic text heuristic would be a duplicate and a false positive here.
+
     checks_relative_paths = (
         posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES
         and relative_path != "relkit.toml"
@@ -164,20 +209,77 @@ def kinds_in_text(
         ) or any(
             _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text)
         ):
-            kinds.add(ESCAPES_REPOSITORY)
+            found[ESCAPES_REPOSITORY] = ""
+
     if _contains_declared_name(text, names):
-        kinds.add(DECLARED_NAME)
-    return kinds
+        found[DECLARED_NAME] = ""
+    if _contains_declared_name(text, owner_workflows):
+        found[OWNER_WORKFLOW] = "declared by the private owner policy"
+    for pattern in private_patterns:
+        if re.search(pattern.expression, text):
+            found.setdefault(pattern.kind, "matched a private owner rule")
+    if forbid_internal_planning and any(
+        pattern.search(text) for pattern in INTERNAL_PLANNING_PATTERNS
+    ):
+        found[INTERNAL_PLANNING] = "internal card or knowledge-base reference"
+    if forbid_ai_attribution and any(pattern.search(text) for pattern in AI_ATTRIBUTION_PATTERNS):
+        found[AI_ATTRIBUTION] = "machine authorship or review attribution"
+    if forbid_machine_observations and any(
+        pattern.search(text) for pattern in MACHINE_OBSERVATION_PATTERNS
+    ):
+        found[MACHINE_OBSERVATION] = "observation about the owner's workstation"
+
+    if detail := provider_surface_finding(
+        text, relative_path=relative_path, providers=providers or {}
+    ):
+        found[PROVIDER_SURFACE] = detail
+    return found
+
+
+def kinds_in_text(
+    text: str,
+    *,
+    relative_path: str = "",
+    names: Sequence[str] = (),
+    owner_workflows: Sequence[str] = (),
+    private_patterns: Sequence[PrivatePattern] = (),
+    allowed_users: Iterable[str] = DEFAULT_ALLOWED_USERS,
+    forbid_ai_attribution: bool = False,
+    forbid_internal_planning: bool = False,
+    forbid_machine_observations: bool = False,
+    providers: dict[str, Sequence[str]] | None = None,
+) -> set[str]:
+    """Which kinds of non-publishable material a file's text carries.
+
+    `relative_path` is the file's own path within the repository; it decides where a
+    relative path resolves from. Left empty, the file is treated as sitting at the root.
+    """
+    return set(
+        text_findings(
+            text,
+            relative_path=relative_path,
+            names=names,
+            owner_workflows=owner_workflows,
+            private_patterns=private_patterns,
+            allowed_users=allowed_users,
+            forbid_ai_attribution=forbid_ai_attribution,
+            forbid_internal_planning=forbid_internal_planning,
+            forbid_machine_observations=forbid_machine_observations,
+            providers=providers,
+        )
+    )
 
 
 def kinds_in_path(
     relative: str,
     *,
     names: Iterable[str] = (),
+    owner_workflows: Iterable[str] = (),
     forbidden_suffixes: Iterable[str] = (),
     private_paths: Iterable[str] = (),
     private_files: Iterable[str] = (),
     private_suffixes: Iterable[str] = (),
+    providers: dict[str, Sequence[str]] | None = None,
 ) -> set[str]:
     """Kinds a path carries on its own, before its content is read.
 
@@ -192,12 +294,19 @@ def kinds_in_path(
     folded = relative.casefold()
     if any(name.casefold() in folded for name in names):
         kinds.add(DECLARED_NAME)
+    if any(name.casefold() in folded for name in owner_workflows):
+        kinds.add(OWNER_WORKFLOW)
+    for provider, surfaces in (providers or {}).items():
+        if provider.casefold() in folded and not any(
+            fnmatch(normalized, item) for item in surfaces
+        ):
+            kinds.add(PROVIDER_SURFACE)
     suffixes = DEFAULT_FORBIDDEN_SUFFIXES | {item.lower() for item in forbidden_suffixes}
     if suffix in suffixes:
         kinds.add(FORBIDDEN_KIND)
     private_prefixes = tuple(item if item.endswith("/") else f"{item}/" for item in private_paths)
     if (
-        normalized in set(private_files)
+        normalized in DEFAULT_PRIVATE_FILES | set(private_files)
         or normalized.startswith(private_prefixes)
         or any(normalized.endswith(item) for item in private_suffixes)
     ):

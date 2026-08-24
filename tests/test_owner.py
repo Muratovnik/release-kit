@@ -52,6 +52,44 @@ class OwnerPolicyTests(unittest.TestCase):
             with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: str(private)}):
                 self.assertEqual(private.resolve(), owner.discover(public).root)
 
+    def test_a_typed_private_policy_carries_workflows_and_patterns(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            private = parent / "example-private"
+            public.mkdir()
+            private.mkdir()
+            (private / owner.PRIVATE_VALUES_FILE).write_text("# intentionally empty\n")
+            (private / owner.SEMANTIC_POLICY_FILE).write_text(
+                "version = 1\n"
+                'owner_workflows = ["Someservice"]\n\n'
+                "[[patterns]]\n"
+                'name = "opaque-record"\n'
+                'kind = "personal-data"\n'
+                'expression = "rec_[0-9]+"\n',
+                encoding="utf-8",
+            )
+
+            loaded = owner.discover(public).load()
+
+        self.assertEqual(("Someservice",), loaded.owner_workflows)
+        self.assertEqual("opaque-record", loaded.patterns[0].name)
+
+    def test_an_invalid_private_pattern_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            private = parent / "example-private"
+            public.mkdir()
+            private.mkdir()
+            (private / owner.SEMANTIC_POLICY_FILE).write_text(
+                '[[patterns]]\nname = "broken"\nkind = "personal-data"\nexpression = "["\n',
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(owner.OwnerPolicyError, "broken"):
+                owner.discover(public).load()
+
 
 class ProtectionTests(unittest.TestCase):
     @staticmethod
