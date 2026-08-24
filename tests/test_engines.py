@@ -121,3 +121,20 @@ class EngineCommandTests(unittest.TestCase):
         command = list(invoke.call_args.args[0])
         self.assertIn("--offline", command)
         self.assertEqual("README.md\n", invoke.call_args.kwargs["stdin"])
+
+    def test_lychee_excludes_worktree_deletions_but_keeps_the_index_entry(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "README.md").write_text("[local](missing.md)\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "README.md"], cwd=root, check=True)
+            (root / "README.md").unlink()
+
+            self.assertEqual(
+                (),
+                engines._markdown_paths(root, include_candidates=True, staged=False),
+            )
+            self.assertEqual(
+                ("README.md",),
+                engines._markdown_paths(root, include_candidates=False, staged=True),
+            )

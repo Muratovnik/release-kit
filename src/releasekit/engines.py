@@ -15,7 +15,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from . import toolchain
-from .exposure.audit import scannable_paths
+from .exposure.audit import scannable_paths, worktree_paths
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd", ".mdx"})
 HISTORY_LOG_OPTS = "HEAD --branches --remotes --tags"
@@ -115,10 +115,13 @@ def _checkout_index(root: Path, destination: Path) -> None:
         raise RuntimeError(result.stderr.strip() or "git checkout-index failed")
 
 
-def _markdown_paths(root: Path, *, include_candidates: bool) -> tuple[str, ...]:
+def _markdown_paths(
+    root: Path, *, include_candidates: bool, staged: bool = False
+) -> tuple[str, ...]:
+    inventory = scannable_paths if staged else worktree_paths
     return tuple(
         relative
-        for relative in scannable_paths(root, include_candidates=include_candidates)
+        for relative in inventory(root, include_candidates=include_candidates)
         if Path(relative).suffix.lower() in MARKDOWN_SUFFIXES
     )
 
@@ -131,7 +134,11 @@ def lychee(
     allow_download: bool,
 ) -> int:
     executable = toolchain.resolve("lychee", root=root, allow_download=allow_download)
-    paths = _markdown_paths(root, include_candidates=include_candidates and not staged)
+    paths = _markdown_paths(
+        root,
+        include_candidates=include_candidates and not staged,
+        staged=staged,
+    )
     if not paths:
         return 0
     if not staged:

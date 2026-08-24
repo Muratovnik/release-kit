@@ -93,6 +93,15 @@ def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str
     return tuple(sorted(item for item in result.stdout.split("\0") if item))
 
 
+def worktree_paths(root: Path, *, include_candidates: bool = True) -> tuple[str, ...]:
+    """Files present after the next `git add -A`, excluding tracked deletions."""
+    return tuple(
+        relative
+        for relative in scannable_paths(root, include_candidates=include_candidates)
+        if (root / relative).is_file() or (root / relative).is_symlink()
+    )
+
+
 def worktree_changes(root: Path) -> tuple[str, ...]:
     """Tracked or untracked changes that make a history verdict non-reproducible."""
     result = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
@@ -171,9 +180,10 @@ def scan(
         else:
             report.new.append(finding)
 
-    candidates = (
-        scannable_paths(root, include_candidates=include_candidates) if paths is None else paths
-    )
+    candidates = paths
+    if candidates is None:
+        inventory = scannable_paths if staged else worktree_paths
+        candidates = inventory(root, include_candidates=include_candidates)
     tracked_result = _git(root, ["ls-files", "-z", "--cached"])
     if tracked_result.returncode != 0:
         raise RuntimeError(tracked_result.stderr.strip() or "git ls-files failed")

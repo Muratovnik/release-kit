@@ -33,6 +33,21 @@ def _commit(root: Path) -> None:
 
 
 class ScopeTests(unittest.TestCase):
+    def test_an_unstaged_deletion_is_absent_from_the_worktree_boundary(self) -> None:
+        with _repository({"gone.md": LEAK}) as name:
+            (Path(name) / "gone.md").unlink()
+            report = audit.scan(Path(name))
+
+        self.assertTrue(report.ok, report.failures)
+        self.assertEqual([], report.unreadable)
+
+    def test_the_same_deletion_does_not_change_the_staged_boundary(self) -> None:
+        with _repository({"gone.md": LEAK}) as name:
+            (Path(name) / "gone.md").unlink()
+            report = audit.scan(Path(name), staged=True, include_candidates=False)
+
+        self.assertEqual(["gone.md: home-directory"], report.failures)
+
     def test_an_untracked_unignored_file_is_this_gate_s_business(self) -> None:
         """Uncommitted is not safe. It is one `git add -A` from the history."""
         with _repository({"kept.md": "clean\n"}) as name:
