@@ -20,6 +20,7 @@ class EngineCommandTests(unittest.TestCase):
                 config=".betterleaks.toml",
                 history=True,
                 staged=False,
+                include_candidates=False,
                 allow_download=False,
             )
 
@@ -28,10 +29,11 @@ class EngineCommandTests(unittest.TestCase):
         self.assertIn("--redact", command)
         self.assertIn("--verbose", command)
         self.assertIn("git", command)
-        self.assertIn("--log-opts=HEAD --branches --remotes --tags", command)
+        self.assertIn(f"--log-opts={engines.HISTORY_LOG_OPTS}", command)
         self.assertNotIn("--pre-commit", command)
         environment = invoke.call_args.kwargs["environment"]
         self.assertIn("safe.directory", environment.values())
+        self.assertEqual("1", environment["GIT_NO_REPLACE_OBJECTS"])
 
     def test_betterleaks_staged_scope_is_explicit(self) -> None:
         with (
@@ -43,18 +45,19 @@ class EngineCommandTests(unittest.TestCase):
                 config=".betterleaks.toml",
                 history=False,
                 staged=True,
+                include_candidates=False,
                 allow_download=False,
             )
 
         command = list(invoke.call_args.args[0])
         self.assertIn("--pre-commit", command)
         self.assertIn("--staged", command)
-        self.assertNotIn("--log-opts=HEAD --branches --remotes --tags", command)
+        self.assertNotIn(f"--log-opts={engines.HISTORY_LOG_OPTS}", command)
 
     def test_betterleaks_worktree_scope_uses_the_directory_engine(self) -> None:
         with (
             patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
-            patch.object(engines, "scannable_paths", return_value=()),
+            patch.object(engines, "_materialize_worktree"),
             patch.object(engines, "_run", return_value=0) as invoke,
         ):
             engines.betterleaks(
@@ -62,6 +65,7 @@ class EngineCommandTests(unittest.TestCase):
                 config=".betterleaks.toml",
                 history=False,
                 staged=False,
+                include_candidates=True,
                 allow_download=False,
             )
 
@@ -102,16 +106,72 @@ class EngineCommandTests(unittest.TestCase):
                     config=".betterleaks.toml",
                     history=False,
                     staged=False,
+                    include_candidates=True,
                     allow_download=False,
                 )
 
         self.assertEqual(0, result)
         self.assertEqual({".gitignore", "candidate.txt", "tracked.txt"}, observed)
 
+    def test_worktree_snapshot_keeps_sparse_index_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "sparse.toml").write_text("secret from index\n", encoding="utf-8")
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "add", "sparse.toml"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "update-index", "--skip-worktree", "sparse.toml"],
+                cwd=root,
+                check=True,
+            )
+            (root / "sparse.toml").unlink()
+            observed = ""
+
+            def inspect(command, **_kwargs):
+                nonlocal observed
+                snapshot = Path(command[command.index("dir") + 1])
+                observed = (snapshot / "sparse.toml").read_text(encoding="utf-8")
+                return 0
+
+            with (
+                patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
+                patch.object(engines, "_run", side_effect=inspect),
+            ):
+                result = engines.betterleaks(
+                    root,
+                    config=".betterleaks.toml",
+                    history=False,
+                    staged=False,
+                    include_candidates=True,
+                    allow_download=False,
+                )
+
+        self.assertEqual(0, result)
+        self.assertEqual("secret from index\n", observed)
+
+    def test_betterleaks_respects_a_tracked_only_worktree_boundary(self) -> None:
+        with (
+            patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
+            patch.object(engines, "_materialize_worktree") as materialize,
+            patch.object(engines, "_run", return_value=0),
+        ):
+            engines.betterleaks(
+                Path("repo"),
+                config=".betterleaks.toml",
+                history=False,
+                staged=False,
+                include_candidates=False,
+                allow_download=False,
+            )
+
+        self.assertEqual(Path("repo"), materialize.call_args.args[0])
+        self.assertFalse(materialize.call_args.kwargs["include_candidates"])
+
     def test_lychee_is_always_offline_and_reads_a_git_owned_file_list(self) -> None:
         with (
             patch.object(engines.toolchain, "resolve", return_value=Path("lychee")),
             patch.object(engines, "_markdown_paths", return_value=("README.md",)),
+            patch.object(engines, "_materialize_worktree"),
             patch.object(engines, "_run", return_value=0) as invoke,
         ):
             engines.lychee(

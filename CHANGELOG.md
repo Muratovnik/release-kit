@@ -1,5 +1,48 @@
 # Changelog
 
+## [0.4.1] - 2026-08-27
+
+### Fixed
+
+- Detect real `User` home paths, UNC/WSL/Cygwin and root home forms, file URIs,
+  UTF-16/UTF-32 and printable binary strings, Unicode compatibility forms, and
+  invisible formatting characters in the worktree, archives, and reachable history.
+- Match exact and case-variant private roots, nested owner-policy files, and
+  case-variant private suffixes.
+- Let provider declarations live in `relkit.toml` without allowing provider data
+  outside declared product surfaces.
+- Inspect every historical blob/path association, fetched pull/merge/change refs,
+  Git notes, public ref names, annotated tag messages and taggers, repository-escaping
+  Git symlinks, nested archives, archive symlinks, and invalid archive artifacts.
+- Fail closed on unreadable candidates and convert scanner or engine timeouts into
+  stable operational errors.
+- Fail closed on Git LFS pointers and submodule gitlinks whose external contents are
+  not part of the audited repository.
+- Reject embedded Git bundle files as unaudited history containers.
+- Reject shallow history and local replace/graft views, and disable Git replacement
+  semantics for both built-in history checks and Betterleaks.
+- Keep private owner values, workflows, and patterns active inside paths excluded as
+  deliberate public-rule fixtures.
+- Prevent baselines and exclusions from accepting private owner findings, Git LFS
+  pointers, or submodule gitlinks.
+- Verify cached engine executables against their pinned official archives before
+  executing them.
+
+### Changed
+
+- The owner pre-push guard pins the release-kit projection, public policy, and secret
+  engine configuration. Reviewed changes to those inputs require `protect install`.
+- ZIP containers are recognized by content, including Office/OpenDocument packages
+  and extensionless artifacts.
+- Unsupported compressed containers and invalid/over-budget ZIP artifacts now fail
+  closed and cannot be hidden by exclusions or baselines.
+- Exact private surfaces and the Betterleaks configuration must use portable paths
+  contained by the guarded repository, without Windows aliases or alternate streams.
+- `include_candidates` now controls both structural and Betterleaks worktree scopes.
+- Structural policy, Betterleaks, and Lychee now share an index-based worktree
+  snapshot that preserves sparse-checkout entries while applying real deletions and
+  untracked candidates.
+
 ## [0.4.0] - 2026-08-24
 
 ### Added

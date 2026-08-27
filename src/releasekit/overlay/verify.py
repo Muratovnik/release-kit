@@ -45,15 +45,20 @@ class Problem:
 
 
 def _git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        ["git", *arguments],
-        cwd=root,
-        check=False,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=60,
-    )
+    try:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=60,
+        )
+    except subprocess.TimeoutExpired as error:
+        raise RuntimeError("overlay Git verification timed out") from error
+    except OSError as error:
+        raise RuntimeError(f"overlay Git verification could not run: {error}") from error
 
 
 def _is_link(path: Path) -> bool:

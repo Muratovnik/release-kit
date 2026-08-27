@@ -95,6 +95,10 @@ class ProtectionTests(unittest.TestCase):
     @staticmethod
     def _repository(root: Path, hooks_path: Path | None = None) -> None:
         subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+        (root / ".github").mkdir()
+        (root / ".github" / "relkit.pyz").write_bytes(b"trusted projection")
+        (root / ".betterleaks.toml").write_text("[extend]\nuseDefault = true\n", encoding="utf-8")
+        (root / "relkit.toml").write_text("[exposure]\n", encoding="utf-8")
         target = hooks_path or root / ".git/hooks"
         subprocess.run(
             ["git", "config", "--local", "core.hooksPath", str(target)],
@@ -111,6 +115,22 @@ class ProtectionTests(unittest.TestCase):
 
             self.assertIsNone(protection.problem(root))
             path.write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
+            self.assertIn("drifted", protection.problem(root) or "")
+
+    def test_guard_detects_projection_and_policy_changes(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            protection.install(root)
+
+            (root / ".github" / "relkit.pyz").write_bytes(b"replacement")
+            self.assertIn("drifted", protection.problem(root) or "")
+            protection.install(root)
+            self.assertIsNone(protection.problem(root))
+
+            (root / "relkit.toml").write_text(
+                "[exposure]\ncheck_secrets = false\n", encoding="utf-8"
+            )
             self.assertIn("drifted", protection.problem(root) or "")
 
     def test_install_refuses_to_replace_an_unmanaged_hook(self) -> None:
@@ -134,7 +154,7 @@ class ProtectionTests(unittest.TestCase):
 
             local = protection.install(root)
 
-            self.assertEqual(protection.HOOK, local.read_text(encoding="utf-8"))
+            self.assertEqual(protection.hook_content(root), local.read_text(encoding="utf-8"))
             self.assertEqual(
                 protection.DISPATCHER,
                 (shared / "pre-push").read_text(encoding="utf-8"),

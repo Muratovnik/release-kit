@@ -65,30 +65,34 @@ def run(
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
-    report = audit.scan(
-        root,
-        names=names,
-        owner_workflows=owner_rules.owner_workflows,
-        private_patterns=owner_rules.patterns,
-        baseline=settings.exposure.baseline,
-        exclude=settings.exposure.exclude,
-        private_paths=private_paths,
-        private_files=settings.exposure.private_files,
-        private_suffixes=settings.exposure.private_suffixes,
-        required_ignores=settings.exposure.required_ignores,
-        forbidden_suffixes=settings.exposure.forbidden_suffixes,
-        allowed_users=settings.exposure.allowed_users,
-        forbid_png_metadata=settings.exposure.forbid_png_metadata,
-        forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
-        forbid_internal_planning=settings.exposure.forbid_internal_planning,
-        forbid_machine_observations=settings.exposure.forbid_machine_observations,
-        providers=providers,
-        provenance_required=settings.exposure.provenance_required,
-        provenance=settings.exposure.provenance,
-        inspect_archives=settings.exposure.inspect_archives,
-        include_candidates=settings.exposure.include_candidates and not staged,
-        staged=staged,
-    )
+    try:
+        report = audit.scan(
+            root,
+            names=names,
+            owner_workflows=owner_rules.owner_workflows,
+            private_patterns=owner_rules.patterns,
+            baseline=settings.exposure.baseline,
+            exclude=settings.exposure.exclude,
+            private_paths=private_paths,
+            private_files=settings.exposure.private_files,
+            private_suffixes=settings.exposure.private_suffixes,
+            required_ignores=settings.exposure.required_ignores,
+            forbidden_suffixes=settings.exposure.forbidden_suffixes,
+            allowed_users=settings.exposure.allowed_users,
+            forbid_png_metadata=settings.exposure.forbid_png_metadata,
+            forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+            forbid_internal_planning=settings.exposure.forbid_internal_planning,
+            forbid_machine_observations=settings.exposure.forbid_machine_observations,
+            providers=providers,
+            provenance_required=settings.exposure.provenance_required,
+            provenance=settings.exposure.provenance,
+            inspect_archives=settings.exposure.inspect_archives,
+            include_candidates=settings.exposure.include_candidates and not staged,
+            staged=staged,
+        )
+    except RuntimeError as error:
+        print(f"relkit audit: {error}", file=sys.stderr)
+        return 2
     failures = list(report.failures)
     if policy is not None and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
@@ -105,28 +109,32 @@ def run(
     if strict:
         failures.extend(str(finding) for finding in report.baselined)
     if history:
-        failures.extend(
-            audit.history_failures(
-                root,
-                names=names,
-                owner_workflows=owner_rules.owner_workflows,
-                private_patterns=owner_rules.patterns,
-                private_paths=private_paths,
-                private_files=settings.exposure.private_files,
-                private_suffixes=settings.exposure.private_suffixes,
-                forbidden_suffixes=settings.exposure.forbidden_suffixes,
-                allowed_users=settings.exposure.allowed_users,
-                allowed_identities=settings.exposure.allowed_identities,
-                exclude=settings.exposure.exclude,
-                forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
-                forbid_internal_planning=settings.exposure.forbid_internal_planning,
-                forbid_machine_observations=settings.exposure.forbid_machine_observations,
-                providers=providers,
-                provenance_required=settings.exposure.provenance_required,
-                provenance=settings.exposure.provenance,
-                inspect_archives=settings.exposure.inspect_archives,
+        try:
+            failures.extend(
+                audit.history_failures(
+                    root,
+                    names=names,
+                    owner_workflows=owner_rules.owner_workflows,
+                    private_patterns=owner_rules.patterns,
+                    private_paths=private_paths,
+                    private_files=settings.exposure.private_files,
+                    private_suffixes=settings.exposure.private_suffixes,
+                    forbidden_suffixes=settings.exposure.forbidden_suffixes,
+                    allowed_users=settings.exposure.allowed_users,
+                    allowed_identities=settings.exposure.allowed_identities,
+                    exclude=settings.exposure.exclude,
+                    forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+                    forbid_internal_planning=settings.exposure.forbid_internal_planning,
+                    forbid_machine_observations=settings.exposure.forbid_machine_observations,
+                    providers=providers,
+                    provenance_required=settings.exposure.provenance_required,
+                    provenance=settings.exposure.provenance,
+                    inspect_archives=settings.exposure.inspect_archives,
+                )
             )
-        )
+        except RuntimeError as error:
+            print(f"relkit audit: {error}", file=sys.stderr)
+            return 2
 
     if policy is not None and policy.manifest_path.is_file():
         if policy.root.is_dir():
@@ -135,7 +143,7 @@ def run(
                 problems, skipped = verify_module.check(
                     mounts, public_root=root, private_root=policy.root
                 )
-            except manifest_module.ManifestError as error:
+            except (manifest_module.ManifestError, RuntimeError) as error:
                 print(f"relkit audit: {error}", file=sys.stderr)
                 return 2
             failures.extend(str(problem) for problem in problems)
@@ -145,8 +153,6 @@ def run(
     elif require_overlay:
         failures.append(f"private overlay manifest is unavailable: {policy.manifest_path}")
 
-    for item in report.unreadable:
-        failures.append(f"could not read {item}")
     if report.baselined:
         print(f"relkit audit: {len(report.baselined)} baselined finding(s) remain")
 
@@ -157,6 +163,7 @@ def run(
             config=settings.exposure.betterleaks_config,
             history=history,
             staged=staged,
+            include_candidates=settings.exposure.include_candidates and not staged,
             allow_download=allow_download,
         ):
             engine_failures.append("Betterleaks failed")

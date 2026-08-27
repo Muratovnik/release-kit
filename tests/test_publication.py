@@ -12,6 +12,58 @@ from releasekit.exposure.audit import Report
 
 
 class HistoryScopeTests(unittest.TestCase):
+    def test_tree_inventory_failure_is_an_operational_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = config.Config(root=root)
+            with (
+                patch.object(publication.config_module, "load", return_value=settings),
+                patch.object(
+                    publication.audit, "scan", side_effect=RuntimeError("not a repository")
+                ),
+                redirect_stderr(StringIO()) as stderr,
+            ):
+                result = publication.run(
+                    root,
+                    history=False,
+                    staged=False,
+                    strict=False,
+                    owner_mode=False,
+                    require_overlay=False,
+                    allow_download=False,
+                )
+
+        self.assertEqual(2, result)
+        self.assertIn("not a repository", stderr.getvalue())
+
+    def test_history_inventory_failure_is_an_operational_error(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = config.Config(root=root)
+            with (
+                patch.object(publication.config_module, "load", return_value=settings),
+                patch.object(publication.audit, "scan", return_value=Report()),
+                patch.object(publication.audit, "worktree_changes", return_value=()),
+                patch.object(
+                    publication.audit,
+                    "history_failures",
+                    side_effect=RuntimeError("history timed out"),
+                ),
+                redirect_stderr(StringIO()) as stderr,
+            ):
+                result = publication.run(
+                    root,
+                    history=True,
+                    staged=False,
+                    strict=False,
+                    owner_mode=False,
+                    require_overlay=False,
+                    allow_download=False,
+                )
+
+        self.assertEqual(2, result)
+        self.assertIn("history timed out", stderr.getvalue())
+
     def test_dirty_worktree_prevents_a_history_verdict(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

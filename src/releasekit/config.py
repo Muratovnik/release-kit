@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import tomllib
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 CONFIG_NAME = "relkit.toml"
 EXPOSURE_KEYS = frozenset(
@@ -35,6 +35,11 @@ EXPOSURE_KEYS = frozenset(
 
 PROVIDER_ROLES = frozenset({"product-data-provider"})
 PROVENANCE_KINDS = frozenset({"synthetic", "anonymized", "machine-derived"})
+WINDOWS_RESERVED_STEMS = frozenset(
+    {"aux", "con", "nul", "prn"}
+    | {f"com{number}" for number in range(1, 10)}
+    | {f"lpt{number}" for number in range(1, 10)}
+)
 
 
 class ConfigError(Exception):
@@ -60,6 +65,30 @@ def _boolean(section: dict[str, object], key: str, default: bool) -> bool:
     if not isinstance(value, bool):
         raise ConfigError(f"{key} must be true or false")
     return value
+
+
+def _portable_repository_path(value: str, key: str, *, allow_glob: bool = False) -> str:
+    if (
+        not value
+        or value != value.strip()
+        or "\\" in value
+        or any(ord(character) < 32 or ord(character) == 127 for character in value)
+    ):
+        raise ConfigError(f"{key} must be a non-empty portable repository-relative path")
+    path = PurePosixPath(value)
+    if path.is_absolute() or path.as_posix() in {".", ".."} or ".." in path.parts:
+        raise ConfigError(f"{key} must stay inside the guarded repository")
+    if any(
+        ":" in part
+        or any(character in part for character in '<>"|')
+        or part.endswith((" ", "."))
+        or part.split(".", maxsplit=1)[0].casefold() in WINDOWS_RESERVED_STEMS
+        for part in path.parts
+    ):
+        raise ConfigError(f"{key} must be portable across supported filesystems")
+    if not allow_glob and any(character in value for character in "*?["):
+        raise ConfigError(f"{key} must name an exact repository path, not a glob")
+    return path.as_posix()
 
 
 @dataclass(frozen=True)
@@ -91,8 +120,16 @@ def _providers(section: dict[str, object]) -> dict[str, ProviderConfig]:
             choices = ", ".join(sorted(PROVIDER_ROLES))
             raise ConfigError(f"provider {name} role must be one of: {choices}")
         surfaces = _strings(value, "allowed_surfaces")
-        if not surfaces or any(not surface.strip() for surface in surfaces):
+        if not surfaces:
             raise ConfigError(f"provider {name} allowed_surfaces must not be empty")
+        surfaces = [
+            _portable_repository_path(
+                surface,
+                f"provider {name} allowed_surfaces",
+                allow_glob=True,
+            )
+            for surface in surfaces
+        ]
         providers[name] = ProviderConfig(role=role, allowed_surfaces=surfaces)
     return providers
 
@@ -103,13 +140,20 @@ def _provenance(section: dict[str, object]) -> dict[str, str]:
         isinstance(pattern, str) and isinstance(kind, str) for pattern, kind in raw.items()
     ):
         raise ConfigError("[exposure.provenance] must map path patterns to strings")
+    normalized: dict[str, str] = {}
     for pattern, kind in raw.items():
-        if not pattern.strip():
-            raise ConfigError("[exposure.provenance] path patterns must not be empty")
+        normalized_pattern = _portable_repository_path(
+            pattern,
+            "[exposure.provenance] path pattern",
+            allow_glob=True,
+        )
         if kind not in PROVENANCE_KINDS:
             choices = ", ".join(sorted(PROVENANCE_KINDS))
             raise ConfigError(f"provenance for {pattern} must be one of: {choices}")
-    return dict(raw)
+        if normalized_pattern in normalized:
+            raise ConfigError("[exposure.provenance] paths must be unique after normalization")
+        normalized[normalized_pattern] = kind
+    return normalized
 
 
 @dataclass(frozen=True)
@@ -201,20 +245,61 @@ def load(root: Path, *, required: bool = True) -> Config:
         raise ConfigError(
             "[exposure.baseline] must map a string path to a list of string finding kinds"
         )
+    normalized_baseline = {
+        _portable_repository_path(key, "[exposure.baseline] path"): list(value)
+        for key, value in baseline.items()
+    }
+    if len(normalized_baseline) != len(baseline):
+        raise ConfigError("[exposure.baseline] paths must be unique after normalization")
+    private_paths = [
+        _portable_repository_path(value, "private_paths")
+        for value in _strings(section, "private_paths")
+    ]
+    private_files = [
+        _portable_repository_path(value, "private_files")
+        for value in _strings(section, "private_files")
+    ]
+    required_ignores = [
+        _portable_repository_path(value, "required_ignores")
+        for value in _strings(section, "required_ignores")
+    ]
+    private_suffixes = _strings(section, "private_suffixes")
+    forbidden_suffixes = _strings(section, "forbidden_suffixes")
+    for key, values in (
+        ("private_suffixes", private_suffixes),
+        ("forbidden_suffixes", forbidden_suffixes),
+    ):
+        if any(
+            not value
+            or value != value.strip()
+            or not value.startswith(".")
+            or "/" in value
+            or "\\" in value
+            or any(character in value for character in "*?[")
+            for value in values
+        ):
+            raise ConfigError(f"{key} entries must be non-empty file suffixes beginning with '.'")
+    betterleaks_config = _portable_repository_path(
+        _string(section, "betterleaks_config", ".betterleaks.toml"),
+        "betterleaks_config",
+    )
     return Config(
         root=root,
         exposure=ExposureConfig(
-            baseline={key: list(value) for key, value in baseline.items()},
-            exclude=_strings(section, "exclude"),
-            private_paths=_strings(section, "private_paths"),
-            private_files=_strings(section, "private_files"),
-            private_suffixes=_strings(section, "private_suffixes"),
-            required_ignores=_strings(section, "required_ignores"),
-            forbidden_suffixes=_strings(section, "forbidden_suffixes"),
+            baseline=normalized_baseline,
+            exclude=[
+                _portable_repository_path(value, "exclude", allow_glob=True)
+                for value in _strings(section, "exclude")
+            ],
+            private_paths=private_paths,
+            private_files=private_files,
+            private_suffixes=private_suffixes,
+            required_ignores=required_ignores,
+            forbidden_suffixes=forbidden_suffixes,
             allowed_users=_strings(section, "allowed_users"),
             check_secrets=_boolean(section, "check_secrets", True),
             check_links=_boolean(section, "check_links", True),
-            betterleaks_config=_string(section, "betterleaks_config", ".betterleaks.toml"),
+            betterleaks_config=betterleaks_config,
             allowed_identities=_strings(section, "allowed_identities"),
             forbid_png_metadata=_boolean(section, "forbid_png_metadata", False),
             include_candidates=_boolean(section, "include_candidates", True),
@@ -223,7 +308,10 @@ def load(root: Path, *, required: bool = True) -> Config:
             forbid_machine_observations=_boolean(section, "forbid_machine_observations", False),
             inspect_archives=_boolean(section, "inspect_archives", True),
             providers=_providers(section),
-            provenance_required=_strings(section, "provenance_required"),
+            provenance_required=[
+                _portable_repository_path(value, "provenance_required", allow_glob=True)
+                for value in _strings(section, "provenance_required")
+            ],
             provenance=_provenance(section),
         ),
     )

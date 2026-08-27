@@ -146,6 +146,57 @@ class LoadTests(unittest.TestCase):
             with self.assertRaisesRegex(config.ConfigError, "overlay"):
                 config.load(root)
 
+    def test_the_secret_engine_config_must_stay_inside_the_repository(self) -> None:
+        for value in (
+            "../private/.betterleaks.toml",
+            "C:/private/betterleaks.toml",
+            "config/policy.toml:private",
+            "config/NUL",
+        ):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(
+                    f'[exposure]\nbetterleaks_config = "{value}"\n', encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(config.ConfigError, "betterleaks_config"):
+                    config.load(root)
+
+    def test_glob_policy_paths_cannot_escape_or_use_platform_aliases(self) -> None:
+        for key, value in (
+            ("exclude", "../private/*"),
+            ("provenance_required", "reports/CON/*"),
+        ):
+            with self.subTest(key=key), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(
+                    f'[exposure]\n{key} = ["{value}"]\n', encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(config.ConfigError, key):
+                    config.load(root)
+
+    def test_empty_or_malformed_private_suffixes_are_refused(self) -> None:
+        for value in ("", "local.md", " .local.md"):
+            with self.subTest(value=value), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(
+                    f'[exposure]\nprivate_suffixes = ["{value}"]\n', encoding="utf-8"
+                )
+
+                with self.assertRaisesRegex(config.ConfigError, "private_suffixes"):
+                    config.load(root)
+
+    def test_exact_private_surfaces_cannot_silently_use_glob_syntax(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / config.CONFIG_NAME).write_text(
+                '[exposure]\nprivate_paths = [".someclient/*"]\n', encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(config.ConfigError, "exact repository path"):
+                config.load(root)
+
 
 if __name__ == "__main__":
     unittest.main()

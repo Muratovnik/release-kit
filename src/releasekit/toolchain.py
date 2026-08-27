@@ -148,6 +148,34 @@ def _archive_member_names(path: Path) -> tuple[str, ...]:
         return tuple(member.name for member in archive.getmembers() if member.isfile())
 
 
+def _archive_executable_sha256(archive_path: Path, executable_name: str) -> str:
+    """Hash the executable inside a release archive without running it."""
+    candidates = [
+        name
+        for name in _archive_member_names(archive_path)
+        if PurePosixPath(name.replace("\\", "/")).name == executable_name
+    ]
+    if len(candidates) != 1:
+        raise ToolchainError(
+            f"{archive_path.name} contains {len(candidates)} copies of {executable_name}"
+        )
+    member = candidates[0]
+    digest = hashlib.sha256()
+    if archive_path.name.endswith(".zip"):
+        with zipfile.ZipFile(archive_path) as archive, archive.open(member) as source:
+            for block in iter(lambda: source.read(1024 * 1024), b""):
+                digest.update(block)
+    else:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            source = archive.extractfile(member)
+            if source is None:
+                raise ToolchainError(f"could not read {member} from {archive_path.name}")
+            with source:
+                for block in iter(lambda: source.read(1024 * 1024), b""):
+                    digest.update(block)
+    return digest.hexdigest()
+
+
 def _extract_executable(archive_path: Path, executable_name: str, destination: Path) -> None:
     candidates = [
         name
@@ -197,7 +225,7 @@ def _verify(tool: Tool, executable: Path) -> None:
             errors="replace",
             timeout=30,
         )
-    except OSError as error:
+    except (OSError, subprocess.TimeoutExpired) as error:
         raise ToolchainError(f"could not run {executable}: {error}") from error
     output = (result.stdout + result.stderr).strip()
     version = re.compile(rf"(?<![0-9.]){re.escape(tool.version)}(?![0-9.])")
@@ -223,31 +251,45 @@ def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
         raise ToolchainError(f"{tool.name} {tool.version} has no pinned asset for {key}") from None
     cache_root = Path(os.environ.get("RELKIT_CACHE_DIR", root / ".cache" / "release-kit"))
     destination = cache_root / tool.name / tool.version / tool.executable
-    if destination.is_file():
-        _verify(tool, destination)
-        return destination
-    if not allow_download:
-        raise ToolchainError(f"{tool.name} {tool.version} is not cached at {destination}")
-
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(
-        prefix=f"{tool.name}-",
-        suffix=Path(asset.filename).suffix,
-        dir=destination.parent,
-        delete=False,
-    ) as handle:
-        archive_path = Path(handle.name)
-    try:
-        _download(tool.url(asset), archive_path)
-        observed = _sha256(archive_path)
-        if observed != asset.sha256:
+    archive_path = destination.parent / asset.filename
+    if not archive_path.is_file():
+        if not allow_download:
             raise ToolchainError(
-                f"SHA-256 mismatch for {asset.filename}: expected {asset.sha256}, got {observed}"
+                f"verified archive for {tool.name} {tool.version} is not cached at {archive_path}"
             )
+        destination.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            prefix=f"{tool.name}-",
+            suffix=Path(asset.filename).suffix,
+            dir=destination.parent,
+            delete=False,
+        ) as handle:
+            temporary_archive = Path(handle.name)
+        try:
+            _download(tool.url(asset), temporary_archive)
+            observed = _sha256(temporary_archive)
+            if observed != asset.sha256:
+                raise ToolchainError(
+                    f"SHA-256 mismatch for {asset.filename}: expected {asset.sha256}, got {observed}"
+                )
+            temporary_archive.replace(archive_path)
+        finally:
+            temporary_archive.unlink(missing_ok=True)
+
+    observed_archive = _sha256(archive_path)
+    if observed_archive != asset.sha256:
+        raise ToolchainError(
+            f"SHA-256 mismatch for cached {asset.filename}: "
+            f"expected {asset.sha256}, got {observed_archive}"
+        )
+    expected_executable = _archive_executable_sha256(archive_path, tool.executable)
+    if destination.is_file() and _sha256(destination) != expected_executable:
+        raise ToolchainError(f"SHA-256 mismatch for cached executable at {destination}")
+    if not destination.is_file():
         _extract_executable(archive_path, tool.executable, destination)
-        _verify(tool, destination)
-    finally:
-        archive_path.unlink(missing_ok=True)
+    if _sha256(destination) != expected_executable:
+        raise ToolchainError(f"SHA-256 mismatch for extracted executable at {destination}")
+    _verify(tool, destination)
     return destination
 
 

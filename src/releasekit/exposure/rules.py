@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatch
@@ -54,7 +55,21 @@ class PrivatePattern:
 WINDOWS_USER_ROOT = re.compile(
     r"(?i)\b[A-Z]:[\\/]+(?:Users|Documents and Settings)[\\/]+([^\\/\s\"'<>:]+)"
 )
-POSIX_USER_ROOT = re.compile(r"(?i)(?:^|[\s\"'(=])/(?:Users|home)/([^/\s\"'<>:]+)")
+POSIX_USER_ROOT = re.compile(r"(?i)(?<![A-Za-z0-9/])/(?:Users|home|var/home)/([^/\s\"'<>:]+)")
+UNC_USER_ROOT = re.compile(
+    r"(?i)(?<![A-Za-z0-9:])[\\/]{2,}[^\\/\s\"'<>:]+[\\/]+"
+    r"(?:(?:[A-Z]\$)[\\/]+)?(?:Users|Documents and Settings)[\\/]+([^\\/\s\"'<>:]+)"
+)
+WINDOWS_COMPAT_USER_ROOT = re.compile(
+    r"(?i)(?<![A-Za-z0-9/])/(?:mnt|cygdrive)/[a-z]/"
+    r"(?:Users|Documents and Settings)/([^/\s\"'<>:]+)"
+)
+ROOT_HOME = re.compile(r"(?i)(?<![A-Za-z0-9/])/root(?:/|(?=$|[\s\"')]))")
+FILE_URI_USER_ROOT = re.compile(
+    r"(?i)\bfile:(?://[^/\s\"'<>:]+)?/+"
+    r"(?:Users|home|var/home)/([^/\s\"'<>:]+)"
+)
+FILE_URI_ROOT_HOME = re.compile(r"(?i)\bfile:(?://[^/\s\"'<>:]+)?/+root(?:/|(?=$|[\s\"')]))")
 
 # A relative path that climbs above the repository resolves only where the sibling it
 # expects happens to exist, so it encodes a machine layout rather than a dependency.
@@ -74,7 +89,7 @@ POSIX_USER_ROOT = re.compile(r"(?i)(?:^|[\s\"'(=])/(?:Users|home)/([^/\s\"'<>:]+
 # they actually land; reporting both turns one defect into two lines and teaches the
 # reader to skim the output.
 VARIABLE_ANCHORED_PATH = re.compile(r"\$\{[A-Z_][A-Z0-9_]*\}/((?:\.\./)+[A-Za-z0-9_.\-/]*)")
-FILE_RELATIVE_PATH = re.compile(r"[\"'\s=]((?:\.\./)+[A-Za-z0-9_.\-/]*)")
+FILE_RELATIVE_PATH = re.compile(r"(?:^|[\"'\s=])((?:\.\./)+[A-Za-z0-9_.\-/]*)")
 
 
 def _escapes(candidate: str, base: str) -> bool:
@@ -83,9 +98,7 @@ def _escapes(candidate: str, base: str) -> bool:
 
 
 # Placeholder accounts that legitimately appear in documentation and CI runners.
-DEFAULT_ALLOWED_USERS = frozenset(
-    {"alice", "bob", "example", "owner", "user", "runner", "runneradmin", "vagrant"}
-)
+DEFAULT_ALLOWED_USERS = frozenset({"example", "runner", "runneradmin", "vagrant"})
 
 # An account written as an address under a domain the standards reserve for
 # documentation is a placeholder by definition rather than by local convention, so it
@@ -96,7 +109,7 @@ RESERVED_EXAMPLE_SUFFIXES = (".example", ".invalid", ".test", ".localhost")
 
 
 def _is_placeholder(account: str, allowed: Iterable[str]) -> bool:
-    lowered = account.lower()
+    lowered = _normalized(account).casefold()
     if lowered in allowed:
         return True
     _, separator, domain = lowered.partition("@")
@@ -108,11 +121,33 @@ def _is_placeholder(account: str, allowed: Iterable[str]) -> bool:
 PROSE_SUFFIXES = frozenset({".md", ".markdown", ".rst", ".txt", ".adoc"})
 
 DEFAULT_FORBIDDEN_SUFFIXES = frozenset(
-    {".cer", ".crt", ".db", ".key", ".log", ".p12", ".pem", ".pfx", ".sqlite", ".sqlite3"}
+    {
+        ".bundle",
+        ".cer",
+        ".crt",
+        ".db",
+        ".gitbundle",
+        ".key",
+        ".log",
+        ".p12",
+        ".pem",
+        ".pfx",
+        ".sqlite",
+        ".sqlite3",
+    }
 )
 DEFAULT_PRIVATE_FILES = frozenset({".publication-owner.toml", ".publication-private-values"})
 
 WHITESPACE = re.compile(r"\s+")
+
+
+def _normalized(text: str) -> str:
+    return "".join(
+        character
+        for character in unicodedata.normalize("NFKC", text)
+        if unicodedata.category(character) != "Cf"
+    )
+
 
 INTERNAL_PLANNING_PATTERNS = (
     re.compile(r"(?im)^\s*card\s*:\s*\d+(?:\s*,\s*\d+)*\s*$"),
@@ -120,12 +155,23 @@ INTERNAL_PLANNING_PATTERNS = (
     re.compile(r"(?i)<!--\s*kb:[^>]+-->"),
 )
 
-AI_VENDOR = r"(?:claude|codex|chatgpt|copilot|gemini|cursor|windsurf|devin)"
+AI_VENDOR = (
+    r"(?:(?:anthropic\s+)?claude|(?:openai\s+)?(?:codex|chatgpt)|"
+    r"(?:github\s+)?copilot|(?:google\s+)?gemini|cursor|windsurf|devin|"
+    r"(?:ai|coding)\s+agent)"
+)
+COMMENT_PREFIX = r"(?:[#;]|//|/\*+|\*|<!--)?\s*"
 AI_ATTRIBUTION_PATTERNS = (
     re.compile(
-        rf"(?im)^\s*(?:co-authored-by|generated-by|reviewed-by|tested-by):[^\n]*\b{AI_VENDOR}\b"
+        rf"(?im)^\s*{COMMENT_PREFIX}"
+        rf"(?:co-authored-by|generated-by|reviewed-by|tested-by):[^\n]*\b{AI_VENDOR}\b"
     ),
-    re.compile(rf"(?im)^\s*(?:generated|written|reviewed)\s+(?:with|by)\s+{AI_VENDOR}\b"),
+    re.compile(
+        rf"(?im)^\s*{COMMENT_PREFIX}"
+        rf"(?:this\s+(?:file|code|change|commit|pull\s+request)\s+(?:was|is)\s+)?"
+        rf"(?:generated|written|reviewed|tested|created|ai[- ]assisted)\s+"
+        rf"(?:with|by|using)\s+{AI_VENDOR}\b"
+    ),
 )
 
 MACHINE_OBSERVATION_PATTERNS = (
@@ -139,10 +185,11 @@ MACHINE_OBSERVATION_PATTERNS = (
 
 def contains_wrapped_declared_name(text: str, names: Sequence[str]) -> bool:
     """Whether whitespace wrapping hides a declared value from raw matching."""
-    folded = text.casefold()
+    folded = _normalized(text).casefold()
     normalized = WHITESPACE.sub(" ", folded)
     return any(
-        name.casefold() not in folded and WHITESPACE.sub(" ", name.casefold()) in normalized
+        _normalized(name).casefold() not in folded
+        and WHITESPACE.sub(" ", _normalized(name).casefold()) in normalized
         for name in names
         if len(name.split()) > 1
     )
@@ -157,9 +204,9 @@ def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
     Collapsing whitespace preserves word boundaries and does not turn separated
     tokens into a match.
     """
-    folded = text.casefold()
-    return any(name.casefold() in folded for name in names) or contains_wrapped_declared_name(
-        text, names
+    folded = _normalized(text).casefold()
+    return any(_normalized(name).casefold() in folded for name in names) or (
+        contains_wrapped_declared_name(text, names)
     )
 
 
@@ -169,9 +216,15 @@ def provider_surface_finding(
     relative_path: str,
     providers: dict[str, Sequence[str]],
 ) -> str:
+    # The public configuration is the declaration of the provider contract, not a
+    # product surface that consumes provider data. Requiring adopters to allow the
+    # configuration path would make every valid declaration reject itself.
+    normalized_path = _normalized(relative_path)
+    if normalized_path == "relkit.toml":
+        return ""
     for provider, surfaces in providers.items():
         if _contains_declared_name(text, (provider,)) and not any(
-            fnmatch(relative_path, surface) for surface in surfaces
+            fnmatch(normalized_path, _normalized(surface)) for surface in surfaces
         ):
             return f"provider {provider} is outside its declared surfaces"
     return ""
@@ -191,12 +244,24 @@ def text_findings(
     providers: dict[str, Sequence[str]] | None = None,
 ) -> dict[str, str]:
     """Return stable finding kinds with non-sensitive explanations."""
-    allowed = DEFAULT_ALLOWED_USERS | {user.lower() for user in allowed_users}
+    allowed = DEFAULT_ALLOWED_USERS | {_normalized(user).casefold() for user in allowed_users}
     found: dict[str, str] = {}
-    for pattern in (WINDOWS_USER_ROOT, POSIX_USER_ROOT):
-        if any(not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(text)):
+    searchable = _normalized(text)
+    path_text = searchable.replace("\\/", "/")
+    for pattern in (
+        WINDOWS_USER_ROOT,
+        UNC_USER_ROOT,
+        WINDOWS_COMPAT_USER_ROOT,
+        POSIX_USER_ROOT,
+        FILE_URI_USER_ROOT,
+    ):
+        if any(
+            not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(path_text)
+        ):
             found[HOME_DIRECTORY] = ""
             break
+    if ROOT_HOME.search(path_text) or FILE_URI_ROOT_HOME.search(path_text):
+        found[HOME_DIRECTORY] = ""
 
     checks_relative_paths = (
         posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES
@@ -205,32 +270,34 @@ def text_findings(
     if checks_relative_paths:
         directory = posixpath.dirname(relative_path)
         if any(
-            _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(text)
+            _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(searchable)
         ) or any(
-            _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(text)
+            _escapes(match.group(1), directory) for match in FILE_RELATIVE_PATH.finditer(searchable)
         ):
             found[ESCAPES_REPOSITORY] = ""
 
-    if _contains_declared_name(text, names):
+    if _contains_declared_name(searchable, names):
         found[DECLARED_NAME] = ""
-    if _contains_declared_name(text, owner_workflows):
+    if _contains_declared_name(searchable, owner_workflows):
         found[OWNER_WORKFLOW] = "declared by the private owner policy"
     for pattern in private_patterns:
-        if re.search(pattern.expression, text):
+        if re.search(pattern.expression, searchable):
             found.setdefault(pattern.kind, "matched a private owner rule")
     if forbid_internal_planning and any(
-        pattern.search(text) for pattern in INTERNAL_PLANNING_PATTERNS
+        pattern.search(searchable) for pattern in INTERNAL_PLANNING_PATTERNS
     ):
         found[INTERNAL_PLANNING] = "internal card or knowledge-base reference"
-    if forbid_ai_attribution and any(pattern.search(text) for pattern in AI_ATTRIBUTION_PATTERNS):
+    if forbid_ai_attribution and any(
+        pattern.search(searchable) for pattern in AI_ATTRIBUTION_PATTERNS
+    ):
         found[AI_ATTRIBUTION] = "machine authorship or review attribution"
     if forbid_machine_observations and any(
-        pattern.search(text) for pattern in MACHINE_OBSERVATION_PATTERNS
+        pattern.search(searchable) for pattern in MACHINE_OBSERVATION_PATTERNS
     ):
         found[MACHINE_OBSERVATION] = "observation about the owner's workstation"
 
     if detail := provider_surface_finding(
-        text, relative_path=relative_path, providers=providers or {}
+        searchable, relative_path=relative_path, providers=providers or {}
     ):
         found[PROVIDER_SURFACE] = detail
     return found
@@ -288,27 +355,41 @@ def kinds_in_path(
     file added to it is judged again from scratch; declaring the surface private
     settles it once, for everything now in it and everything later.
     """
-    normalized = PurePosixPath(relative).as_posix()
+    normalized = _normalized(PurePosixPath(relative).as_posix())
+    normalized_folded = normalized.casefold()
     suffix = PurePosixPath(normalized).suffix.lower()
     kinds: set[str] = set()
-    folded = relative.casefold()
-    if any(name.casefold() in folded for name in names):
+    folded = _normalized(relative).casefold()
+    if any(_normalized(name).casefold() in folded for name in names):
         kinds.add(DECLARED_NAME)
-    if any(name.casefold() in folded for name in owner_workflows):
+    if any(_normalized(name).casefold() in folded for name in owner_workflows):
         kinds.add(OWNER_WORKFLOW)
     for provider, surfaces in (providers or {}).items():
-        if provider.casefold() in folded and not any(
-            fnmatch(normalized, item) for item in surfaces
+        if _normalized(provider).casefold() in folded and not any(
+            fnmatch(normalized, _normalized(item)) for item in surfaces
         ):
             kinds.add(PROVIDER_SURFACE)
     suffixes = DEFAULT_FORBIDDEN_SUFFIXES | {item.lower() for item in forbidden_suffixes}
     if suffix in suffixes:
         kinds.add(FORBIDDEN_KIND)
-    private_prefixes = tuple(item if item.endswith("/") else f"{item}/" for item in private_paths)
+    private_roots = tuple(
+        _normalized(PurePosixPath(item.rstrip("/")).as_posix()).casefold()
+        for item in private_paths
+        if item
+    )
+    configured_files = {
+        _normalized(PurePosixPath(item).as_posix()).casefold() for item in private_files if item
+    }
+    private_suffixes_folded = tuple(_normalized(item).casefold() for item in private_suffixes)
+    basename = PurePosixPath(normalized).name.casefold()
     if (
-        normalized in DEFAULT_PRIVATE_FILES | set(private_files)
-        or normalized.startswith(private_prefixes)
-        or any(normalized.endswith(item) for item in private_suffixes)
+        basename in DEFAULT_PRIVATE_FILES
+        or normalized_folded in configured_files
+        or any(
+            normalized_folded == root or normalized_folded.startswith(f"{root}/")
+            for root in private_roots
+        )
+        or any(normalized_folded.endswith(item) for item in private_suffixes_folded)
     ):
         kinds.add(PRIVATE_PATH)
     return kinds

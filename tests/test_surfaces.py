@@ -25,11 +25,22 @@ def _repository(files: dict[str, str], *, ignore: str = "") -> tempfile.Temporar
 
 
 class PrivatePathTests(unittest.TestCase):
+    def test_embedded_git_bundles_are_forbidden_publication_objects(self) -> None:
+        for relative in ("backup.bundle", "backup.gitbundle"):
+            with self.subTest(relative=relative):
+                self.assertIn(rules.FORBIDDEN_KIND, rules.kinds_in_path(relative))
+
     def test_a_file_under_a_private_surface_is_a_finding_whatever_it_contains(self) -> None:
         with _repository({".someclient/settings.json": "{}\n"}) as name:
             report = audit.scan(Path(name), private_paths=[".someclient/"])
 
         self.assertEqual([".someclient/settings.json: private-path"], report.failures)
+
+    def test_the_private_surface_root_itself_is_a_finding(self) -> None:
+        self.assertIn(
+            rules.PRIVATE_PATH,
+            rules.kinds_in_path(".someclient", private_paths=[".someclient"]),
+        )
 
     def test_the_surface_covers_files_added_later(self) -> None:
         """The reason a surface is declared rather than each file judged on content."""
@@ -50,6 +61,12 @@ class PrivatePathTests(unittest.TestCase):
 
         self.assertEqual(["AGENTS.local.md: private-path"], report.failures)
 
+    def test_private_suffixes_are_portable_across_case_insensitive_filesystems(self) -> None:
+        self.assertIn(
+            rules.PRIVATE_PATH,
+            rules.kinds_in_path("AGENTS.LOCAL.MD", private_suffixes=[".local.md"]),
+        )
+
     def test_a_similarly_named_sibling_is_not_swept_in(self) -> None:
         with _repository({".someclientele/notes.md": "x\n"}) as name:
             report = audit.scan(Path(name), private_paths=[".someclient"])
@@ -57,7 +74,12 @@ class PrivatePathTests(unittest.TestCase):
         self.assertTrue(report.ok, report.failures)
 
     def test_owner_policy_files_are_private_without_project_configuration(self) -> None:
-        for relative in (".publication-owner.toml", ".publication-private-values"):
+        for relative in (
+            ".publication-owner.toml",
+            ".publication-private-values",
+            "backup/.publication-owner.toml",
+            "archive/.publication-private-values",
+        ):
             with self.subTest(relative=relative), _repository({relative: "private\n"}) as name:
                 report = audit.scan(Path(name))
 
@@ -132,6 +154,8 @@ class KindNameTests(unittest.TestCase):
                 "provenance-missing",
                 "provenance-conflict",
                 "machine-derived",
+                "external-content",
+                "external-repository",
                 "archive-path",
                 "archive-limit",
             },
@@ -152,6 +176,8 @@ class KindNameTests(unittest.TestCase):
                 audit.PROVENANCE_MISSING,
                 audit.PROVENANCE_CONFLICT,
                 audit.MACHINE_DERIVED,
+                audit.EXTERNAL_CONTENT,
+                audit.EXTERNAL_REPOSITORY,
                 audit.ARCHIVE_PATH,
                 audit.ARCHIVE_LIMIT,
             },

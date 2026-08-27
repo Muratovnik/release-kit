@@ -48,44 +48,46 @@ def _exposure(arguments: argparse.Namespace) -> int:
             return 2
         for mount in mounts:
             try:
-                derived = mount.link_path(policy.root).resolve().relative_to(root)
-            except (ValueError, OSError):
+                derived = mount.link_path(policy.root).absolute().relative_to(root)
+            except ValueError:
                 continue
             private_paths.append(derived.as_posix())
     else:
         names = ()
         owner_rules = owner.OwnerRules()
-    report = audit.scan(
-        root,
-        names=names,
-        owner_workflows=owner_rules.owner_workflows,
-        private_patterns=owner_rules.patterns,
-        baseline=settings.exposure.baseline,
-        exclude=settings.exposure.exclude,
-        private_paths=private_paths,
-        private_files=settings.exposure.private_files,
-        private_suffixes=settings.exposure.private_suffixes,
-        required_ignores=settings.exposure.required_ignores,
-        forbidden_suffixes=settings.exposure.forbidden_suffixes,
-        allowed_users=settings.exposure.allowed_users,
-        forbid_png_metadata=settings.exposure.forbid_png_metadata,
-        forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
-        forbid_internal_planning=settings.exposure.forbid_internal_planning,
-        forbid_machine_observations=settings.exposure.forbid_machine_observations,
-        providers=providers,
-        provenance_required=settings.exposure.provenance_required,
-        provenance=settings.exposure.provenance,
-        inspect_archives=settings.exposure.inspect_archives,
-        include_candidates=settings.exposure.include_candidates,
-    )
+    try:
+        report = audit.scan(
+            root,
+            names=names,
+            owner_workflows=owner_rules.owner_workflows,
+            private_patterns=owner_rules.patterns,
+            baseline=settings.exposure.baseline,
+            exclude=settings.exposure.exclude,
+            private_paths=private_paths,
+            private_files=settings.exposure.private_files,
+            private_suffixes=settings.exposure.private_suffixes,
+            required_ignores=settings.exposure.required_ignores,
+            forbidden_suffixes=settings.exposure.forbidden_suffixes,
+            allowed_users=settings.exposure.allowed_users,
+            forbid_png_metadata=settings.exposure.forbid_png_metadata,
+            forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+            forbid_internal_planning=settings.exposure.forbid_internal_planning,
+            forbid_machine_observations=settings.exposure.forbid_machine_observations,
+            providers=providers,
+            provenance_required=settings.exposure.provenance_required,
+            provenance=settings.exposure.provenance,
+            inspect_archives=settings.exposure.inspect_archives,
+            include_candidates=settings.exposure.include_candidates,
+        )
+    except RuntimeError as error:
+        print(f"relkit exposure: {error}", file=sys.stderr)
+        return 2
     if report.excluded:
         print(f"relkit exposure: {len(report.excluded)} path(s) excluded by configuration")
     if report.baselined:
         print(f"relkit exposure: {len(report.baselined)} recorded finding(s) still present:")
         for finding in report.baselined:
             print(f"  {finding}")
-    for path in report.unreadable:
-        print(f"relkit exposure: could not read {path}", file=sys.stderr)
     failures = report.failures + ([str(f) for f in report.baselined] if arguments.strict else [])
     if failures:
         print("relkit exposure: failed", file=sys.stderr)
@@ -113,10 +115,10 @@ def _overlay(arguments: argparse.Namespace) -> int:
     try:
         policy = owner.discover(root)
         mounts = manifest_module.read(policy.manifest_path)
-    except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
+        problems, skipped = verify_module.check(mounts, public_root=root, private_root=policy.root)
+    except (owner.OwnerPolicyError, manifest_module.ManifestError, RuntimeError) as error:
         print(f"relkit overlay: {error}", file=sys.stderr)
         return 2
-    problems, skipped = verify_module.check(mounts, public_root=root, private_root=policy.root)
     for name in skipped:
         print(f"relkit overlay: {name} links outside this repository; not checked")
     if problems:

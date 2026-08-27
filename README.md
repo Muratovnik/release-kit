@@ -6,7 +6,7 @@ One publication gate for repositories with different languages and release syste
 python .github/relkit.pyz audit --history
 ```
 
-The command owns the complete verdict:
+The command owns the local verdict over the checked-out and fetched publication state:
 
 - repository policy: private paths, forbidden file kinds, portable paths, ignored
   surfaces, optional PNG metadata and allowed Git identities;
@@ -35,9 +35,11 @@ python tools/build_zipapp.py dist/relkit.pyz
 
 Adopters track that projection at `.github/relkit.pyz`. The same file runs on Windows,
 Linux and macOS with Python 3.11 or newer, and reports its release-kit and engine
-versions with `--version`. Engines are cached below the guarded repository's ignored
-`.cache/release-kit/` directory after their official archives pass SHA-256 and version
-checks. Set `RELKIT_CACHE_DIR` to share a cache, or `RELKIT_BETTERLEAKS` /
+versions with `--version`. Engines and their official archives are cached below the
+guarded repository's ignored `.cache/release-kit/` directory. Every run verifies the
+pinned archive digest and the cached executable against the archive before executing
+it, then checks the reported version. Set `RELKIT_CACHE_DIR` to share a cache, or
+`RELKIT_BETTERLEAKS` /
 `RELKIT_LYCHEE` to point at pre-provisioned verified executables.
 
 Once release-kit has a public package or Git release, projects may replace the tracked
@@ -66,7 +68,8 @@ provenance_required = ["tests/generated/*", "docs/screenshots/*"]
 betterleaks_config = ".betterleaks.toml"
 
 # Deliberate fixtures where structural policy is not meaningful. This does not
-# suppress Betterleaks; its exclusions stay in .betterleaks.toml and must be narrow.
+# suppress Betterleaks, private owner values/workflows/patterns, Git LFS pointers, or
+# submodule gitlinks; its secret exclusions stay in .betterleaks.toml and must be narrow.
 exclude = ["tests/fixtures/*"]
 
 # Adoption debt. It can only shrink: a stale entry is itself a failure.
@@ -157,19 +160,44 @@ python .github/relkit.pyz audit --history --owner --require-overlay
 CI runs `--history` without `--owner`: a clean public clone cannot know private names.
 The public config still forbids and requires ignores for private surfaces. On the
 owner's machine, `protect install` installs a managed pre-push hook that runs the
-history gate with the mandatory private-value policy. `--require-overlay` adds the exact
+history gate with the mandatory private-value policy. The hook pins SHA-256 for the
+tracked release-kit projection, `relkit.toml`, and the configured Betterleaks policy
+before it executes repository-controlled code. A reviewed change to any of those
+inputs requires another `protect install`. `--require-overlay` adds the exact
 link/target/tracking oracle. History mode refuses a dirty worktree; use `--staged`
 while preparing a commit, then run `--history` against the committed release candidate.
-Current `HEAD`, local and remote branches, and tags are publication history;
-synthetic client checkpoint refs are deliberately outside that scope.
+Current `HEAD`, local and remote branches, tags, Git notes, and locally fetched GitHub
+pull, GitLab merge-request, or Gerrit change refs are publication history. Public ref
+names, annotated tag messages, and tagger identities are checked alongside commits and
+blobs; synthetic client checkpoint refs are deliberately outside that scope. Host-only
+refs must be fetched before a recovery audit because a local repository cannot inspect
+objects it does not have. The owner pre-push guard prevents new unreviewed commits from
+reaching those refs; repository-host branch protection remains the server-side trust
+boundary. History mode refuses shallow repositories, replace refs, and non-empty Git
+grafts, and disables replacement semantics in its own Git and Betterleaks processes.
 
-Tracked `.zip`, `.whl`, `.jar`, and `.pyz` files are inspected as publication
-surfaces in the worktree, index, and reachable history. Unsafe archive paths, archives
-outside the bounded inspection budget, private paths, and semantic findings inside
-their UTF-8 entries fail with the outer artifact and entry named in the diagnostic.
+ZIP containers are recognized by content and inspected as publication surfaces in the
+worktree, index, and reachable history. This includes Office/OpenDocument packages and
+extensionless ZIP artifacts as well as `.zip`, `.whl`, `.jar`, and `.pyz`. Unsafe paths
+and symlinks, invalid or over-budget declared archives, private paths, and semantic
+findings inside Unicode entries or bounded nested ZIP-family archives fail with the
+outer artifact and entry named in the diagnostic.
+
+Unsupported compressed archives such as tar/gzip, 7z, and RAR fail closed instead of
+receiving a semantic verdict over bytes the built-in inspector cannot decode. Invalid
+or over-budget declared ZIP containers are likewise non-excludable inspection
+failures.
+
+Git LFS pointers and submodule gitlinks fail closed: their external objects are not in
+the Git blobs this repository can prove it inspected. Audit an external repository as
+its own release-kit root, and replace or explicitly migrate LFS material before a
+publication verdict. These findings and private owner-policy findings cannot be
+accepted through a baseline or hidden by a structural exclusion.
 
 `--no-download` turns missing cached engines into an operational error, useful in
-sealed environments. `--strict` also fails on adoption baselines.
+sealed environments. Caches created before 0.4.1 need one online audit to retain the
+verified release archives used for subsequent offline integrity checks. `--strict`
+also fails on adoption baselines.
 
 ## Overlay contract
 
