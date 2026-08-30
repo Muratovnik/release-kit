@@ -10,23 +10,8 @@ from pathlib import Path
 from . import config as config_module
 
 MARKER = "# managed by release-kit: owner publication guard v1"
-DISPATCHER_MARKER = "# managed by release-kit: shared pre-push dispatcher v1"
+COMPATIBLE_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: pre-push v1"
 PROJECTION_PATH = ".github/relkit.pyz"
-DISPATCHER = f"""#!/bin/sh
-{DISPATCHER_MARKER}
-set -eu
-root=$(git rev-parse --show-toplevel) || exit 2
-common=$(git rev-parse --git-common-dir) || exit 2
-case "$common" in
-    /*|[A-Za-z]:[\\/]*) ;;
-    *) common="$root/$common" ;;
-esac
-guard="$common/hooks/pre-push"
-if [ -x "$guard" ]; then
-    exec "$guard" "$@"
-fi
-exit 0
-"""
 
 
 class ProtectionError(Exception):
@@ -143,6 +128,26 @@ def _write_managed(path: Path, content: str, marker: str, description: str) -> N
         temporary.unlink(missing_ok=True)
 
 
+def _dispatcher_problem(path: Path) -> str | None:
+    try:
+        text = path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return (
+            f"compatible pre-push dispatcher is not installed at {path}; "
+            f"install an executable dispatcher containing `{COMPATIBLE_DISPATCHER_MARKER}`"
+        )
+    except OSError as error:
+        return f"compatible pre-push dispatcher cannot be read at {path}: {error}"
+    if COMPATIBLE_DISPATCHER_MARKER not in text.replace("\r\n", "\n").splitlines():
+        return (
+            f"effective pre-push hook is not a compatible repository dispatcher: {path}; "
+            f"expected `{COMPATIBLE_DISPATCHER_MARKER}`"
+        )
+    if not os.access(path, os.X_OK):
+        return f"compatible pre-push dispatcher is not executable: {path}"
+    return None
+
+
 def problem(root: Path) -> str | None:
     try:
         path = hook_path(root)
@@ -158,26 +163,17 @@ def problem(root: Path) -> str | None:
         return f"owner pre-push guard is not executable: {path}"
     try:
         effective = effective_hook_path(root)
-        if effective != path:
-            dispatcher = effective.read_text(encoding="utf-8")
-            if dispatcher.replace("\r\n", "\n") != DISPATCHER:
-                return f"shared pre-push dispatcher has drifted: {effective}"
-            if not os.access(effective, os.X_OK):
-                return f"shared pre-push dispatcher is not executable: {effective}"
-    except (OSError, ProtectionError):
-        return "shared pre-push dispatcher is not installed; run `relkit protect install`"
+    except ProtectionError as error:
+        return f"effective pre-push dispatcher cannot be verified: {error}"
+    if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
+        return dispatcher_problem
     return None
 
 
 def install(root: Path) -> Path:
     path = hook_path(root)
-    _write_managed(path, hook_content(root), MARKER, "repository pre-push hook")
     effective = effective_hook_path(root)
-    if effective != path:
-        _write_managed(
-            effective,
-            DISPATCHER,
-            DISPATCHER_MARKER,
-            "shared pre-push dispatcher",
-        )
+    if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
+        raise ProtectionError(dispatcher_problem)
+    _write_managed(path, hook_content(root), MARKER, "repository pre-push hook")
     return path

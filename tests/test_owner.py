@@ -106,6 +106,19 @@ class ProtectionTests(unittest.TestCase):
             check=True,
         )
 
+    @staticmethod
+    def _compatible_dispatcher(path: Path) -> str:
+        content = (
+            "#!/bin/sh\n"
+            f"{protection.COMPATIBLE_DISPATCHER_MARKER}\n"
+            "# Owned by a user-scoped hook runtime, not release-kit.\n"
+            "exit 0\n"
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8", newline="\n")
+        os.chmod(path, 0o755)
+        return content
+
     def test_install_creates_the_exact_guard_and_check_detects_drift(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -144,22 +157,98 @@ class ProtectionTests(unittest.TestCase):
             with self.assertRaises(protection.ProtectionError):
                 protection.install(root)
 
-    def test_install_adds_a_shared_dispatcher_when_hooks_path_is_global(self) -> None:
+    def test_install_accepts_a_compatible_external_dispatcher_without_mutating_it(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             base = Path(temporary)
             root = base / "repository"
             shared = base / "shared-hooks"
             root.mkdir()
             self._repository(root, shared)
+            dispatcher = shared / "pre-push"
+            original = self._compatible_dispatcher(dispatcher)
 
             local = protection.install(root)
 
             self.assertEqual(protection.hook_content(root), local.read_text(encoding="utf-8"))
-            self.assertEqual(
-                protection.DISPATCHER,
-                (shared / "pre-push").read_text(encoding="utf-8"),
-            )
+            self.assertEqual(original, dispatcher.read_text(encoding="utf-8"))
             self.assertIsNone(protection.problem(root))
+
+    def test_install_preflights_a_missing_dispatcher_before_writing_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repository"
+            shared = base / "shared-hooks"
+            root.mkdir()
+            self._repository(root, shared)
+            local = protection.hook_path(root)
+
+            with self.assertRaisesRegex(protection.ProtectionError, "compatible pre-push"):
+                protection.install(root)
+
+            self.assertFalse(local.exists())
+            self.assertFalse((shared / "pre-push").exists())
+
+    def test_install_rejects_the_legacy_release_kit_dispatcher_without_mutating_it(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repository"
+            shared = base / "shared-hooks"
+            root.mkdir()
+            self._repository(root, shared)
+            dispatcher = shared / "pre-push"
+            legacy = "#!/bin/sh\n# managed by release-kit: shared pre-push dispatcher v1\nexit 0\n"
+            dispatcher.parent.mkdir(parents=True)
+            dispatcher.write_text(legacy, encoding="utf-8", newline="\n")
+            os.chmod(dispatcher, 0o755)
+            local = protection.hook_path(root)
+
+            with self.assertRaisesRegex(protection.ProtectionError, "expected"):
+                protection.install(root)
+
+            self.assertFalse(local.exists())
+            self.assertEqual(legacy, dispatcher.read_text(encoding="utf-8"))
+
+    def test_install_preflights_a_non_executable_dispatcher_before_writing_the_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repository"
+            shared = base / "shared-hooks"
+            root.mkdir()
+            self._repository(root, shared)
+            self._compatible_dispatcher(shared / "pre-push")
+            local = protection.hook_path(root)
+
+            with (
+                patch.object(protection.os, "access", return_value=False),
+                self.assertRaisesRegex(protection.ProtectionError, "not executable"),
+            ):
+                protection.install(root)
+
+            self.assertFalse(local.exists())
+
+    def test_dispatcher_drift_blocks_guard_refresh_without_mutating_either_hook(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            base = Path(temporary)
+            root = base / "repository"
+            shared = base / "shared-hooks"
+            root.mkdir()
+            self._repository(root, shared)
+            dispatcher = shared / "pre-push"
+            self._compatible_dispatcher(dispatcher)
+            local = protection.install(root)
+            original_guard = local.read_bytes()
+            incompatible = "#!/bin/sh\nexit 0\n"
+            dispatcher.write_text(incompatible, encoding="utf-8", newline="\n")
+            self.assertIn("expected", protection.problem(root) or "")
+            (root / "relkit.toml").write_text(
+                "[exposure]\ncheck_secrets = false\n", encoding="utf-8"
+            )
+
+            with self.assertRaisesRegex(protection.ProtectionError, "expected"):
+                protection.install(root)
+
+            self.assertEqual(original_guard, local.read_bytes())
+            self.assertEqual(incompatible, dispatcher.read_text(encoding="utf-8"))
 
 
 if __name__ == "__main__":

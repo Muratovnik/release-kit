@@ -159,13 +159,41 @@ python .github/relkit.pyz audit --history --owner --require-overlay
 
 CI runs `--history` without `--owner`: a clean public clone cannot know private names.
 The public config still forbids and requires ignores for private surfaces. On the
-owner's machine, `protect install` installs a managed pre-push hook that runs the
-history gate with the mandatory private-value policy. The hook pins SHA-256 for the
-tracked release-kit projection, `relkit.toml`, and the configured Betterleaks policy
-before it executes repository-controlled code. A reviewed change to any of those
-inputs requires another `protect install`. `--require-overlay` adds the exact
-link/target/tracking oracle. History mode refuses a dirty worktree; use `--staged`
-while preparing a commit, then run `--history` against the committed release candidate.
+owner's machine, `protect install` installs only the repository-owned
+`<git-common-dir>/hooks/pre-push` guard that runs the history gate with the mandatory
+private-value policy. If `core.hooksPath` redirects Git to another effective hook,
+that user-scoped hook owner must first provide an executable dispatcher containing
+the compatibility marker `# git-common-dir-hook-dispatcher: pre-push v1`. Release Kit
+verifies that contract before changing the repository guard; it never creates or
+replaces the external dispatcher.
+
+The repository guard pins SHA-256 for the tracked release-kit projection,
+`relkit.toml`, and the configured Betterleaks policy before it executes
+repository-controlled code. A reviewed change to any of those inputs requires another
+`protect install`. `--require-overlay` adds the exact link/target/tracking oracle.
+History mode refuses a dirty worktree; use `--staged` while preparing a commit, then
+run `--history` against the committed release candidate.
+
+### Migrating the guard owner
+
+The `0.5.0` source contract is deliberately incompatible with the `0.3.x` and `0.4.x`
+`protect install` behavior: older installers may create or replace the redirected
+dispatcher, while `0.5.0` treats it as externally owned. Migrate every protected
+repository in one accepted source vector:
+
+1. Save the current release-kit projections, public policies, repository guards, and
+   redirected dispatcher bytes.
+2. Have the external hook owner install an executable dispatcher carrying the
+   compatibility marker above and verify that it invokes Git common-directory hooks.
+3. Project the same `0.5.0` artifact and compatible policy into every adopter.
+4. Run `protect install`, then `protect check`, to refresh and verify each repository
+   guard against that exact artifact and policy.
+5. In each clean adopter, run `audit --history --owner` before accepting the vector.
+
+Do not refresh a guard with an older installer after step 2. Rollback restores the
+saved artifact, policy, repository guard, and redirected dispatcher as one vector;
+mixing either ownership contract can silently select the wrong hook.
+
 Current `HEAD`, local and remote branches, tags, Git notes, and locally fetched GitHub
 pull, GitLab merge-request, or Gerrit change refs are publication history. Public ref
 names, annotated tag messages, and tagger identities are checked alongside commits and

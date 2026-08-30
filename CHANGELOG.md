@@ -1,5 +1,17 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- `relkit protect` now owns only the repository's Git common-directory pre-push
+  guard. When `core.hooksPath` redirects the effective hook, install verifies a
+  neutral compatible dispatcher before changing the guard and never writes the
+  external hook path.
+- The source version is `0.5.0`. This is a breaking ownership change for the `0.x`
+  line: `0.3.x` and `0.4.x` installers own the redirected dispatcher and must not be
+  mixed with `0.5.0` guard refreshes during a rollout.
+
 ## [0.4.1] - 2026-08-27
 
 ### Fixed
