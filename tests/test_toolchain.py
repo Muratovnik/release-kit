@@ -9,7 +9,7 @@ from hashlib import sha256
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import toolchain
+from releasekit import __version__, toolchain
 
 ROOT = Path(__file__).resolve().parents[1]
 BUILD = ROOT / "tools" / "build_zipapp.py"
@@ -156,6 +156,6 @@ class ProjectionTests(unittest.TestCase):
 
         self.assertEqual(0, built.returncode, built.stdout + built.stderr)
         self.assertEqual(0, invoked.returncode, invoked.stdout + invoked.stderr)
-        self.assertIn("release-kit 0.5.0", invoked.stdout)
+        self.assertIn(f"release-kit {__version__}", invoked.stdout)
         self.assertIn("Betterleaks 1.8.1", invoked.stdout)
         self.assertIn("Lychee 0.24.2", invoked.stdout)

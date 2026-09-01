@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
+import re
 import stat
+import sys
+import tomllib
 import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "releasekit"
 TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+sys.path.insert(0, str(SOURCE.parent))
+from releasekit import distribution
 
 
 def _write(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
@@ -19,7 +26,20 @@ def _write(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
     archive.writestr(info, payload)
 
 
-def build(output: Path) -> None:
+def build(output: Path, *, repository: str = "") -> None:
+    version = distribution.source_version((SOURCE / "__init__.py").read_text(encoding="utf-8"))
+    if (
+        tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
+        != version
+    ):
+        raise ValueError("package metadata and runtime versions differ")
+    changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    if not re.search(
+        rf"^## \[{re.escape(version)}\] - \d{{4}}-\d{{2}}-\d{{2}}$", changelog, re.MULTILINE
+    ):
+        raise ValueError("current version needs a dated changelog entry before distribution")
+    if repository:
+        distribution.repository_name(repository)
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".partial")
     try:
@@ -27,11 +47,26 @@ def build(output: Path) -> None:
             _write(
                 archive,
                 "__main__.py",
-                b"from releasekit.cli import main\nraise SystemExit(main())\n",
+                distribution.ENTRYPOINT,
             )
             for path in sorted(SOURCE.rglob("*.py")):
                 _write(archive, path.relative_to(SOURCE.parent).as_posix(), path.read_bytes())
+            _write(
+                archive,
+                distribution.BUILD_INFO,
+                (
+                    json.dumps(
+                        {"schema": 1, "version": version, "repository": repository},
+                        sort_keys=True,
+                    )
+                    + "\n"
+                ).encode(),
+            )
         temporary.replace(output)
+        output.with_name(output.name + ".sha256").write_text(
+            f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n",
+            encoding="utf-8",
+        )
     finally:
         temporary.unlink(missing_ok=True)
 
@@ -39,8 +74,11 @@ def build(output: Path) -> None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("output", type=Path)
+    parser.add_argument(
+        "--repository", default="", help="GitHub OWNER/REPO recorded for future relkit update calls"
+    )
     arguments = parser.parse_args()
-    build(arguments.output.resolve())
+    build(arguments.output.resolve(), repository=arguments.repository)
     return 0
 
 

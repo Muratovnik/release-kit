@@ -2,8 +2,17 @@
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-01
+
 ### Added
 
+- `relkit update` for one project's tracked zipapp: verified GitHub release assets
+  or explicitly SHA-256-pinned local artifacts, dry-run plans, explicit confirmation,
+  backups, validation, owned-guard refresh and automatic or explicit rollback.
+- `relkit update --refresh-guard` for already-reviewed projection or policy changes,
+  with per-input and guard checksums and the same confirmation/backup workflow.
+- Deterministic distribution identity and checksum sidecars; packaging checks that
+  runtime, package metadata and the dated changelog identify the same version.
 - Explicit `strict` and `vue-like` changelog profiles for `relkit notes`, with a
   declared first version, source-line diagnostics, duplicate/empty-entry rejection
   and checks of dates, compare targets, sections and per-change commit links.
@@ -17,6 +26,10 @@
   output alias of the changelog or policy, and report configuration/I/O errors.
 - Export notes as UTF-8 on stdout as well as to files, including on Windows hosts
   whose default console encoding cannot represent the curated text.
+- Guard-drift diagnostics identify each changed input, its pinned/current digest,
+  and the explicit project-authorized repair command.
+
+## [0.5.0] - 2026-08-30
 
 ### Changed
 

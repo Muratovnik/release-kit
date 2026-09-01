@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ast
 import hashlib
 import os
+import re
 import subprocess
 from pathlib import Path
 
@@ -46,8 +48,8 @@ def _guarded_digests(root: Path) -> dict[str, str]:
     return answer
 
 
-def hook_content(root: Path) -> str:
-    expected = repr(_guarded_digests(root))
+def hook_content(root: Path, *, digests: dict[str, str] | None = None) -> str:
+    expected = repr(_guarded_digests(root) if digests is None else digests)
     return f"""#!/bin/sh
 {MARKER}
 root=$(git rev-parse --show-toplevel) || exit 2
@@ -148,6 +150,42 @@ def _dispatcher_problem(path: Path) -> str | None:
     return None
 
 
+def recorded_digests(root: Path) -> dict[str, str]:
+    """Read only a complete known guard template, never evaluate its embedded code."""
+    text = hook_path(root).read_text(encoding="utf-8").replace("\r\n", "\n")
+    lines = [
+        line.removeprefix("expected = ")
+        for line in text.splitlines()
+        if line.startswith("expected = ")
+    ]
+    try:
+        recorded = ast.literal_eval(lines[0]) if len(lines) == 1 else None
+    except (ValueError, SyntaxError):
+        recorded = None
+    if (
+        not isinstance(recorded, dict)
+        or not all(
+            isinstance(path, str)
+            and isinstance(digest, str)
+            and re.fullmatch(r"[0-9a-f]{64}", digest)
+            for path, digest in recorded.items()
+        )
+        or text != hook_content(root, digests=recorded)
+    ):
+        raise ProtectionError("pre-push hook is not an intact supported release-kit guard template")
+    return recorded
+
+
+def digest_changes(root: Path) -> list[str]:
+    recorded = recorded_digests(root)
+    current = _guarded_digests(root)
+    return [
+        f"{path}: pinned {recorded.get(path, '<not pinned>')} -> current {current.get(path, '<not guarded>')}"
+        for path in sorted(recorded.keys() | current.keys())
+        if recorded.get(path) != current.get(path)
+    ]
+
+
 def problem(root: Path) -> str | None:
     try:
         path = hook_path(root)
@@ -158,7 +196,16 @@ def problem(root: Path) -> str | None:
     except OSError:
         return "owner pre-push guard is not installed; run `relkit protect install`"
     if text.replace("\r\n", "\n") != expected_hook:
-        return f"owner pre-push guard has drifted: {path}"
+        try:
+            changes = digest_changes(root)
+        except (ProtectionError, OSError, UnicodeError) as error:
+            return f"owner pre-push guard has drifted: {path}; {error}; manual owner review is required"
+        return (
+            f"owner pre-push guard has drifted: {path}\n  "
+            + "\n  ".join(changes)
+            + "\nReview these exact inputs and obtain any project-required hook permission; "
+            "then run `relkit update --refresh-guard` (or `relkit protect install`)."
+        )
     if not os.access(path, os.X_OK):
         return f"owner pre-push guard is not executable: {path}"
     try:

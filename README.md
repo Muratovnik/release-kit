@@ -26,11 +26,15 @@ invocation. An adopting repository owns only `relkit.toml` and, where needed, a 
 
 ## Distribution
 
-Until the package has a public release channel, the source repository builds a
-deterministic standard-library zipapp:
+The source repository builds a deterministic standard-library zipapp and a
+`relkit.pyz.sha256` checksum sidecar. Source, package metadata and the dated changelog
+must identify the same version:
 
 ```bash
 python tools/build_zipapp.py dist/relkit.pyz
+
+# Maintainers publishing GitHub release assets record their actual OWNER/REPO:
+python tools/build_zipapp.py dist/relkit.pyz --repository example/release-kit
 ```
 
 Adopters track that projection at `.github/relkit.pyz`. The same file runs on Windows,
@@ -42,8 +46,124 @@ it, then checks the reported version. Set `RELKIT_CACHE_DIR` to share a cache, o
 `RELKIT_BETTERLEAKS` /
 `RELKIT_LYCHEE` to point at pre-provisioned verified executables.
 
-Once release-kit has a public package or Git release, projects may replace the tracked
-projection with a digest-pinned download without changing their command or config.
+Every adopter has its own tracked copy. Updating the source repository, an installed
+Python package, or one adopter does not update other repositories. A behaviour change
+needs a new version: never replace published bytes under an existing version/tag.
+The updater refuses both downgrades and different bytes bearing the installed version.
+
+### Updating a project
+
+From a project containing a 0.6.0-or-newer projection:
+
+```bash
+python .github/relkit.pyz update --dry-run
+python .github/relkit.pyz update
+```
+
+If the Python package is installed, the equivalent short command is `relkit update`.
+Both forms update this project's `.github/relkit.pyz`, not the global Python package,
+source checkout, other projects, policy or CI. No shell alias or global installation
+is created automatically.
+
+The default source is the GitHub repository recorded by the distribution builder.
+Use `--repository OWNER/REPO` when no source is recorded, or to explicitly choose a
+different trusted publisher. `--release v0.6.0` selects a particular stable release;
+otherwise GitHub's latest published non-prerelease release is used. This is not an
+update from a branch or from unversioned source. The publisher must first attach
+`relkit.pyz` to a published release; merely pushing commits or a tag is insufficient.
+
+The GitHub transport uses the optional GitHub CLI (`gh`) and its existing
+authentication, including access to private repositories. **Dependency decision:**
+delegate authenticated release discovery/download to the maintained CLI rather than
+store tokens, implement an authentication flow, or add Python dependencies. Local-file
+updates do not require `gh`. The protocol uses
+[GitHub release metadata](https://docs.github.com/en/rest/releases/releases#get-the-latest-release),
+the [asset's SHA-256 digest](https://docs.github.com/en/rest/releases/assets), and
+[`gh release download`](https://cli.github.com/manual/gh_release_download).
+The asset size, digest, embedded repository and version must all match. This is an
+integrity check against a trusted publisher, not a cryptographic publisher signature;
+missing digests are refused, with no unchecked download fallback.
+
+For an offline or locally built candidate, supply an independently reviewed digest:
+
+```bash
+python .github/relkit.pyz update --artifact /path/to/trusted/relkit.pyz --sha256 DIGEST --dry-run
+python .github/relkit.pyz update --artifact /path/to/trusted/relkit.pyz --sha256 DIGEST
+```
+
+Before writing, the command prints old/new versions, paths and SHA-256 values for
+the projection and any existing owned guard. It requires a clean checkout, tracked
+projection/configuration, normal in-repository Git metadata and a valid existing guard.
+It never auto-stashes. Linked worktrees, aliased update paths, Git directory/index
+environment overrides, arbitrary hooks and incompatible external dispatchers are
+refused. Protected pre-0.5.0 installations need the guard-owner migration below.
+
+Interactive use asks for confirmation. Non-interactive use refuses unless `--yes`
+is supplied **after** the exact changes have been approved. If the project's
+`AGENTS.md` requires separate permission to change its hook, obtain that permission
+first. The flag is an acknowledgement, not an override of project authorization.
+`--dry-run` inspects/downloads but never executes the candidate, persists a backup,
+or changes the projection/guard; a temporary repository-local lock serializes runs.
+
+After confirmation, the updater checks the candidate's runtime version, saves both
+original files and their modes in
+`.git/relkit-update-<id>/`, records the transaction in `.git/relkit-update.json`,
+and runs its worktree `audit`. It refreshes
+only an already-installed, intact repository guard and verifies the result. An
+external dispatcher is checked but never modified. No new guard is installed.
+`--no-download` also disables audit-engine downloads. An audit failure restores the
+old artifact/guard; if concurrent changes make restoration unsafe, they are preserved
+and the backup location is reported for manual recovery.
+
+Review the resulting projection diff, run the project's tests, commit it, then run
+its `audit --history --owner` where applicable. The updater does not stage, commit,
+push, publish, change refs, relax policy, enable new opt-in rules or edit workflows.
+Its worktree check is not the final clean-history owner publication verdict.
+
+### Already-updated files and guard drift
+
+If a projection or configuration was manually updated, `protect check` now names
+each changed input with its pinned/current SHA-256. Review those changes and obtain
+the required hook permission, then use:
+
+```bash
+python .github/relkit.pyz update --refresh-guard --dry-run
+python .github/relkit.pyz update --refresh-guard
+python .github/relkit.pyz protect check
+```
+
+This explicit mode permits a dirty checkout, checks the current artifact and policy,
+backs up the old guard and changes only the supported guard's trust pins. It does not
+download a release or edit the projection/configuration. A normal `update` refuses
+pre-existing drift rather than treating an unrelated update as permission to trust it.
+Custom or modified hook templates still need manual owner review.
+
+### First update and rollback
+
+Older embedded versions have no `update` command. Build or obtain a trusted 0.6.0+
+zipapp once, then run it outside the project to update the older tracked copy:
+
+```bash
+python /path/to/trusted/relkit.pyz update --root . --artifact /path/to/trusted/relkit.pyz --sha256 DIGEST
+```
+
+For already-updated files whose old CLI lacks the repair command, the same external
+zipapp can run `update --root . --refresh-guard`. Future updates use the project's
+own command. No project is automatically migrated when the source tool is built.
+
+To restore the most recent transaction (including a guard-only refresh):
+
+```bash
+python .github/relkit.pyz update --rollback
+```
+
+Keep the trusted external updater available if the restored version predates this
+command. Rollback verifies the backups and refuses later edits to guarded inputs or
+hooks; it does not reset Git or discard user changes. Backups are retained, not
+automatically pruned. After a process crash, inspect the PID in
+`.git/relkit-update.lock` and remove that exact lock only after confirming its process
+has stopped; a pending receipt requires `update --rollback` before another update.
+Exit `0` means success, no-op or dry-run; `2` means refusal or operational failure.
 
 ## Configuration
 
@@ -169,8 +289,9 @@ replaces the external dispatcher.
 
 The repository guard pins SHA-256 for the tracked release-kit projection,
 `relkit.toml`, and the configured Betterleaks policy before it executes
-repository-controlled code. A reviewed change to any of those inputs requires another
-`protect install`. `--require-overlay` adds the exact link/target/tracking oracle.
+repository-controlled code. A reviewed change to any of those inputs requires an
+explicit `update --refresh-guard` (with backup and validation) or `protect install`.
+`--require-overlay` adds the exact link/target/tracking oracle.
 History mode refuses a dirty worktree; use `--staged` while preparing a commit, then
 run `--history` against the committed release candidate.
 

@@ -16,7 +16,7 @@ import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import __version__, owner, protection, publication, toolchain
+from . import __version__, owner, protection, publication, toolchain, update
 from . import config as config_module
 from .exposure import audit
 from .overlay import manifest as manifest_module
@@ -224,6 +224,60 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"release-kit {__version__} ({toolchain.versions()})",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    updater = subcommands.add_parser(
+        "update", help="Review and safely update one project's pinned zipapp."
+    )
+    updater.add_argument("--root", default=".", help="Owning project repository")
+    updater.add_argument(
+        "--repository", default="", help="GitHub OWNER/REPO (default: installed build metadata)"
+    )
+    updater.add_argument(
+        "--release", default="", help="Stable release tag (default: latest published release)"
+    )
+    updater.add_argument(
+        "--artifact", type=Path, help="Use a reviewed local zipapp instead of GitHub"
+    )
+    updater.add_argument("--sha256", default="", help="Required expected SHA-256 for --artifact")
+    updater.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show changes without executing/installing candidate code",
+    )
+    updater.add_argument(
+        "--yes",
+        action="store_true",
+        help="Confirm reviewed changes, including separately authorized hook writes",
+    )
+    updater.add_argument(
+        "--refresh-guard",
+        action="store_true",
+        help="Only re-pin reviewed current files after an interrupted/manual integration",
+    )
+    updater.add_argument(
+        "--rollback",
+        action="store_true",
+        help="Restore the previous artifact/guard from the recorded backup",
+    )
+    updater.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Forbid engine downloads during the post-update audit",
+    )
+    updater.set_defaults(
+        handler=lambda arguments: update.run(
+            Path(arguments.root),
+            artifact_path=arguments.artifact,
+            sha256=arguments.sha256,
+            repository=arguments.repository,
+            release=arguments.release,
+            dry_run=arguments.dry_run,
+            yes=arguments.yes,
+            refresh_guard=arguments.refresh_guard,
+            rollback=arguments.rollback,
+            no_download=arguments.no_download,
+        )
+    )
 
     publication_audit = subcommands.add_parser(
         "audit",
