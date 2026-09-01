@@ -65,8 +65,10 @@ repository hit gets a test that names what it hit, not a generic one.
 
 ## Git
 
-Commit after the tests pass. Stage exact paths, inspect the staged diff, and preserve
-unrelated work. Never push unless asked.
+After each coherent task-owned green boundary, make an incremental local commit
+by default. Preserve unrelated work and pre-existing staged changes. Stage only
+exact task-owned paths in one uninterrupted stage → inspect → commit sequence;
+never leave a staged handoff. Never push unless explicitly requested.
 
 Commit subjects are Conventional Commits with the Angular type set: `build`, `chore`,
 `ci`, `docs`, `feat`, `fix`, `perf`, `refactor`, `revert`, `style`, `test`; an
