@@ -24,6 +24,11 @@ owns their versions, official release URLs, SHA-256 digests, platform selection 
 invocation. An adopting repository owns only `relkit.toml` and, where needed, a narrow
 `.betterleaks.toml`. It does not carry download snippets or another secret/link parser.
 
+An optional `relkit release plan/run/resume` coordinator connects a prepared commit,
+annotated tag, existing tag CI and verified publication. CI remains the sole publisher;
+project commands own build/test/application details. See the
+[managed-release contract and adoption prerequisites](docs/release-coordinator.md).
+
 ## Distribution
 
 The source repository builds a deterministic standard-library zipapp and a
@@ -42,7 +47,9 @@ Linux and macOS with Python 3.11 or newer, and reports its release-kit and engin
 versions with `--version`. Engines and their official archives are cached below the
 guarded repository's ignored `.cache/release-kit/` directory. Every run verifies the
 pinned archive digest and the cached executable against the archive before executing
-it, then checks the reported version. Set `RELKIT_CACHE_DIR` to share a cache, or
+it, then checks the reported version. Set `RELKIT_CACHE_DIR` to read a shared cache;
+external cache writes also require explicit approval of that exact absolute path
+through `RELKIT_APPROVED_EXTERNAL_CACHE`. Use
 `RELKIT_BETTERLEAKS` /
 `RELKIT_LYCHEE` to point at pre-provisioned verified executables.
 

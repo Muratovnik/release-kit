@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from .release import settings as release_settings
 from .release.changelog import PROFILES, is_version
 
 CONFIG_NAME = "relkit.toml"
@@ -238,6 +239,7 @@ class Config:
     root: Path
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
     changelog: ChangelogConfig = field(default_factory=ChangelogConfig)
+    release: release_settings.Settings | None = None
 
 
 def load(root: Path, *, required: bool = True) -> Config:
@@ -251,7 +253,7 @@ def load(root: Path, *, required: bool = True) -> Config:
     except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"{CONFIG_NAME} could not be read: {error}") from error
 
-    unknown_top_level = sorted(set(raw) - {"exposure", "changelog"})
+    unknown_top_level = sorted(set(raw) - {"exposure", "changelog", "release"})
     if unknown_top_level:
         raise ConfigError(f"unknown top-level key(s): {', '.join(unknown_top_level)}")
     section = raw.get("exposure", {})
@@ -308,8 +310,13 @@ def load(root: Path, *, required: bool = True) -> Config:
         _string(section, "betterleaks_config", ".betterleaks.toml"),
         "betterleaks_config",
     )
+    try:
+        release = release_settings.parse(raw["release"]) if "release" in raw else None
+    except ValueError as error:
+        raise ConfigError(str(error)) from error
     return Config(
         root=root,
+        release=release,
         changelog=_changelog(raw),
         exposure=ExposureConfig(
             baseline=normalized_baseline,

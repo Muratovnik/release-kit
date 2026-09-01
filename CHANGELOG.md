@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-09-02
+
+### Added
+
+- Opt-in experimental `release plan/run/resume` for GitHub tag-driven CI: pinned
+  source/ref plans, explicit push permission, annotated tags, narrow atomic pushes,
+  remote reconciliation, exact CI run/job checks and recoverable local receipts.
+- Immutable publication verification of committed notes, exact asset sets, sizes,
+  SHA-256 manifests, native release/build attestations and certificate-bound CI
+  identity, followed by project-owned smoke commands from exact committed blobs.
+- Explicit review of a newer attempt of the same CI run on resume, with publication,
+  verification and cleanup reported independently. No automatic CI/release repairs.
+- Project-owned service storage with conservative file-inventory cleanup and guards
+  against escaping paths, links, junctions and hard-linked service files.
+
+### Changed
+
+- Updater downloads and audit snapshots now use project-local ignored scratch
+  space. External cache writes require explicit approval of the exact cache path;
+  existing verified external caches remain readable without provisioning writes.
+- Runtime, package and zipapp identity advance together to 0.7.0. Existing adopter
+  copies and published releases are unchanged until explicitly updated.
+
+### Fixed
+
+- Materialize staged symbolic links as their exact indexed text so publication
+  engines cannot follow their targets outside the owned snapshot.
+
 ## [0.6.0] - 2026-09-01
 
 ### Added

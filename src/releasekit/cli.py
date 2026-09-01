@@ -22,6 +22,7 @@ from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
 from .release import changelog as changelog_module
+from .release import coordinator
 
 
 def _exposure(arguments: argparse.Namespace) -> int:
@@ -224,6 +225,43 @@ def build_parser() -> argparse.ArgumentParser:
         version=f"release-kit {__version__} ({toolchain.versions()})",
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
+
+    release = subcommands.add_parser(
+        "release", help="Plan, run or resume a GitHub tag release; CI publishes."
+    )
+    release.add_argument("action", choices=("plan", "run", "resume"))
+    release.add_argument("version", help="Stable X.Y.Z or vX.Y.Z")
+    release.add_argument("--root", default=".", help="Owning repository")
+    release.add_argument(
+        "--publish",
+        action="store_true",
+        help="Authorize only the planned tag/branch push and CI publication",
+    )
+    release.add_argument(
+        "--plan-hash", default="", help="Require the exact reviewed plan fingerprint"
+    )
+    release.add_argument(
+        "--no-download",
+        action="store_true",
+        help="Forbid audit engine downloads (release assets still download)",
+    )
+    release.set_defaults(
+        handler=lambda arguments: coordinator.run(
+            Path(arguments.root),
+            arguments.action,
+            arguments.version,
+            publish=arguments.publish,
+            plan_hash=arguments.plan_hash,
+            no_download=arguments.no_download,
+            accept_ci_attempt=arguments.accept_ci_attempt,
+        )
+    )
+    release.add_argument(
+        "--accept-ci-attempt",
+        type=int,
+        default=0,
+        help="Resume only: explicitly accept a reviewed newer attempt of the same CI run",
+    )
 
     updater = subcommands.add_parser(
         "update", help="Review and safely update one project's pinned zipapp."

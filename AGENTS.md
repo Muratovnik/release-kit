@@ -54,7 +54,18 @@ security, and it costs the reader a concrete reference in exchange for nothing.
   updater refuses changed artifacts under the same version. Never replace an
   already-published release asset with different bytes.
 
-## Verification
+## Service-file ownership
+
+- Keep service files, scratch space, diagnostics and backups inside the owning
+  project by default, in managed ignored locations. A path outside it requires
+  explicit user agreement on that exact path, including history backups.
+- Record ownership before cleanup; never sweep unknown files, follow links or
+  junctions, or silently claim another checkout's Git metadata. Preserve necessary
+  recovery receipts and report retained files.
+- Live release publication tests require a separately agreed disposable repository.
+  The ordinary test suite must not publish or mutate a real hosted project.
+
+## Verification commands
 
 ```powershell
 $env:PYTHONPATH = "src"

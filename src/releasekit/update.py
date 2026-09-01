@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config, distribution, protection
+from . import config, distribution, protection, storage
 
 PROJECTION = protection.PROJECTION_PATH
 RECEIPT = "relkit-update.json"
@@ -23,7 +23,9 @@ class UpdateError(Exception):
     """An update cannot be completed safely; do not weaken policy to proceed."""
 
 
-def _run(command: list[str], root: Path, *, timeout: int = 180) -> str:
+def _run(
+    command: list[str], root: Path, *, timeout: int = 180, environment: dict[str, str] | None = None
+) -> str:
     try:
         result = subprocess.run(
             command,
@@ -33,7 +35,10 @@ def _run(command: list[str], root: Path, *, timeout: int = 180) -> str:
             encoding="utf-8",
             errors="replace",
             timeout=timeout,
-            env={**os.environ, "GIT_OPTIONAL_LOCKS": "0"},
+            env={
+                **(environment if environment is not None else os.environ),
+                "GIT_OPTIONAL_LOCKS": "0",
+            },
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError(f"{command[0]} could not complete: {error}") from error
@@ -46,6 +51,7 @@ def _run(command: list[str], root: Path, *, timeout: int = 180) -> str:
 def _safe_path(path: Path, root: Path) -> Path:
     if path.resolve() != path.absolute() or not path.resolve().is_relative_to(root):
         raise UpdateError(f"refusing an aliased or escaping update path: {path}")
+    storage.checked(path)
     return path
 
 
@@ -142,6 +148,7 @@ def _github(
                 ],
                 root,
                 timeout=60,
+                environment=storage.environment(directory),
             )
         )
     except json.JSONDecodeError as error:
@@ -196,6 +203,7 @@ def _github(
             str(downloaded),
         ],
         root,
+        environment=storage.environment(directory),
     )
     payload, artifact = _read_artifact(downloaded)
     if len(payload) != size or artifact.sha256 != digest.removeprefix("sha256:"):
@@ -347,7 +355,8 @@ def run(
         if settings.exposure.check_secrets:
             relative = settings.exposure.betterleaks_config
             inputs[relative] = protection._sha256(_safe_path(root / relative, root))
-        with tempfile.TemporaryDirectory(prefix="relkit-download-") as temporary:
+        with storage.temporary(root, "download-") as workspace:
+            temporary = workspace.path
             if refresh_guard:
                 if any((artifact_path, sha256, repository, release)) or old_hook is None:
                     raise UpdateError(
@@ -379,6 +388,7 @@ def run(
                         "no update repository recorded; supply --repository OWNER/REPO or --artifact with --sha256"
                     )
                 payload, candidate = _github(root, repository, release, Path(temporary))
+                workspace.remember(Path(temporary) / "relkit.pyz")
             if candidate.sha256 == old.sha256 and not refresh_guard:
                 print(f"relkit update: already current ({old.version}, sha256:{old.sha256})")
                 return 0
@@ -414,7 +424,12 @@ def run(
             # a zipapp that might be running this updater on Windows.
             candidate_path = Path(temporary) / "candidate.pyz"
             candidate_path.write_bytes(payload)
-            output = _run([sys.executable, str(candidate_path), "--version"], root)
+            workspace.remember(candidate_path)
+            output = _run(
+                [sys.executable, str(candidate_path), "--version"],
+                root,
+                environment=workspace.environment(),
+            )
             if not output.startswith(f"release-kit {candidate.version} "):
                 raise UpdateError("candidate runtime version does not match the inspected artifact")
             if not refresh_guard:
@@ -450,7 +465,7 @@ def run(
                 audit = [sys.executable, str(candidate_path), "audit", "--root", str(root)]
                 if no_download:
                     audit.append("--no-download")
-                _run(audit, root)
+                _run(audit, root, environment=workspace.environment())
                 _check_inputs(root, inputs)
                 if protection._sha256(_safe_path(projection, root)) != candidate.sha256:
                     raise UpdateError("projection changed during validation")
@@ -491,6 +506,7 @@ def run(
         distribution.DistributionError,
         config.ConfigError,
         protection.ProtectionError,
+        storage.StorageError,
         OSError,
         ValueError,
         KeyError,

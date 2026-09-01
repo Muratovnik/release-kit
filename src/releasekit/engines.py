@@ -10,11 +10,11 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import toolchain
+from . import storage, toolchain
 from .exposure.audit import _skip_worktree_paths, scannable_paths, worktree_paths
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd", ".mdx"})
@@ -42,6 +42,8 @@ def _run(
             errors="replace",
             env=environment,
             timeout=600,
+            stdout=sys.stdout,
+            stderr=sys.stderr,
         )
     except subprocess.TimeoutExpired as error:
         raise RuntimeError("publication engine timed out") from error
@@ -94,15 +96,19 @@ def betterleaks(
     environment[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
     environment[f"GIT_CONFIG_VALUE_{count}"] = str(root.resolve())
     if staged or history:
-        return _run(command, root=root, environment=environment)
+        with storage.temporary(root, "engine-") as workspace:
+            environment.update({key: str(workspace.path) for key in ("TMP", "TEMP", "TMPDIR")})
+            return _run(command, root=root, environment=environment)
 
     # Directory mode does not use Git's publication boundary and would otherwise
     # inspect .git, caches, dependencies, and ignored private mounts. Materialize
     # exactly the tracked plus untracked/unignored candidates that release-kit's
     # policy scanner sees, preserving symlinks as their published link text.
-    with tempfile.TemporaryDirectory(prefix="relkit-worktree-") as temporary:
-        snapshot = Path(temporary)
+    with storage.temporary(root, "worktree-") as workspace:
+        snapshot = workspace.path
         _materialize_worktree(root, snapshot, include_candidates=include_candidates)
+        workspace.remember()
+        environment.update({key: str(snapshot) for key in ("TMP", "TEMP", "TMPDIR")})
         command += ["dir", str(snapshot)]
         return _run(command, root=root, environment=environment)
 
@@ -130,6 +136,22 @@ def _checkout_index(root: Path, destination: Path) -> None:
         raise RuntimeError("Git index checkout timed out") from error
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git checkout-index failed")
+    # Preserve a tracked link as published text, never let an engine follow it
+    # outside the owned snapshot. Git may create links when core.symlinks is true.
+    for item in destination.rglob("*"):
+        if item.is_symlink():
+            storage.checked(item.parent)
+            blob = subprocess.run(
+                ["git", "cat-file", "blob", ":" + item.relative_to(destination).as_posix()],
+                cwd=root,
+                check=False,
+                capture_output=True,
+                timeout=120,
+            )
+            if blob.returncode:
+                raise RuntimeError("could not read the indexed link text")
+            item.unlink()
+            item.write_bytes(blob.stdout)
 
 
 def _clear_snapshot_path(snapshot: Path, destination: Path) -> None:
@@ -137,6 +159,7 @@ def _clear_snapshot_path(snapshot: Path, destination: Path) -> None:
         destination.relative_to(snapshot)
     except ValueError as error:
         raise RuntimeError("snapshot path escaped its temporary root") from error
+    storage.inside(snapshot, destination)
     if destination.is_symlink() or destination.is_file():
         destination.unlink()
     elif destination.is_dir():
@@ -194,13 +217,14 @@ def lychee(
     if not paths:
         return 0
     if not staged:
-        with tempfile.TemporaryDirectory(prefix="relkit-worktree-") as temporary:
-            snapshot = Path(temporary)
+        with storage.temporary(root, "worktree-") as workspace:
+            snapshot = workspace.path
             _materialize_worktree(
                 root,
                 snapshot,
                 include_candidates=include_candidates,
             )
+            workspace.remember()
             command = [
                 str(executable),
                 "--offline",
@@ -210,11 +234,17 @@ def lychee(
                 "--files-from",
                 "-",
             ]
-            return _run(command, root=snapshot, stdin="\n".join(paths) + "\n")
+            return _run(
+                command,
+                root=snapshot,
+                stdin="\n".join(paths) + "\n",
+                environment=workspace.environment(),
+            )
 
-    with tempfile.TemporaryDirectory(prefix="relkit-index-") as temporary:
-        snapshot = Path(temporary)
+    with storage.temporary(root, "index-") as workspace:
+        snapshot = workspace.path
         _checkout_index(root, snapshot)
+        workspace.remember()
         command = [
             str(executable),
             "--offline",
@@ -224,4 +254,9 @@ def lychee(
             "--files-from",
             "-",
         ]
-        return _run(command, root=snapshot, stdin="\n".join(paths) + "\n")
+        return _run(
+            command,
+            root=snapshot,
+            stdin="\n".join(paths) + "\n",
+            environment=workspace.environment(),
+        )

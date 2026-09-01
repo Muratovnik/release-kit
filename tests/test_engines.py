@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import subprocess
 import tempfile
 import unittest
@@ -10,6 +11,20 @@ from releasekit import engines
 
 
 class EngineCommandTests(unittest.TestCase):
+    def setUp(self) -> None:
+        temporary = tempfile.TemporaryDirectory(prefix="engine command test ")
+        self.addCleanup(temporary.cleanup)
+        original = engines.storage.service_root
+        storage_patch = patch.object(
+            engines.storage,
+            "service_root",
+            side_effect=lambda root: (
+                Path(temporary.name) / "local-storage" if root == Path("repo") else original(root)
+            ),
+        )
+        storage_patch.start()
+        self.addCleanup(storage_patch.stop)
+
     def test_betterleaks_history_uses_the_repository_and_project_config(self) -> None:
         with (
             patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
@@ -198,3 +213,30 @@ class EngineCommandTests(unittest.TestCase):
                 ("README.md",),
                 engines._markdown_paths(root, include_candidates=False, staged=True),
             )
+
+    def test_index_snapshot_does_not_follow_a_tracked_symlink(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q"], cwd=root, check=True)
+            subprocess.run(["git", "config", "core.symlinks", "true"], cwd=root, check=True)
+            target = root / ".git/private.txt"
+            target.write_text("must not be read")
+            link = root / "link.md"
+            try:
+                os.symlink(target, link)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+            subprocess.run(["git", "add", "link.md"], cwd=root, check=True)
+            with engines.storage.temporary(root, "test-index-") as workspace:
+                engines._checkout_index(root, workspace.path)
+                copied = workspace.path / "link.md"
+                self.assertFalse(copied.is_symlink())
+                expected = subprocess.run(
+                    ["git", "cat-file", "blob", ":link.md"],
+                    cwd=root,
+                    capture_output=True,
+                    check=True,
+                ).stdout
+                self.assertEqual(expected, copied.read_bytes())
+                workspace.remember()
+            self.assertEqual("must not be read", target.read_text())

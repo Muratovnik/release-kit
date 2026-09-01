@@ -630,11 +630,13 @@ class ZipappIntegrationTests(UpdateFixture):
         self.git("commit", "-qm", "chore: update publication gate")
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             entries = {name: archive.read(name) for name in archive.namelist()}
+        major, minor, patch_version = distribution.version_tuple(__version__)
+        next_version = f"{major}.{minor}.{patch_version + 1}"
         entries["releasekit/__init__.py"] = entries["releasekit/__init__.py"].replace(
-            __version__.encode(), b"0.7.0"
+            __version__.encode(), next_version.encode()
         )
         metadata = json.loads(entries[distribution.BUILD_INFO])
-        metadata["version"] = "0.7.0"
+        metadata["version"] = next_version
         entries[distribution.BUILD_INFO] = json.dumps(metadata).encode()
         next_payload = archive_bytes(entries)
         self.candidate.write_bytes(next_payload)
@@ -652,7 +654,7 @@ class ZipappIntegrationTests(UpdateFixture):
             ],
             self.root,
         )
-        self.assertIn("installed 0.7.0", result)
+        self.assertIn(f"installed {next_version}", result)
         self.assertIsNone(protection.problem(self.root))
         result = update._run(
             [sys.executable, str(self.projection), "update", "--rollback", "--yes"], self.root

@@ -23,6 +23,8 @@ import zipfile
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
+from . import storage
+
 
 class ToolchainError(RuntimeError):
     """A supported tool could not be resolved or verified."""
@@ -237,6 +239,7 @@ def _verify(tool: Tool, executable: Path) -> None:
 
 def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
     """Return a verified executable, provisioning the pinned official release once."""
+    root = storage.checked(root)
     tool = TOOLS[name]
     override = os.environ.get(f"RELKIT_{name.upper()}")
     if override:
@@ -250,6 +253,9 @@ def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
     except KeyError:
         raise ToolchainError(f"{tool.name} {tool.version} has no pinned asset for {key}") from None
     cache_root = Path(os.environ.get("RELKIT_CACHE_DIR", root / ".cache" / "release-kit"))
+    if not cache_root.is_absolute():
+        cache_root = root / cache_root
+    storage.checked(cache_root)
     destination = cache_root / tool.name / tool.version / tool.executable
     archive_path = destination.parent / asset.filename
     if not archive_path.is_file():
@@ -257,7 +263,9 @@ def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
             raise ToolchainError(
                 f"verified archive for {tool.name} {tool.version} is not cached at {archive_path}"
             )
+        storage.cache_write_path(root, destination.parent)
         destination.parent.mkdir(parents=True, exist_ok=True)
+        storage.checked(archive_path)
         with tempfile.NamedTemporaryFile(
             prefix=f"{tool.name}-",
             suffix=Path(asset.filename).suffix,
@@ -286,6 +294,7 @@ def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
     if destination.is_file() and _sha256(destination) != expected_executable:
         raise ToolchainError(f"SHA-256 mismatch for cached executable at {destination}")
     if not destination.is_file():
+        storage.cache_write_path(root, destination)
         _extract_executable(archive_path, tool.executable, destination)
     if _sha256(destination) != expected_executable:
         raise ToolchainError(f"SHA-256 mismatch for extracted executable at {destination}")
