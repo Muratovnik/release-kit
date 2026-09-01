@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### Added
+
+- Explicit `strict` and `vue-like` changelog profiles for `relkit notes`, with a
+  declared first version, source-line diagnostics, duplicate/empty-entry rejection
+  and checks of dates, compare targets, sections and per-change commit links.
+  Legacy extraction remains the default; `--strict` enables the baseline checks.
+- A shared validate-and-extract API and consumer integration instructions that keep
+  hand-edited highlights, grouped changes and breaking-change explanations intact.
+
+### Fixed
+
+- Preserve existing notes on validation or output-replacement failure, refuse an
+  output alias of the changelog or policy, and report configuration/I/O errors.
+- Export notes as UTF-8 on stdout as well as to files, including on Windows hosts
+  whose default console encoding cannot represent the curated text.
+
 ### Changed
 
 - `relkit protect` now owns only the repository's Git common-directory pre-push

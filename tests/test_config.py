@@ -8,6 +8,39 @@ from releasekit import config
 
 
 class LoadTests(unittest.TestCase):
+    def test_changelog_policy_is_opt_in_and_accepts_an_explicit_first_version(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            self.assertEqual("legacy", config.load(root, required=False).changelog.profile)
+            for profile in ("legacy", "strict", "vue-like"):
+                with self.subTest(profile=profile):
+                    (root / config.CONFIG_NAME).write_text(
+                        f'[changelog]\nprofile = "{profile}"\nfirst_version = "v0.1.0"\n',
+                        encoding="utf-8",
+                    )
+                    policy = config.load(root).changelog
+                    self.assertEqual(profile, policy.profile)
+                    self.assertEqual("v0.1.0", policy.first_version)
+
+    def test_malformed_changelog_policy_cannot_silently_disable_validation(self) -> None:
+        for payload in (
+            'changelog = "vue-like"',
+            '[changelog]\nprofile = "vue"',
+            "[changelog]\nprofile = false",
+            "[changelog]\nstrict = true",
+            "[changelog]\nfirst_version = true",
+            '[changelog]\nfirst_version = ""',
+            '[changelog]\nfirst_version = "1.2"',
+            '[changelog]\nfirst_version = "01.2.3"',
+            '[changelog]\nfirst_version = "1.2.3-01"',
+            '[changelog]\nfirst_version = "*"',
+        ):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(payload, encoding="utf-8")
+                with self.assertRaises(config.ConfigError):
+                    config.load(root)
+
     def test_a_missing_file_is_an_error_only_when_the_caller_needs_one(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

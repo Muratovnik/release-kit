@@ -6,6 +6,8 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from .release.changelog import PROFILES, is_version
+
 CONFIG_NAME = "relkit.toml"
 EXPOSURE_KEYS = frozenset(
     {
@@ -210,9 +212,32 @@ class ExposureConfig:
 
 
 @dataclass(frozen=True)
+class ChangelogConfig:
+    profile: str = "legacy"
+    first_version: str = ""
+
+
+def _changelog(raw: dict[str, object]) -> ChangelogConfig:
+    section = raw.get("changelog", {})
+    if not isinstance(section, dict):
+        raise ConfigError("[changelog] must be a table")
+    unknown = sorted(set(section) - {"profile", "first_version"})
+    if unknown:
+        raise ConfigError(f"unknown [changelog] key(s): {', '.join(unknown)}")
+    profile = _string(section, "profile", "legacy")
+    if profile not in PROFILES:
+        raise ConfigError(f"changelog.profile must be one of: {', '.join(sorted(PROFILES))}")
+    first_version = _string(section, "first_version", "")
+    if "first_version" in section and not is_version(first_version):
+        raise ConfigError("changelog.first_version must be a SemVer version or tag")
+    return ChangelogConfig(profile=profile, first_version=first_version)
+
+
+@dataclass(frozen=True)
 class Config:
     root: Path
     exposure: ExposureConfig = field(default_factory=ExposureConfig)
+    changelog: ChangelogConfig = field(default_factory=ChangelogConfig)
 
 
 def load(root: Path, *, required: bool = True) -> Config:
@@ -223,10 +248,10 @@ def load(root: Path, *, required: bool = True) -> Config:
         if required:
             raise ConfigError(f"{CONFIG_NAME} is missing from {root}") from None
         raw = {}
-    except (OSError, tomllib.TOMLDecodeError) as error:
+    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"{CONFIG_NAME} could not be read: {error}") from error
 
-    unknown_top_level = sorted(set(raw) - {"exposure"})
+    unknown_top_level = sorted(set(raw) - {"exposure", "changelog"})
     if unknown_top_level:
         raise ConfigError(f"unknown top-level key(s): {', '.join(unknown_top_level)}")
     section = raw.get("exposure", {})
@@ -285,6 +310,7 @@ def load(root: Path, *, required: bool = True) -> Config:
     )
     return Config(
         root=root,
+        changelog=_changelog(raw),
         exposure=ExposureConfig(
             baseline=normalized_baseline,
             exclude=[

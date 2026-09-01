@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+import tempfile
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -148,23 +149,70 @@ def _protect(arguments: argparse.Namespace) -> int:
 
 
 def _notes(arguments: argparse.Namespace) -> int:
-    path = Path(arguments.changelog)
+    root = Path(arguments.root).resolve()
+    path = root / arguments.changelog
     try:
-        text = path.read_text(encoding="utf-8")
-    except OSError as error:
-        print(f"relkit notes: {error}", file=sys.stderr)
+        policy = config_module.load(root, required=False).changelog
+    except config_module.ConfigError as error:
+        print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
-    entry = changelog_module.entry_for(text, arguments.version)
+    try:
+        with path.open(encoding="utf-8", newline="") as source:
+            text = source.read()
+    except (OSError, UnicodeError) as error:
+        print(f"relkit notes: {path}: {error}", file=sys.stderr)
+        return 2
+    profile = "strict" if arguments.strict and policy.profile == "legacy" else policy.profile
+    try:
+        entry = changelog_module.entry_for(
+            text, arguments.version, profile=profile, first_version=policy.first_version
+        )
+    except changelog_module.ChangelogError as error:
+        print(f"relkit notes: {path}:{error.line}: {error}", file=sys.stderr)
+        return 1
     if entry is None:
         print(
-            f"relkit notes: {path.name} carries no entry for {arguments.version}",
+            f"relkit notes: {path}:1: no entry for {arguments.version}",
             file=sys.stderr,
         )
         return 1
     if arguments.output:
-        Path(arguments.output).write_text(entry + "\n", encoding="utf-8")
+        output = root / arguments.output
+        temporary: Path | None = None
+        try:
+            for source_path in (path, root / config_module.CONFIG_NAME):
+                if output.resolve() == source_path.resolve() or (
+                    output.exists() and source_path.exists() and output.samefile(source_path)
+                ):
+                    raise OSError("output must not replace the changelog or its policy")
+            with tempfile.NamedTemporaryFile(
+                mode="w",
+                encoding="utf-8",
+                newline="",
+                dir=output.parent,
+                prefix=f".{output.name}.",
+                suffix=".tmp",
+                delete=False,
+            ) as destination:
+                temporary = Path(destination.name)
+                destination.write(entry + "\n")
+            temporary.replace(output)
+        except OSError as error:
+            print(f"relkit notes: {output}: {error}", file=sys.stderr)
+            return 2
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
         return 0
-    print(entry)
+    try:
+        binary_stdout = getattr(sys.stdout, "buffer", None)
+        if binary_stdout is not None:
+            binary_stdout.write((entry + "\n").encode("utf-8"))
+        else:
+            sys.stdout.write(entry + "\n")
+    except (OSError, UnicodeError) as error:
+        print(f"relkit notes: stdout: {error}", file=sys.stderr)
+        return 2
     return 0
 
 
@@ -231,8 +279,14 @@ def build_parser() -> argparse.ArgumentParser:
         "notes", help="Print the changelog entry for a version, for use as release notes."
     )
     notes.add_argument("version", help="Version or tag, with or without a leading v")
+    notes.add_argument("--root", default=".", help="Repository policy and base for relative paths")
     notes.add_argument("--changelog", default="CHANGELOG.md")
     notes.add_argument("--output", help="Write to this file instead of standard output")
+    notes.add_argument(
+        "--strict",
+        action="store_true",
+        help="Reject duplicate and empty entries; does not weaken a configured Vue-like profile",
+    )
     notes.set_defaults(handler=_notes)
 
     overlay = subcommands.add_parser(

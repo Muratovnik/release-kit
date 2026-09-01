@@ -251,6 +251,98 @@ backward compatibility; release and CI gates should use `relkit audit`.
 `relkit notes v1.2.0 --output notes.md` extracts the human-curated changelog entry for
 a release. It does not regenerate release notes from commits.
 
+### Validate curated release notes
+
+The `notes` command reads `[changelog]` from `relkit.toml` in the current directory
+(or `--root`). Relative `--changelog` and `--output` paths are based on that root.
+There are three profiles:
+
+- `legacy` (default): preserve the original extraction behavior, including accepting
+  heading-only entries and selecting the first duplicate. Existing configurations
+  without `[changelog]`, and repositories without `relkit.toml`, stay in this mode.
+- `strict`: reject empty entries and multiple headings for the requested version;
+  otherwise leave the entry's format to the project. `notes --strict` also enables
+  this baseline without configuration and never weakens a configured `vue-like` profile.
+- `vue-like`: apply the strict checks plus the layout and traceability rules below.
+
+Opt in explicitly; neither `cliff.toml` nor the presence of generated-looking text
+enables validation. A malformed `relkit.toml` is an error, not a fallback to legacy.
+
+```toml
+[changelog]
+profile = "vue-like"
+first_version = "0.1.0"  # Optional: explicitly declares the release without a predecessor.
+```
+
+The profile follows the version/date headings, thematic sections and linked commit
+hashes used by the [Vue changelog](https://github.com/vuejs/core/blob/main/CHANGELOG.md).
+It validates the final, edited entry, not its byte-for-byte equality with a generator's
+output. [git-cliff templates](https://git-cliff.org/docs/templating/examples/) remain
+one way to prepare a draft before review and commit; release-kit never runs them.
+
+For this profile:
+
+- Use a level-two heading such as
+  `## [1.2.0](https://example.invalid/compare/v1.1.0...v1.2.0) (2026-01-05)`.
+  The version must be SemVer (prereleases and build metadata are supported), the date
+  must be a real calendar date, and the HTTP(S) compare URL must end in
+  `/compare/<previous>...<current>`, naming a different predecessor and the requested
+  version. A leading `v` is optional in version/tag spellings.
+- Only the declared `first_version` can omit the comparison. Its heading may be
+  unlinked or link to `/releases/tag/<current>`. Do not infer "first release" from
+  a missing older section: changelogs can be truncated. The declaration is a project
+  assertion, not a check of Git tags.
+- Put content under `### Highlights`, `### Features`, `### Bug Fixes`,
+  `### Performance Improvements`, `### Reverts`, or `### BREAKING CHANGES`
+  (`### Breaking Changes` is also accepted). Empty or unknown sections fail.
+- Ordinary sections contain top-level `-`, `*`, or `+` change bullets. Each needs
+  at least one inline Markdown commit link: for example,
+  `([abc1234](https://example.invalid/commit/abc1234567))`. The 7–64 hexadecimal
+  label must match the beginning of the hash in the HTTP(S) `/commit/<hash>` URL.
+  Scope and PR links are optional; a PR link alone is not a commit link. Related
+  commits can be grouped into one bullet, and links can wrap onto continuation lines.
+- `Highlights` and breaking-change sections allow edited prose, migration examples,
+  and bullets without commit links. Comments, fenced/indented code and inline code
+  are not traceability evidence. A nested detail cannot supply its parent's link.
+  This is a deliberately bounded changelog layout, not a general Markdown dialect;
+  use inline links, top-level sections/bullets and at most three spaces for wrapped
+  prose. Reference-style links and arbitrary HTML are not a supported substitute.
+
+Only the requested entry is validated; an empty `Unreleased` section or older entries
+do not prevent incremental adoption. The reusable Python API is
+`releasekit.release.changelog.entry_for(text, version, profile="vue-like", first_version="0.1.0")`.
+It returns the original selected entry or `None` if absent, and raises `ChangelogError`
+with a one-based `line` for an invalid entry. No Git checkout or network is required.
+These checks establish structure and visible traceability, **not** completeness,
+accuracy, commit existence, or whether a commit belongs to the release. Maintainer
+review and the consumer's tag/source-commit checks still own those decisions.
+
+Run validation and extraction as a single step before creating a release:
+
+```bash
+# Fail the job before publication if validation or writing fails.
+python .github/relkit.pyz notes "$TAG" --output release-notes.md &&
+  gh release create "$TAG" --notes-file release-notes.md
+```
+
+Install a reviewed artifact containing this policy support, commit the opt-in config
+and curated changelog, then replace the consumer's duplicate notes parser with this
+command. Keep its local tag/source-commit checks and publication audit. `audit` does
+not implicitly validate release notes: `notes` needs the exact release version.
+Changing release-kit alone does not enable this gate in consumers. Existing protected
+consumers also need their owner-controlled guard refreshed for the changed artifact
+and policy, following the guard migration instructions above.
+
+Exit codes are `0` for export, `1` for an absent/invalid entry (diagnostic includes
+file, line and reason), and `2` for configuration or I/O errors. No file is created or
+overwritten on validation failure. `--output` replaces a destination only after a
+successful temporary write, refuses the changelog/policy itself, and does not create
+missing parent directories. Use `--output`, not shell redirection, when an existing
+notes file must survive a failed check: the shell truncates redirected files first.
+File export and CLI stdout use UTF-8; strict profiles preserve the selected content
+and internal line endings, trim trailing blank line endings and append one final LF.
+Human editing is never regenerated or reformatted during publication.
+
 ## Development
 
 ```bash
