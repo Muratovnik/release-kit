@@ -76,6 +76,12 @@ through `RELKIT_APPROVED_EXTERNAL_CACHE`. Use
 `RELKIT_BETTERLEAKS` /
 `RELKIT_LYCHEE` to point at pre-provisioned verified executables.
 
+If Python reports an empty machine type on Windows, release-kit queries
+[GetNativeSystemInfo](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getnativesysteminfo)
+instead of depending on inherited `PROCESSOR_*` variables. Under emulation this
+API can report a compatible architecture. Unknown or unpinned architectures still
+refuse; there is no assumed x64 default.
+
 Every adopter has its own tracked copy. Updating the source repository, an installed
 Python package, or one adopter does not update other repositories. A behaviour change
 needs a new version: never replace published bytes under an existing version/tag.

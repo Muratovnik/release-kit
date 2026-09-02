@@ -4,14 +4,16 @@ import io
 import json
 import os
 import runpy
+import shutil
 import sys
+import unittest
 import zipfile
 
 from mcp import Client, StdioServerParameters
 from mcp.types import ElicitResult
 from test_stdio import ROOT, SOURCE, Fixture
 
-from releasekit import __version__, distribution, protection
+from releasekit import __version__, distribution, protection, toolchain
 
 sys.path.insert(0, str(ROOT / "tools"))
 BUILD_PLUGIN = runpy.run_path(str(ROOT / "tools/build_plugin.py"))["build_plugin"]
@@ -50,16 +52,95 @@ class SyncTests(Fixture):
         self.git("commit", "-qm", "test: pin previous distribution")
         self.old_bytes = self.projection.read_bytes()
 
-    def sync_client(self, mode="auto", callback="default"):
+    def sync_client(self, mode="auto", callback="default", *, without_processor_environment=False):
+        environment = {**os.environ, "PYTHONPATH": str(SOURCE), "PYTHONDONTWRITEBYTECODE": "1"}
+        if without_processor_environment:
+            environment = {
+                key: value
+                for key, value in environment.items()
+                if not key.upper().startswith("PROCESSOR_")
+            }
         return Client(
             StdioServerParameters(
                 command=sys.executable,
                 args=["-m", "releasekit_mcp.server", "--plugin", "--bundle", str(self.bundle)],
-                env={**os.environ, "PYTHONPATH": str(SOURCE), "PYTHONDONTWRITEBYTECODE": "1"},
+                env=environment,
             ),
             mode=mode,
             elicitation_callback=self.accept if callback == "default" else callback,
         )
+
+    @unittest.skipUnless(
+        sys.platform == "win32" and os.environ.get("RELKIT_TEST_REAL_ENGINES") == "1",
+        "opt-in Windows acceptance requires project-local verified engine archives",
+    )
+    def test_update_with_real_engines_without_windows_processor_environment(self):
+        (self.root / "relkit.toml").write_text(
+            "[exposure]\ncheck_secrets = true\ncheck_links = true\n"
+        )
+        (self.root / ".betterleaks.toml").write_text("[extend]\nuseDefault = true\n")
+        self.git("add", "relkit.toml", ".betterleaks.toml")
+        self.git("commit", "-qm", "test: enable publication scanners")
+        for name, tool in toolchain.TOOLS.items():
+            executable = toolchain.resolve(name, root=ROOT, allow_download=False)
+            asset = tool.assets[toolchain._platform_key()]
+            archive = ROOT / ".cache/release-kit" / name / tool.version / asset.filename
+            target = self.root / ".cache/release-kit" / name / tool.version
+            target.mkdir(parents=True)
+            shutil.copy2(archive, target / asset.filename)
+            shutil.copy2(executable, target / tool.executable)
+        protection.install(self.root)
+        guard = self.root / ".git/hooks/pre-push"
+        old_guard = guard.read_bytes()
+
+        async def scenario():
+            async with self.sync_client(
+                callback=None, without_processor_environment=True
+            ) as client:
+                result = await self.sync(client, "apply", **await self.authorized_plan(client))
+                self.assertFalse(result.is_error, result)
+                self.assertEqual("aligned", result.structured_content["sync"]["state"])
+                self.assertEqual(self.target, self.projection.read_bytes())
+                self.assertIsNone(protection.problem(self.root))
+                inspected = await client.call_tool(
+                    "relkit_project", {"request": {"action": "inspect", "root": str(self.root)}}
+                )
+                bound = await client.call_tool(
+                    "relkit_project",
+                    {
+                        "request": {
+                            "action": "bind",
+                            "root": str(self.root),
+                            "authorization": {
+                                "source": "user_request",
+                                "scope": "project_checks",
+                                "review_sha256": inspected.structured_content["review_sha256"],
+                            },
+                        }
+                    },
+                )
+                self.assertFalse(bound.is_error, bound)
+                audited = await client.call_tool(
+                    "relkit_audit",
+                    {
+                        "binding": bound.structured_content["binding"],
+                        "request": {"no_download": True},
+                    },
+                )
+                self.assertFalse(audited.is_error, audited)
+                self.assertEqual(
+                    {"betterleaks": 0, "lychee": 0},
+                    audited.structured_content["result"]["data"]["engines"],
+                )
+                result = await self.sync(
+                    client, "rollback", **await self.authorized_plan(client, "rollback_plan")
+                )
+                self.assertFalse(result.is_error, result)
+                self.assertEqual(self.old_bytes, self.projection.read_bytes())
+                self.assertEqual(old_guard, guard.read_bytes())
+                self.assertFalse((self.root / "old-code-executed.txt").exists())
+
+        self.run_async(scenario)
 
     async def sync(self, client, action="status", **kwargs):
         return await client.call_tool(

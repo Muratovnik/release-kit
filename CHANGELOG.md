@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-09-02
+
+### Fixed
+
+- Windows engine selection now queries the operating system if Python reports
+  an empty machine type, including plugin clients without processor environment
+  variables. Verified-scanner audits and transactional updates no longer fail
+  with an empty architecture. Unsupported architectures still refuse; no engine
+  verification, project authorization or rollback checks are bypassed.
+
 ## [0.12.0] - 2026-09-02
 
 ### Added

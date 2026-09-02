@@ -219,3 +219,11 @@ Set `PYTHONPATH=src` and process-local TEMP/TMP inside `.cache/test-runs` when t
 from source. Tests use isolated local repositories and native stdio clients. No
 hosted release is created or changed. Hosted publication acceptance and deployment
 into a particular MCP client are separate, explicitly authorized integration steps.
+
+Windows scanner acceptance additionally sets `RELKIT_TEST_REAL_ENGINES=1` when
+running the MCP suite. First provision the pinned engines into this repository's
+default `.cache/release-kit/` with an ordinary audit, without engine/cache overrides.
+The opt-in test copies and re-verifies those archives in its disposable project,
+enables both scanners and applies/rolls back a bundled update without `PROCESSOR_*`
+environment variables. It requires no downloads during the test and never uses
+a real adopter as its update fixture.

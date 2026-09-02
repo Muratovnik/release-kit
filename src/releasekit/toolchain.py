@@ -116,9 +116,43 @@ LYCHEE = Tool(
 TOOLS = {tool.name: tool for tool in (BETTERLEAKS, LYCHEE)}
 
 
+def _windows_machine() -> str:
+    """Query Windows when Python cannot identify it from the inherited environment."""
+    import ctypes
+
+    class SystemInfo(ctypes.Structure):
+        _fields_ = [
+            ("wProcessorArchitecture", ctypes.c_uint16),
+            ("wReserved", ctypes.c_uint16),
+            ("dwPageSize", ctypes.c_uint32),
+            ("lpMinimumApplicationAddress", ctypes.c_void_p),
+            ("lpMaximumApplicationAddress", ctypes.c_void_p),
+            ("dwActiveProcessorMask", ctypes.c_size_t),
+            ("dwNumberOfProcessors", ctypes.c_uint32),
+            ("dwProcessorType", ctypes.c_uint32),
+            ("dwAllocationGranularity", ctypes.c_uint32),
+            ("wProcessorLevel", ctypes.c_uint16),
+            ("wProcessorRevision", ctypes.c_uint16),
+        ]
+
+    try:
+        query = ctypes.WinDLL("kernel32", use_last_error=True).GetNativeSystemInfo
+        query.argtypes = [ctypes.POINTER(SystemInfo)]
+        query.restype = None
+        info = SystemInfo(wProcessorArchitecture=0xFFFF)
+        query(ctypes.byref(info))
+    except (AttributeError, OSError) as error:
+        raise ToolchainError(f"could not determine Windows architecture: {error}") from error
+    return {9: "amd64", 12: "arm64", 0: "x86", 5: "arm", 6: "ia64"}.get(
+        info.wProcessorArchitecture, f"unknown-{info.wProcessorArchitecture}"
+    )
+
+
 def _platform_key() -> tuple[str, str]:
     operating_system = {"win32": "windows", "darwin": "darwin"}.get(sys.platform, sys.platform)
     machine = platform.machine().lower()
+    if operating_system == "windows" and not machine:
+        machine = _windows_machine()
     architecture = {
         "amd64": "x64",
         "x86_64": "x64",
