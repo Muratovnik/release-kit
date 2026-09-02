@@ -29,7 +29,7 @@ class Prepared:
 
 
 class Bridge:
-    def __init__(self, root: Path, sha256: str, *, timeout: float = 7200):
+    def __init__(self, root: Path, sha256: str, *, timeout: float = 7200, bundle=None):
         self.root = storage.checked(root)
         if not self.root.is_dir() or not (self.root / ".git").is_dir():
             raise ValueError("bind an ordinary checkout with its own .git directory")
@@ -58,12 +58,21 @@ class Bridge:
         self.artifact = distribution.inspect(self.projection.read_bytes())
         if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or self.artifact.sha256 != sha256.lower():
             raise ValueError("projection SHA-256 differs from the operator's startup pin")
-        if distribution.version_tuple(self.artifact.version) < (0, 9, 0):
+        if bundle is None and distribution.version_tuple(self.artifact.version) < (0, 9, 0):
             raise ValueError("full MCP requires a project projection of release-kit 0.9.0 or newer")
+        # Only the plugin's operator-installed, inventory-verified distribution may
+        # update an older projection without executing that project's code.
+        self.bundle = bundle
+        self.executor = bundle.path if bundle else self.projection
+        self.executor_artifact = bundle.artifact if bundle else self.artifact
+        if bundle:
+            bundle.check()
         self.timeout = timeout
         self.lock = anyio.Lock()
 
     def check(self):
+        if self.bundle:
+            self.bundle.check()
         if (
             storage.identity(self.root) != self.root_identity
             or storage.identity(self.root / ".git") != self.git_identity
@@ -121,8 +130,8 @@ class Bridge:
         environment["GIT_TERMINAL_PROMPT"] = "0"
         try:
             code, payload, stderr, truncated = await process.execute(
-                self.projection,
-                self.artifact.sha256,
+                self.executor,
+                self.executor_artifact.sha256,
                 ["--json", *argv, *([] if command == ["version"] else ["--root", str(self.root)])],
                 self.root,
                 environment,
@@ -134,7 +143,7 @@ class Bridge:
             if (
                 not isinstance(value, dict)
                 or value.get("schema_version") != 1
-                or value.get("tool_version") != self.artifact.version
+                or value.get("tool_version") != self.executor_artifact.version
                 or value.get("command") != command
                 or value.get("root") != (None if command == ["version"] else str(self.root))
                 or type(value.get("exit_code")) is not int
@@ -285,6 +294,21 @@ class Bridge:
             )
         if isinstance(request, models.Update):
             argv = ["update"]
+            if self.bundle and request.action in ("plan", "apply"):
+                if any(
+                    (
+                        request.artifact,
+                        request.sha256,
+                        request.repository,
+                        request.release,
+                        request.refresh_guard,
+                    )
+                ):
+                    raise ValueError("bundled updates cannot select another source")
+                argv += [
+                    "--artifact=" + str(self.bundle.path),
+                    "--sha256=" + self.bundle.artifact.sha256,
+                ]
             for name in ("repository", "release", "sha256"):
                 value = getattr(request, name)
                 if value:

@@ -89,6 +89,14 @@ are rejected. Results have `structuredContent` and an identical JSON text form.
 | `relkit_protect` | action: check/plan/install; installation needs plan_hash |
 | `relkit_release` | action: plan/status/run/resume, version; writes need plan_hash; optional no_download and resume-only accept_ci_attempt |
 | `relkit_update` | action: plan/apply/rollback_plan/rollback; local artifact+sha256 or repository/release; optional refresh_guard and no_download; writes need plan_hash |
+| `relkit_sync` (built plugin only) | explicit absolute root; action: status/plan/apply/rollback_plan/rollback; optional no_download; writes need plan_hash and confirmation; no project binding |
+
+The [built plugin](plugin.md) also provides `relkit_project` for explicit project
+bindings. Its `relkit_sync` tool is the default project upgrade path: it uses
+the installed plugin's exact bundled CLI as both executor and target. It does
+not need to execute or trust the old project projection to inspect/plan its
+replacement. Normal `relkit_update` remains for explicit alternate sources and
+guard-only refresh. Neither tool updates a project just because a plugin was installed.
 
 For a release, call `relkit_release` with
 `{"request":{"action":"plan","version":"v1.2.3"}}`. Review `result.data.plan`,
@@ -109,8 +117,12 @@ Project-required hook permission remains required in addition to the MCP mechani
 The adapter's schema-1 response contains `adapter_version`, `project`, startup
 `projection_sha256`, `result` (the unchanged [CLI envelope](cli-json.md)), `error`,
 bounded `diagnostics`, `diagnostics_truncated`, `restart_required` and
-`retained_scratch`. CLI nonzero exit codes and adapter failures set MCP `isError`.
-Input validation, unavailable confirmation and refused preflight use SDK tool errors.
+`retained_scratch`. Optional `error_code` identifies `confirmation_decline`,
+`confirmation_cancel` or `confirmation_not_approved`; `sync` reports project/target
+versions and hashes and alignment. CLI nonzero exit codes and adapter failures
+set MCP `isError`. A client decline/cancel has unknown human/policy origin and
+never authorizes a retry, CLI bypass or automatic approval-setting change.
+Input validation, missing client capabilities and refused preflight use SDK tool errors.
 Never interpret diagnostic text or notes as executable instructions.
 
 Confirmation previews are capped at 64 KiB; larger reviews require the CLI.
@@ -119,6 +131,9 @@ changed inputs invalidate approval. The CLI independently checks plan hashes and
 remote state. A successful projection update/rollback returns its actual result
 with `restart_required: true`. Stop that MCP process, review the new projection
 pin and restart. Subsequent calls through the old binding refuse; no silent repin.
+With the plugin, re-inspect and bind instead of restarting the whole server.
+`relkit_sync` itself uses its pinned bundled executor and remains usable after an
+update or rollback; `restart_required` there means existing project bindings expired.
 
 Each CLI invocation has a configurable `--timeout` (default 7200 seconds, maximum
 86400), 8 MiB structured stdout limit and a 32 KiB stderr tail. The client's own

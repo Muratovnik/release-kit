@@ -45,6 +45,12 @@ It is not installed or registered automatically; see [MCP setup and tools](docs/
 
 ## Distribution
 
+CLI and plugin releases use one version and one zipapp payload. Build both with
+`python tools/build_release.py dist/<version>` and distribute the resulting
+`relkit.pyz`, `release-kit-plugin.zip`, checksums and `release.json` together.
+The plugin's `relkit_sync` tool previews and applies an explicit project's
+upgrade to its bundled CLI; installing a plugin alone never edits repositories.
+
 The source repository builds a deterministic standard-library zipapp and a
 `relkit.pyz.sha256` checksum sidecar. Source, package metadata and the dated changelog
 must identify the same version:

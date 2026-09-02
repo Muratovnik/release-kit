@@ -66,7 +66,21 @@ class Update(Request):
 
 
 class Confirmation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
     approve: bool = Field(description="Approve exactly this operation and its displayed effects")
+
+
+class Sync(Request):
+    root: str
+    action: Literal["status", "plan", "apply", "rollback_plan", "rollback"] = "status"
+    plan_hash: str = ""
+    no_download: bool = False
+
+    @model_validator(mode="after")
+    def exact_action(self):
+        if self.action in ("status", "plan", "rollback_plan") and self.plan_hash:
+            raise ValueError("plan_hash is only valid for apply/rollback")
+        return self
 
 
 class Project(Request):
@@ -90,6 +104,8 @@ class ProjectResponse(BaseModel):
     action: str
     review: dict | None = None
     binding: str | None = None
+    error: str | None = None
+    error_code: str | None = None
 
 
 class Response(BaseModel):
@@ -99,6 +115,8 @@ class Response(BaseModel):
     projection_sha256: str
     result: dict | None = None
     error: str | None = None
+    error_code: str | None = None
+    sync: dict | None = None
     diagnostics: str = ""
     diagnostics_truncated: bool = False
     restart_required: bool = False

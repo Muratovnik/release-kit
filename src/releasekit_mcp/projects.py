@@ -20,14 +20,14 @@ class Projects:
         self.timeout = timeout
         self.bindings: dict[str, ProjectReview] = {}
 
-    def inspect(self, root: str) -> ProjectReview:
+    def inspect(self, root: str, *, bundle=None) -> ProjectReview:
         if not Path(root).is_absolute():
             raise ValueError("project must be an explicit absolute checkout root")
         root_path = storage.checked(Path(root))
         projection = storage.inside(root_path, root_path / ".github/relkit.pyz")
         if projection.stat().st_size > 8 * 1024 * 1024:
             raise ValueError("projection exceeds the distribution limit")
-        bridge = Bridge(root_path, storage.digest(projection), timeout=self.timeout)
+        bridge = Bridge(root_path, storage.digest(projection), timeout=self.timeout, bundle=bundle)
         return ProjectReview(bridge, self.review(bridge))
 
     @staticmethod

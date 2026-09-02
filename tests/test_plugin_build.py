@@ -12,7 +12,8 @@ import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import storage
+from releasekit import __version__, distribution, storage
+from releasekit.plugin import Bundle
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -20,6 +21,30 @@ BUILDER = runpy.run_path(str(ROOT / "tools/build_plugin.py"))
 
 
 class PluginBuildTests(unittest.TestCase):
+    def test_joint_release_exports_exact_bundled_cli_and_refuses_overwrite(self):
+        builder = runpy.run_path(str(ROOT / "tools/build_release.py"))["build_release"]
+        with tempfile.TemporaryDirectory(prefix="release set ") as temporary:
+            folder = Path(temporary)
+            one, two = folder / "one", folder / "two"
+            self.assertEqual(builder(one), builder(two))
+            self.assertEqual(__version__, json.loads((one / "release.json").read_text())["version"])
+            with zipfile.ZipFile(one / "release-kit-plugin.zip") as archive:
+                self.assertEqual(
+                    (one / "relkit.pyz").read_bytes(), archive.read("release-kit/tools/relkit.pyz")
+                )
+                archive.extractall(folder)
+            bundle = Bundle(folder / "release-kit")
+            self.assertEqual(
+                "aligned",
+                bundle.alignment(distribution.inspect((one / "relkit.pyz").read_bytes()))["state"],
+            )
+            with self.assertRaisesRegex(ValueError, "new or empty"):
+                builder(one)
+            self.assertEqual((one / "relkit.pyz").read_bytes(), (two / "relkit.pyz").read_bytes())
+            bundle.path.write_bytes(bundle.path.read_bytes() + b"drift")
+            with self.assertRaisesRegex(ValueError, "source changed"):
+                bundle.check()
+
     def test_runtime_is_owned_local_and_checks_cache_paths_before_invocation(self):
         with tempfile.TemporaryDirectory(prefix="plugin space ") as temporary:
             folder = Path(temporary)

@@ -8,11 +8,17 @@ One installable package combines the release-kit workflow skill and all MCP
 workflows. It belongs to release-kit and uses the same version as its source
 package. The plugin does not replace the standalone CLI or the project's pinned
 `.github/relkit.pyz`; a plugin upgrade never upgrades a project automatically.
+The plugin and its bundled CLI share one release version. `relkit_sync` is the
+explicit path for synchronizing an existing project to that exact distribution.
 
 ## Build and install
 
-From a reviewed source checkout, run `python tools/build_plugin.py
-dist/release-kit-plugin.zip`. Extract the archive's `release-kit/` directory into
+From a reviewed source checkout, run `python tools/build_release.py
+dist/<version>`. It builds one plugin and exports its exact bundled `relkit.pyz`,
+both checksum sidecars and `release.json`. Publish these as one versioned release
+set; the builder refuses to overwrite an existing nonempty output directory.
+`tools/build_plugin.py` remains available for plugin-only development builds.
+Extract the archive's `release-kit/` directory into
 the chosen plugin source directory, then add it to a native Codex marketplace
 and install through the native plugin manager. See the
 [official packaging guide](https://developers.openai.com/plugins/build/plugins).
@@ -47,6 +53,23 @@ directory selects the launcher only, never the target project.
 Start a fresh client task after installation so it discovers the skill and MCP
 tools. Invoke the release-kit skill or ask for a release-kit check/update/plan.
 
+For an update, use `relkit_sync` with an explicit absolute `request.root` and
+`action = "status"`, then `"plan"`. It reports both versions and hashes, and
+uses the verified bundled CLI for the existing transactional updater. Preview
+does not execute the project's old code and requires no binding, including for
+pre-MCP project versions. This is not zero-write sandboxing: owned temporary
+files/locks can be created under the project. It never publishes or fetches a
+candidate from GitHub. Audit engines may still need their verified downloads
+during apply, unless `no_download` is true.
+
+After reviewing the plan and any separate hook/rollback authorization, call
+`"apply"` with `plan_hash = result.data.plan_sha256`. Native human confirmation
+is required immediately before mutation. The same tool supports `rollback_plan`
+and `rollback` using the saved project receipt. `aligned` is byte-for-byte equality;
+newer projects and different bytes under the same version are not overwritten.
+Successful updates report `sync.state`, backup and receipt; existing bindings
+must be renewed, but the plugin updater remains available without restart.
+
 The plugin process deliberately starts without a selected project. Call
 `relkit_project` with `request = {"action": "inspect", "root": "<absolute-root>"}`
 to read distribution and policy metadata without running project code. The
@@ -64,7 +87,12 @@ changes require a fresh inspection and confirmation. Native elicitation must
 reach the human; automatically approving it is not a supported deployment.
 Project trust permits CLI checks/preflights, not publication or hook mutation.
 Every write still uses the existing plan, confirmation and revalidation boundary.
-Unsupported or rejecting clients fail closed. See the bundled skill for the
+Unsupported or rejecting clients fail closed. A `confirmation_decline` or
+`confirmation_cancel` result reports the client action, not its human/policy
+origin. Do not retry unchanged or bypass it with CLI. Review the client's
+interactive-approval settings with the user, or obtain their explicit choice of
+a separately reviewed manual workflow. Never rewrite those settings from a tool.
+See the bundled skill for the
 update and release workflows, and [the MCP contract](mcp.md) for CLI failure,
 cancellation and recovery semantics.
 

@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-09-02
+
+### Added
+
+- Plugin-owned `relkit_sync` status, plan, apply and rollback for an explicit
+  project. The verified bundled CLI is the update target and executor; previews
+  do not run the older project projection or require a project-code binding.
+  Writes retain exact-plan confirmation, backups and the existing updater gates.
+- A single release-set builder exports the exact bundled zipapp alongside the
+  plugin and checksums. Project alignment reports both versions and hashes;
+  installing a plugin does not silently change a repository or downgrade it.
+
+### Fixed
+
+- Confirmation declines and cancellations now return actionable structured
+  errors without attributing a client-policy refusal to the human. Neither
+  outcome authorizes a CLI fallback or an approval-policy change.
+
 ## [0.10.0] - 2026-09-02
 
 ### Added
