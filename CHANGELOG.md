@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-09-02
+
+### Added
+
+- Opt-in JSON result schema for all commands, with semantic findings, errors,
+  release stages and continuation arguments; progress and engine output use stderr.
+- Read-only `release status` for saved run receipts, explicitly distinguished
+  from a fresh remote verification and compatible with older schema-1 receipts.
+- Structured update dry-run plans with exact artifact, guarded-input and hook
+  digests; optional `--plan-hash` rejects changed plans before candidate execution.
+  JSON updates require explicit `--yes` and never prompt interactively.
+
+### Compatibility
+
+- Default text output and exit meanings remain available. No MCP server or new
+  runtime dependencies. Existing projections and published releases stay pinned.
+- Resume still requires the release-kit version that created the saved plan;
+  reading an older receipt does not migrate it or authorize publication.
+
 ## [0.7.1] - 2026-09-02
 
 ### Fixed

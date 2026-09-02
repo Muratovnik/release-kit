@@ -215,3 +215,8 @@ files); `1` a recorded run failed a check; `2` invalid request/preconditions;
 `3` waiting/transport timeout or a draft requiring continuation. The ordinary
 output gives stage, result, reason, diagnostics and the resume command. No live
 publication test is authorized by running the isolated test suite.
+
+`release status vX.Y.Z` reads the saved receipt without changing files or checking
+GitHub. Its exit `0` means the read succeeded, not that the published release is
+currently valid. All commands accept the opt-in [structured CLI contract](cli-json.md);
+recorded publication, verification and cleanup remain separate fields.

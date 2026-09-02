@@ -13,7 +13,8 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from . import config, distribution, protection, storage
+from . import __version__, config, distribution, protection, storage
+from .result import Result
 
 PROJECTION = protection.PROJECTION_PATH
 RECEIPT = "relkit-update.json"
@@ -301,11 +302,15 @@ def run(
     no_download: bool = False,
     yes: bool = False,
     refresh_guard: bool = False,
+    plan_hash: str = "",
+    result: Result | None = None,
 ) -> int:
     """Update one tracked projection, never Git refs/index, policy or external hooks."""
     root = root.resolve()
     lock: Path | None = None
     locked = False
+    result = result or Result()
+    receipt = None
     try:
         git_dir = _repository(root)
         lock = _safe_path(git_dir / "relkit-update.lock", root)
@@ -320,7 +325,7 @@ def run(
                 f"update lock exists: {lock}; check its process before removing a stale lock"
             ) from error
         if rollback:
-            if any((artifact_path, sha256, repository, release, dry_run, refresh_guard)):
+            if any((artifact_path, sha256, repository, release, dry_run, refresh_guard, plan_hash)):
                 raise UpdateError(
                     "--rollback cannot be combined with source selection or --dry-run"
                 )
@@ -330,6 +335,7 @@ def run(
             _restore(root, git_dir, receipt)
             receipt["state"] = "rolled-back"
             _save_receipt(receipt_path, receipt)
+            result.data.update(action="rollback", receipt=str(receipt_path), state="rolled-back")
             print(
                 f"relkit update: restored {receipt['old_version']}; Git index and refs were not changed"
             )
@@ -365,7 +371,6 @@ def run(
                 changes = protection.digest_changes(root)
                 if not changes:
                     print("relkit update: guard already matches the current inputs")
-                    return 0
                 for change in changes:
                     print(f"relkit update: {change}")
                 payload, candidate = old_payload, old
@@ -389,20 +394,25 @@ def run(
                     )
                 payload, candidate = _github(root, repository, release, Path(temporary))
                 workspace.remember(Path(temporary) / "relkit.pyz")
-            if candidate.sha256 == old.sha256 and not refresh_guard:
+            noop = candidate.sha256 == old.sha256 and (not refresh_guard or not changes)
+            if noop:
                 print(f"relkit update: already current ({old.version}, sha256:{old.sha256})")
-                return 0
-            if not refresh_guard and distribution.version_tuple(
-                candidate.version
-            ) <= distribution.version_tuple(old.version):
+            if (
+                not noop
+                and not refresh_guard
+                and distribution.version_tuple(candidate.version)
+                <= distribution.version_tuple(old.version)
+            ):
                 raise UpdateError(
                     "refusing a downgrade or changed bytes under the same version; publish a new version"
                 )
-            if not refresh_guard:
+            if not noop and not refresh_guard:
                 _clean(root)
             print(
                 f"relkit update: {PROJECTION}: {old.version} sha256:{old.sha256} -> {candidate.version} sha256:{candidate.sha256}"
             )
+            new_hook = None
+            new_digests = {}
             if old_hook is not None:
                 print(f"relkit update: owned guard to refresh: {hook}")
                 new_digests = protection._guarded_digests(root)
@@ -411,6 +421,43 @@ def run(
                 print(
                     f"relkit update: guard sha256:{hashlib.sha256(old_hook).hexdigest()} -> sha256:{hashlib.sha256(new_hook).hexdigest()}"
                 )
+            files = []
+            for path, before, after in (
+                (projection, old_payload, payload),
+                (hook, old_hook, new_hook),
+            ):
+                if before != after:
+                    files.append(
+                        {
+                            "path": path.relative_to(root).as_posix(),
+                            "before_sha256": hashlib.sha256(before).hexdigest(),
+                            "after_sha256": hashlib.sha256(after).hexdigest(),
+                        }
+                    )
+            value = {
+                "schema": 1,
+                "tool_version": __version__,
+                "root": str(root),
+                "action": "noop" if noop else "refresh-guard" if refresh_guard else "update",
+                "old_version": old.version,
+                "new_version": candidate.version,
+                "old_sha256": old.sha256,
+                "new_sha256": candidate.sha256,
+                "repository": candidate.repository,
+                "files": files,
+                "inputs": inputs,
+                "guard_inputs_before": protection.recorded_digests(root) if old_hook else {},
+                "guard_inputs_after": new_digests,
+            }
+            digest = hashlib.sha256(
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            result.data.update(plan=value, plan_sha256=digest, state="planned")
+            if plan_hash and plan_hash != digest:
+                raise UpdateError("reviewed update plan is stale; review a new dry run")
+            if noop:
+                result.data["state"] = "unchanged"
+                return 0
             if dry_run:
                 print(
                     "relkit update: dry run; would refresh only the owned guard"
@@ -459,6 +506,8 @@ def run(
                 "inputs": inputs,
             }
             _save_receipt(receipt_path, receipt)
+            result.data.update(receipt=str(receipt_path), backup=str(backup), state="pending")
+            result.next_action = ["relkit", "update", "--root", str(root), "--rollback", "--yes"]
             try:
                 if not refresh_guard:
                     _atomic(projection, payload, int(receipt["projection_mode"]))
@@ -481,11 +530,15 @@ def run(
                     raise UpdateError("projection changed during validation")
                 receipt["state"] = "installed"
                 _save_receipt(receipt_path, receipt)
+                result.data["state"] = "installed"
+                result.next_action = None
             except Exception as error:
                 try:
                     _restore(root, git_dir, receipt)
                     receipt["state"] = "rolled-back"
                     _save_receipt(receipt_path, receipt)
+                    result.data["state"] = "rolled-back"
+                    result.next_action = None
                 except Exception as restore_error:
                     raise UpdateError(
                         f"update failed: {error}; automatic rollback could not complete: {restore_error}; recovery backup: {backup}"
@@ -512,6 +565,9 @@ def run(
         KeyError,
         TypeError,
     ) as error:
+        result.error("update_error", error)
+        if receipt is not None and receipt.get("state") == "pending":
+            result.next_action = ["relkit", "update", "--root", str(root), "--rollback", "--yes"]
         print(f"relkit update: {error}", file=sys.stderr)
         return 2
     finally:
@@ -519,4 +575,7 @@ def run(
             try:
                 lock.unlink(missing_ok=True)
             except OSError as error:
+                result.warnings.append(
+                    {"code": "lock_retained", "message": str(error), "path": str(lock)}
+                )
                 print(f"relkit update: could not remove lock {lock}: {error}", file=sys.stderr)

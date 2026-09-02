@@ -11,8 +11,11 @@ triggers publication, so a check after it reports on something already published
 from __future__ import annotations
 
 import argparse
+import contextlib
+import json
 import sys
 import tempfile
+import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -23,6 +26,7 @@ from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
 from .release import changelog as changelog_module
 from .release import coordinator
+from .result import Result
 
 
 def _exposure(arguments: argparse.Namespace) -> int:
@@ -30,6 +34,7 @@ def _exposure(arguments: argparse.Namespace) -> int:
     try:
         settings = config_module.load(root, required=False)
     except config_module.ConfigError as error:
+        arguments.result.error("configuration_error", error)
         print(f"relkit: {error}", file=sys.stderr)
         return 2
     private_paths = list(settings.exposure.private_paths)
@@ -46,6 +51,7 @@ def _exposure(arguments: argparse.Namespace) -> int:
                 manifest_module.read(policy.manifest_path) if policy.manifest_path.is_file() else ()
             )
         except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
+            arguments.result.error("configuration_error", error)
             print(f"relkit exposure: {error}", file=sys.stderr)
             return 2
         for mount in mounts:
@@ -82,8 +88,10 @@ def _exposure(arguments: argparse.Namespace) -> int:
             include_candidates=settings.exposure.include_candidates,
         )
     except RuntimeError as error:
+        arguments.result.error("check_error", error)
         print(f"relkit exposure: {error}", file=sys.stderr)
         return 2
+    arguments.result.exposure(report)
     if report.excluded:
         print(f"relkit exposure: {len(report.excluded)} path(s) excluded by configuration")
     if report.baselined:
@@ -92,6 +100,8 @@ def _exposure(arguments: argparse.Namespace) -> int:
             print(f"  {finding}")
     failures = report.failures + ([str(f) for f in report.baselined] if arguments.strict else [])
     if failures:
+        for failure in failures:
+            arguments.result.error("check_failed", failure)
         print("relkit exposure: failed", file=sys.stderr)
         for line in failures:
             print(f"  {line}", file=sys.stderr)
@@ -109,6 +119,7 @@ def _audit(arguments: argparse.Namespace) -> int:
         owner_mode=arguments.owner,
         require_overlay=arguments.require_overlay,
         allow_download=not arguments.no_download,
+        result=arguments.result,
     )
 
 
@@ -119,11 +130,15 @@ def _overlay(arguments: argparse.Namespace) -> int:
         mounts = manifest_module.read(policy.manifest_path)
         problems, skipped = verify_module.check(mounts, public_root=root, private_root=policy.root)
     except (owner.OwnerPolicyError, manifest_module.ManifestError, RuntimeError) as error:
+        arguments.result.error("check_error", error)
         print(f"relkit overlay: {error}", file=sys.stderr)
         return 2
+    arguments.result.data.update(verified_mounts=len(mounts) - len(skipped), skipped=skipped)
     for name in skipped:
         print(f"relkit overlay: {name} links outside this repository; not checked")
     if problems:
+        for problem in problems:
+            arguments.result.error("check_failed", problem)
         print("relkit overlay: failed", file=sys.stderr)
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
@@ -136,15 +151,20 @@ def _protect(arguments: argparse.Namespace) -> int:
     root = Path(arguments.root).resolve()
     if arguments.action == "check":
         if problem := protection.problem(root):
+            arguments.result.error("check_failed", problem)
+            arguments.result.data["guard"] = "invalid"
             print(f"relkit protect: {problem}", file=sys.stderr)
             return 1
+        arguments.result.data["guard"] = "valid"
         print("relkit protect: owner pre-push guard is installed")
         return 0
     try:
         path = protection.install(root)
     except protection.ProtectionError as error:
+        arguments.result.error("protection_error", error)
         print(f"relkit protect: {error}", file=sys.stderr)
         return 2
+    arguments.result.data.update(guard="installed", path=str(path))
     print(f"relkit protect: installed {path}")
     return 0
 
@@ -155,12 +175,14 @@ def _notes(arguments: argparse.Namespace) -> int:
     try:
         policy = config_module.load(root, required=False).changelog
     except config_module.ConfigError as error:
+        arguments.result.error("configuration_error", error)
         print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
     try:
         with path.open(encoding="utf-8", newline="") as source:
             text = source.read()
     except (OSError, UnicodeError) as error:
+        arguments.result.error("io_error", error, path=str(path))
         print(f"relkit notes: {path}: {error}", file=sys.stderr)
         return 2
     profile = "strict" if arguments.strict and policy.profile == "legacy" else policy.profile
@@ -169,14 +191,19 @@ def _notes(arguments: argparse.Namespace) -> int:
             text, arguments.version, profile=profile, first_version=policy.first_version
         )
     except changelog_module.ChangelogError as error:
+        arguments.result.error("invalid_notes", error, path=str(path), line=error.line)
         print(f"relkit notes: {path}:{error.line}: {error}", file=sys.stderr)
         return 1
     if entry is None:
+        arguments.result.error(
+            "missing_notes", f"no entry for {arguments.version}", path=str(path), line=1
+        )
         print(
             f"relkit notes: {path}:1: no entry for {arguments.version}",
             file=sys.stderr,
         )
         return 1
+    arguments.result.data.update(version=arguments.version, notes=entry + "\n", output=None)
     if arguments.output:
         output = root / arguments.output
         temporary: Path | None = None
@@ -199,11 +226,15 @@ def _notes(arguments: argparse.Namespace) -> int:
                 destination.write(entry + "\n")
             temporary.replace(output)
         except OSError as error:
+            arguments.result.error("io_error", error, path=str(output))
             print(f"relkit notes: {output}: {error}", file=sys.stderr)
             return 2
         finally:
             if temporary is not None:
                 temporary.unlink(missing_ok=True)
+        arguments.result.data["output"] = str(output)
+        return 0
+    if arguments.json:
         return 0
     try:
         binary_stdout = getattr(sys.stdout, "buffer", None)
@@ -212,24 +243,36 @@ def _notes(arguments: argparse.Namespace) -> int:
         else:
             sys.stdout.write(entry + "\n")
     except (OSError, UnicodeError) as error:
+        arguments.result.error("io_error", error)
         print(f"relkit notes: stdout: {error}", file=sys.stderr)
         return 2
     return 0
 
 
+class ArgumentError(ValueError):
+    pass
+
+
+class Parser(argparse.ArgumentParser):
+    def error(self, message: str) -> None:
+        raise ArgumentError(message)
+
+
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="relkit", description=__doc__.splitlines()[0])
+    parser = Parser(prog="relkit", description=__doc__.splitlines()[0], allow_abbrev=False)
+    parser.add_argument("--json", action="store_true", help="Emit one versioned JSON result")
     parser.add_argument(
         "--version",
-        action="version",
-        version=f"release-kit {__version__} ({toolchain.versions()})",
+        dest="show_version",
+        action="store_true",
+        help="Show release-kit and engine versions",
     )
-    subcommands = parser.add_subparsers(dest="command", required=True)
+    subcommands = parser.add_subparsers(dest="command")
 
     release = subcommands.add_parser(
         "release", help="Plan, run or resume a GitHub tag release; CI publishes."
     )
-    release.add_argument("action", choices=("plan", "run", "resume"))
+    release.add_argument("action", choices=("plan", "run", "resume", "status"))
     release.add_argument("version", help="Stable X.Y.Z or vX.Y.Z")
     release.add_argument("--root", default=".", help="Owning repository")
     release.add_argument(
@@ -254,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
             plan_hash=arguments.plan_hash,
             no_download=arguments.no_download,
             accept_ci_attempt=arguments.accept_ci_attempt,
+            result=arguments.result,
         )
     )
     release.add_argument(
@@ -277,6 +321,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--artifact", type=Path, help="Use a reviewed local zipapp instead of GitHub"
     )
     updater.add_argument("--sha256", default="", help="Required expected SHA-256 for --artifact")
+    updater.add_argument("--plan-hash", default="", help="Require the exact reviewed dry-run plan")
     updater.add_argument(
         "--dry-run",
         action="store_true",
@@ -312,8 +357,10 @@ def build_parser() -> argparse.ArgumentParser:
             dry_run=arguments.dry_run,
             yes=arguments.yes,
             refresh_guard=arguments.refresh_guard,
+            plan_hash=arguments.plan_hash,
             rollback=arguments.rollback,
             no_download=arguments.no_download,
+            result=arguments.result,
         )
     )
 
@@ -394,12 +441,63 @@ def build_parser() -> argparse.ArgumentParser:
     protect.add_argument("action", choices=("install", "check"))
     protect.add_argument("--root", default=".", help="Repository to protect (default: .)")
     protect.set_defaults(handler=_protect)
+    for command in subcommands.choices.values():
+        command.allow_abbrev = False
+        command.add_argument("--json", action="store_true", default=argparse.SUPPRESS)
     return parser
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    arguments = build_parser().parse_args(argv)
-    return int(arguments.handler(arguments))
+    argv = list(sys.argv[1:] if argv is None else argv)
+    options = argv[: argv.index("--")] if "--" in argv else argv
+    json_mode = "--json" in options
+    result = Result()
+    parser = build_parser()
+    try:
+        arguments = parser.parse_args(argv)
+        if arguments.show_version:
+            if json_mode:
+                result.data["engines"] = {
+                    name: tool.version for name, tool in toolchain.TOOLS.items()
+                }
+                print(json.dumps(result.envelope(["version"], None, 0)))
+            else:
+                print(f"release-kit {__version__} ({toolchain.versions()})")
+            return 0
+        if arguments.command is None:
+            parser.error("a command is required")
+    except ArgumentError as error:
+        if json_mode:
+            result.error("invalid_arguments", error)
+            print(json.dumps(result.envelope([], None, 2)))
+        else:
+            parser.print_usage(sys.stderr)
+            print(f"relkit: error: {error}", file=sys.stderr)
+        return 2
+    arguments.result = result
+    if not json_mode:
+        return int(arguments.handler(arguments))
+    command = [arguments.command]
+    if hasattr(arguments, "action"):
+        command.append(arguments.action)
+    # Engines explicitly inherit these streams; their OS-level output must not
+    # share stdout with the JSON envelope. Project commands are captured in logs.
+    with contextlib.redirect_stdout(sys.stderr):
+        try:
+            if arguments.command == "update" and not arguments.dry_run and not arguments.yes:
+                result.error("confirmation_required", "JSON updates require explicit --yes")
+                code = 2
+            else:
+                code = int(arguments.handler(arguments))
+        except KeyboardInterrupt:
+            result.error("interrupted", "Command interrupted; inspect state before retrying")
+            code = 3
+        except Exception as error:  # noqa: BLE001 -- preserve the JSON process boundary on bugs
+            result.error("internal_error", error)
+            traceback.print_exc(file=sys.stderr)
+            code = 2
+    print(json.dumps(result.envelope(command, str(Path(arguments.root).absolute()), code)))
+    return code
 
 
 if __name__ == "__main__":

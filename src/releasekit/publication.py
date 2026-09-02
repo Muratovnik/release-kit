@@ -10,6 +10,7 @@ from . import engines, owner, protection
 from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
+from .result import Result
 
 
 def _mounted_private_paths(
@@ -40,7 +41,10 @@ def run(
     owner_mode: bool,
     require_overlay: bool,
     allow_download: bool,
+    result: Result | None = None,
 ) -> int:
+    result = result or Result()
+    result.data.update(scope="history" if history else "staged" if staged else "worktree")
     try:
         settings = config_module.load(root)
         policy = owner.discover(root) if owner_mode or require_overlay else None
@@ -62,6 +66,7 @@ def run(
         manifest_module.ManifestError,
         owner.OwnerPolicyError,
     ) as error:
+        result.error("configuration_error", error)
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
@@ -91,8 +96,10 @@ def run(
             staged=staged,
         )
     except RuntimeError as error:
+        result.error("check_error", error)
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
+    result.exposure(report)
     failures = list(report.failures)
     if policy is not None and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
@@ -100,6 +107,7 @@ def run(
         try:
             changes = audit.worktree_changes(root)
         except RuntimeError as error:
+            result.error("check_error", error)
             print(f"relkit audit: {error}", file=sys.stderr)
             return 2
         if changes:
@@ -133,6 +141,7 @@ def run(
                 )
             )
         except RuntimeError as error:
+            result.error("check_error", error)
             print(f"relkit audit: {error}", file=sys.stderr)
             return 2
 
@@ -144,6 +153,7 @@ def run(
                     mounts, public_root=root, private_root=policy.root
                 )
             except (manifest_module.ManifestError, RuntimeError) as error:
+                result.error("check_error", error)
                 print(f"relkit audit: {error}", file=sys.stderr)
                 return 2
             failures.extend(str(problem) for problem in problems)
@@ -157,24 +167,32 @@ def run(
         print(f"relkit audit: {len(report.baselined)} baselined finding(s) remain")
 
     engine_failures: list[str] = []
+    engine_results = result.data["engines"] = {"betterleaks": None, "lychee": None}
     try:
-        if settings.exposure.check_secrets and engines.betterleaks(
-            root,
-            config=settings.exposure.betterleaks_config,
-            history=history,
-            staged=staged,
-            include_candidates=settings.exposure.include_candidates and not staged,
-            allow_download=allow_download,
-        ):
-            engine_failures.append("Betterleaks failed")
-        if settings.exposure.check_links and engines.lychee(
-            root,
-            staged=staged,
-            include_candidates=settings.exposure.include_candidates,
-            allow_download=allow_download,
-        ):
-            engine_failures.append("Lychee failed")
+        if settings.exposure.check_secrets:
+            engine_results["betterleaks"] = engines.betterleaks(
+                root,
+                config=settings.exposure.betterleaks_config,
+                history=history,
+                staged=staged,
+                include_candidates=settings.exposure.include_candidates and not staged,
+                allow_download=allow_download,
+            )
+            if engine_results["betterleaks"]:
+                engine_failures.append("Betterleaks failed")
+        if settings.exposure.check_links:
+            engine_results["lychee"] = engines.lychee(
+                root,
+                staged=staged,
+                include_candidates=settings.exposure.include_candidates,
+                allow_download=allow_download,
+            )
+            if engine_results["lychee"]:
+                engine_failures.append("Lychee failed")
     except (OSError, RuntimeError) as error:
+        result.error("engine_error", error)
+        for failure in sorted(set(failures + engine_failures)):
+            result.error("check_failed", failure)
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
@@ -182,6 +200,7 @@ def run(
     if failures:
         print("relkit audit: failed", file=sys.stderr)
         for failure in sorted(dict.fromkeys(failures)):
+            result.error("check_failed", failure)
             print(f"  {failure}", file=sys.stderr)
         return 1
     suffix = " (including history)" if history else ""

@@ -29,6 +29,11 @@ annotated tag, existing tag CI and verified publication. CI remains the sole pub
 project commands own build/test/application details. See the
 [managed-release contract and adoption prerequisites](docs/release-coordinator.md).
 
+Automation can opt into `--json` on every command. `release status` reads an
+existing run without contacting GitHub; `update --dry-run --json` exposes exact
+file and trust-pin changes. See the [versioned CLI result contract](docs/cli-json.md)
+for schemas, exit meanings and explicit approval boundaries. No MCP server is installed.
+
 ## Distribution
 
 The source repository builds a deterministic standard-library zipapp and a

@@ -16,6 +16,7 @@ from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
 from .. import __version__, config, owner, protection, publication, storage
+from ..result import Result
 from . import changelog, settings
 from .backend import (
     CommandError,
@@ -264,28 +265,26 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     }
 
 
+def described_plan(value: dict) -> dict:
+    return {
+        "plan_sha256": fingerprint(value),
+        **value,
+        "actions": [
+            "project checks",
+            "audit worktree + history",
+            "protect check if configured",
+            "annotated tag + tag metadata audit",
+            "atomic exact-ref push (needs --publish)",
+            "observe tag CI; CI alone publishes",
+            "verify immutable release, notes, assets, signatures",
+            "smoke downloaded files from pinned source",
+            "cleanup inventoried temporary files",
+        ],
+    }
+
+
 def show_plan(value: dict) -> None:
-    print(
-        json.dumps(
-            {
-                "plan_sha256": fingerprint(value),
-                **value,
-                "actions": [
-                    "project checks",
-                    "audit worktree + history",
-                    "protect check if configured",
-                    "annotated tag + tag metadata audit",
-                    "atomic exact-ref push (needs --publish)",
-                    "observe tag CI; CI alone publishes",
-                    "verify immutable release, notes, assets, signatures",
-                    "smoke downloaded files from pinned source",
-                    "cleanup inventoried temporary files",
-                ],
-            },
-            indent=2,
-            sort_keys=True,
-        )
-    )
+    print(json.dumps(described_plan(value), indent=2, sort_keys=True))
 
 
 def _state_path(root: Path, tag: str) -> Path:
@@ -294,6 +293,84 @@ def _state_path(root: Path, tag: str) -> Path:
 
 def _save(path: Path, state: dict) -> None:
     storage.atomic_json(path, state)
+
+
+def read_state(runner: Runner, path: Path, tag: str, *, same_version: bool) -> dict:
+    path = storage.inside(runner.root, path)
+    if path.stat().st_size > 2 * 1024 * 1024:
+        raise ReleaseError("saved release state exceeds the read limit")
+    saved = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(saved, dict) or saved.get("schema") != 1:
+        raise ReleaseError("unsupported saved release state schema")
+    value = saved["plan"]
+    if (
+        saved.get("plan_sha256") != fingerprint(value)
+        or value["root"] != str(runner.root)
+        or value["tag"] != tag
+        or value["schema"] != 1
+        or not isinstance(value["tool_version"], str)
+        or (same_version and value["tool_version"] != __version__)
+    ):
+        raise ReleaseError(
+            "saved plan identity/version is invalid; use the same release-kit version and checkout"
+        )
+    settings.parse(value["settings"])
+    if (
+        version_tag(value["version"])[1] != tag
+        or not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", value["sha"])
+        or saved["publication"] not in {"not-pushed", "draft", "published"}
+        or saved["verification"] not in {"not-run", "running", "failed", "passed"}
+        or saved["cleanup"]
+        not in {"not-run", "passed", "retained-unowned-or-changed-files", "blocked-unsafe-path"}
+    ):
+        raise ReleaseError("malformed saved release state")
+    for temporary in [saved.get("temporary"), *saved.get("retained_temporaries", [])]:
+        if temporary:
+            storage.inside(runner.root, Path(temporary))
+    return saved
+
+
+def record_result(result: Result, state: dict, path: Path, *, saved: bool = False) -> None:
+    value = state["plan"]
+    result.data["release"] = {
+        "observation": "local-receipt" if saved else "current-run",
+        "receipt": str(path),
+        "log": str(path.parent / "run.log"),
+        "tag": value["tag"],
+        "sha": value["sha"],
+        "plan_sha256": state["plan_sha256"],
+        "tool_version": value["tool_version"],
+        "resume_version_matches": value["tool_version"] == __version__,
+        **{
+            key: state.get(key)
+            for key in (
+                "publication",
+                "verification",
+                "cleanup",
+                "stage",
+                "stages",
+                "ci",
+                "release_id",
+                "artifacts",
+                "verified_at",
+                "smoke_platform",
+                "local_changes",
+                "temporary",
+                "retained_temporaries",
+                "error",
+            )
+        },
+    }
+    if state["verification"] != "passed":
+        result.next_action = [
+            "relkit",
+            "release",
+            "resume",
+            value["tag"],
+            "--publish",
+            "--root",
+            value["root"],
+        ]
 
 
 def _stage(path: Path, state: dict, name: str, status: str = "running") -> None:
@@ -778,7 +855,10 @@ def run(
     accept_ci_attempt: int = 0,
     runner: Runner | None = None,
     github: GitHub | None = None,
+    result: Result | None = None,
 ) -> int:
+    result = result or Result()
+    original_log = runner.log if runner is not None else None
     state = None
     state_path = None
     lock = None
@@ -787,12 +867,30 @@ def run(
     try:
         root = storage.checked(root)
         runner = runner or Runner(root)
+        if action == "status":
+            runner.log = None
         repository(runner)
         _, tag = version_tag(version)
         if accept_ci_attempt and (action != "resume" or accept_ci_attempt < 1):
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")
         if action == "plan":
-            show_plan(plan(runner, version, github=github))
+            value = plan(runner, version, github=github)
+            result.data["plan"] = described_plan(value)
+            show_plan(value)
+            return 0
+        if action == "status":
+            if publish or plan_hash or no_download:
+                raise ReleaseError(
+                    "status only reads local state; mutation/verification flags are not accepted"
+                )
+            path = _state_path(root, tag)
+            saved = read_state(runner, path, tag, same_version=False)
+            validate_saved_plan(runner, saved["plan"])
+            record_result(result, saved, path, saved=True)
+            print(
+                f"relkit release: recorded {tag}: publication={saved['publication']}, verification={saved['verification']}, cleanup={saved['cleanup']}; no remote check performed"
+            )
+            print(f"relkit release: receipt: {path}")
             return 0
         if action not in {"run", "resume"}:
             raise ReleaseError("unknown release action")
@@ -812,25 +910,8 @@ def run(
         lock_owned = True
         state_path = storage.checked(_state_path(root, tag))
         if action == "resume":
-            saved = json.loads(state_path.read_text(encoding="utf-8"))
+            saved = read_state(runner, state_path, tag, same_version=True)
             value = saved["plan"]
-            if (
-                saved.get("schema") != 1
-                or saved.get("plan_sha256") != fingerprint(value)
-                or value["root"] != str(root)
-                or value["tag"] != tag
-                or value["tool_version"] != __version__
-            ):
-                raise ReleaseError(
-                    "saved plan identity/version is invalid; use the same release-kit version and checkout"
-                )
-            settings.parse(value["settings"])
-            if (
-                version_tag(value["version"])[1] != tag
-                or not re.fullmatch(r"[a-f0-9]{40}|[a-f0-9]{64}", value["sha"])
-                or not all(key in saved for key in ("publication", "verification", "cleanup"))
-            ):
-                raise ReleaseError("malformed saved release state")
             state = saved
             validate_saved_plan(runner, value)
         else:
@@ -887,6 +968,7 @@ def run(
             runner.git("status", "--porcelain=v1", "--untracked-files=all")
         )
         _save(state_path, state)
+        record_result(result, state, state_path)
         print(
             f"relkit release: published and verified {tag} @ {value['sha']}; receipt: {state_path}"
         )
@@ -910,6 +992,7 @@ def run(
     ) as error:
         if isinstance(error, KeyboardInterrupt):
             error = Pending("interrupted; resume to reconcile the actual remote state")
+        result.error("release_pending" if isinstance(error, Pending) else "release_error", error)
         if state is not None and state_path is not None:
             state["error"] = str(error)
             if state["verification"] == "running":
@@ -941,14 +1024,24 @@ def run(
                 print(
                     f"relkit release: retained scratch files: {state['temporary']}", file=sys.stderr
                 )
+            record_result(result, state, state_path)
         else:
             print(f"relkit release: {error}", file=sys.stderr)
         return 3 if isinstance(error, Pending) else 2 if state is None else 1
     finally:
+        if action == "status" and runner is not None:
+            runner.log = original_log
         if lock_owned and lock is not None:
             try:
                 storage.checked(lock).unlink()
             except (OSError, storage.StorageError):
+                result.warnings.append(
+                    {
+                        "code": "lock_retained",
+                        "path": str(lock),
+                        "message": "Inspect the retained release lock",
+                    }
+                )
                 print(
                     f"relkit release: lock changed or could not be removed; inspect {lock}",
                     file=sys.stderr,
