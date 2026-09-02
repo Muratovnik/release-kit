@@ -150,6 +150,11 @@ def _overlay(arguments: argparse.Namespace) -> int:
 def _protect(arguments: argparse.Namespace) -> int:
     root = Path(arguments.root).resolve()
     if arguments.action == "check":
+        if arguments.dry_run or arguments.plan_hash:
+            arguments.result.error(
+                "invalid_arguments", "check does not accept installation options"
+            )
+            return 2
         if problem := protection.problem(root):
             arguments.result.error("check_failed", problem)
             arguments.result.data["guard"] = "invalid"
@@ -159,7 +164,14 @@ def _protect(arguments: argparse.Namespace) -> int:
         print("relkit protect: owner pre-push guard is installed")
         return 0
     try:
-        path = protection.install(root)
+        plan = protection.install_plan(root)
+        arguments.result.data["plan"] = plan
+        if arguments.plan_hash and arguments.plan_hash != plan["plan_sha256"]:
+            raise protection.ProtectionError("reviewed hook plan is stale; review a new dry run")
+        if arguments.dry_run:
+            print("relkit protect: dry run; no hook written")
+            return 0
+        path = protection.install(root, plan_hash=plan["plan_sha256"])
     except protection.ProtectionError as error:
         arguments.result.error("protection_error", error)
         print(f"relkit protect: {error}", file=sys.stderr)
@@ -440,6 +452,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     protect.add_argument("action", choices=("install", "check"))
     protect.add_argument("--root", default=".", help="Repository to protect (default: .)")
+    protect.add_argument(
+        "--dry-run", action="store_true", help="Preview the exact owned hook change"
+    )
+    protect.add_argument("--plan-hash", default="", help="Require a reviewed installation plan")
     protect.set_defaults(handler=_protect)
     for command in subcommands.choices.values():
         command.allow_abbrev = False

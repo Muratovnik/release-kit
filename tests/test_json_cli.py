@@ -15,9 +15,9 @@ from unittest.mock import patch
 
 from test_notes import VALID
 from test_release import ReleaseFixture
-from test_update import UpdateFixture, artifact_bytes, sha
+from test_update import POLICY, UpdateFixture, artifact_bytes, sha
 
-from releasekit import __version__, cli, config, engines, publication, storage
+from releasekit import __version__, cli, config, engines, publication, storage, update
 from releasekit.exposure.audit import Finding, Report
 from releasekit.release import coordinator
 from releasekit.result import Result
@@ -199,6 +199,57 @@ class JsonUpdateTests(UpdateFixture):
         self.assertEqual(0, code)
         self.assertEqual("valid", value["data"]["guard"])
 
+    def test_protect_preview_stale_plan_and_unowned_partial_file(self):
+        args = ["protect", "install", "--root", str(self.root), "--json"]
+        code, value, _ = invoke([*args, "--dry-run"])
+        self.assertEqual(0, code)
+        self.assertFalse(self.hook.exists())
+        digest = value["data"]["plan"]["plan_sha256"]
+        self.policy.write_text(POLICY + "\n# changed after plan\n")
+        self.assertEqual(2, invoke([*args, "--plan-hash", digest])[0])
+        self.assertFalse(self.hook.exists())
+        partial = self.hook.with_name("pre-push.relkit-partial")
+        partial.write_text("not owned by this invocation")
+        code, value, _ = invoke([*args, "--dry-run"])
+        self.assertEqual(0, code)
+        self.assertEqual(0, invoke([*args, "--plan-hash", value["data"]["plan"]["plan_sha256"]])[0])
+        self.assertEqual("not owned by this invocation", partial.read_text())
+
+    def test_protect_refuses_hardlinked_or_external_hook_targets(self):
+        other = self.root / "other-hook"
+        other.write_text(cli.protection.hook_content(self.root))
+        os.link(other, self.hook)
+        code, value, _ = invoke(["protect", "install", "--root", str(self.root), "--json"])
+        self.assertEqual(2, code)
+        self.assertIn("hard-linked", value["errors"][0]["message"])
+        self.hook.unlink()
+        with patch.object(
+            cli.protection, "hook_path", return_value=self.directory / "external-hook"
+        ):
+            code, value, _ = invoke(["protect", "install", "--root", str(self.root), "--json"])
+        self.assertEqual(2, code)
+        self.assertIn("inside", value["errors"][0]["message"])
+        self.assertFalse((self.directory / "external-hook").exists())
+
+    def test_rollback_preview_hash_binding_and_backup_tamper(self):
+        self.guard()
+        self.assertEqual(0, self.command("--yes", *self.source())[0])
+        receipt = (self.root / ".git" / update.RECEIPT).read_bytes()
+        before = self.projection.read_bytes()
+        code, value, _ = self.command("--rollback", "--dry-run")
+        self.assertEqual(0, code, value)
+        digest = value["data"]["plan_sha256"]
+        self.assertEqual("rollback", value["data"]["plan"]["action"])
+        self.assertEqual(receipt, (self.root / ".git" / update.RECEIPT).read_bytes())
+        self.assertEqual(before, self.projection.read_bytes())
+        self.assertEqual(2, self.command("--rollback", "--yes", "--plan-hash", "0" * 64)[0])
+        self.assertEqual(before, self.projection.read_bytes())
+        self.assertEqual(0, self.command("--rollback", "--yes", "--plan-hash", digest)[0])
+        self.assertEqual(self.old, self.projection.read_bytes())
+        backup = self.root / ".git" / self.receipt()["backup"] / "relkit.pyz"
+        backup.write_bytes(b"changed")
+        self.assertEqual(2, self.command("--rollback", "--dry-run")[0])
+
     def test_failed_update_reports_rollback_not_a_pristine_refusal(self):
         self.new = artifact_bytes("0.6.0", audit_exit=1)
         self.candidate.write_bytes(self.new)
@@ -237,6 +288,8 @@ class JsonReleaseTests(ReleaseFixture):
             code, value, _ = self.command("status")
         self.assertEqual(0, code, value)
         self.assertEqual("local-receipt", value["data"]["release"]["observation"])
+        self.assertEqual(digest, value["data"]["release"]["plan"]["plan_sha256"])
+        self.assertEqual(self.sha, value["data"]["release"]["plan"]["sha"])
         self.assertEqual(
             before,
             {

@@ -339,6 +339,7 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
         "tag": value["tag"],
         "sha": value["sha"],
         "plan_sha256": state["plan_sha256"],
+        "plan": described_plan(value),
         "tool_version": value["tool_version"],
         "resume_version_matches": value["tool_version"] == __version__,
         **{

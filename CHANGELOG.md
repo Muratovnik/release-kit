@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-09-02
+
+### Added
+
+- Optional project-bound MCP stdio adapter for every CLI workflow, including
+  confirmed release run/resume, update/rollback, guard installation and notes export.
+  The official MCP SDK is an isolated optional extra; the zipapp stays dependency-free.
+- Dry-run plans and stale-plan rejection for rollback and guard installation;
+  structured release receipts now include the complete validated saved plan.
+
+### Safety
+
+- MCP writes require client-mediated human confirmation of exact reviewed inputs.
+  Projection drift requires a server restart with a reviewed pin. Tools cannot
+  select arbitrary projects, executables or shell arguments.
+- Hook writes reject linked or external targets and use exclusively created
+  temporary files without overwriting an unrelated partial file.
+
 ## [0.8.0] - 2026-09-02
 
 ### Added

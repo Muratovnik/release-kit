@@ -72,11 +72,14 @@ update; it must not be interpreted as proof that no side effects occurred.
 - `overlay`: `verified_mounts` counts mounts checked, `skipped` names out-of-scope
   mounts. Inspect `errors` before treating checked mounts as valid.
 - `protect`: `guard` (`valid`, `invalid`, `installed`), with `path` on installation.
+  `install --dry-run` returns `data.plan` with exact before/after hook hashes,
+  guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
+  with `install --plan-hash HASH` to reject drift. Preview does not write a hook.
 - `release plan`: `data.plan` is the existing described plan, including
   `plan_sha256`, pinned SHA, previous tag, exact refspecs, assets and future actions.
 - `release run/resume`: `data.release` appears once a run is recorded. It includes
   `observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded tool
-  version, CI identity, artifacts, stage/stages, publication, verification, cleanup,
+  version, complete described `plan`, CI identity, artifacts, stage/stages, publication, verification, cleanup,
   verification timestamp and platform, local-change flag and retained scratch paths.
   Not-yet-known fields are `null`. Publication and verification are separate:
   a published release can fail verification. Retained cleanup is also independent.
@@ -92,7 +95,7 @@ update; it must not be interpreted as proof that no side effects occurred.
   resume. A local receipt is not cryptographic evidence of current remote state.
 - `update`: `data.plan`, `plan_sha256` and `state` (`planned`, `unchanged`,
   `pending`, `installed`, `rolled-back`). Rollback reports `action: "rollback"`
-  and a receipt path instead of a new update plan. Backup/receipt paths appear
+  and a receipt path together with the restoration plan. Backup/receipt paths appear
   after creating a transaction. Failed updates retain whatever progress is known.
 
 ## Reviewed update plans
@@ -112,7 +115,12 @@ and compact separators, excluding the fingerprint itself.
 After review, pass its hash to the same command with `--yes --plan-hash HASH`.
 Use the same source selection or `--refresh-guard`. Any changed plan is refused
 before candidate execution or backup creation. The fingerprint is an equality
-check, not a signature, sandbox or human approval. Rollback does not accept it.
+check, not a signature, sandbox or human approval.
+
+`update --rollback --dry-run --json` validates the existing backup without restoring
+files. Its plan binds the receipt hash and exact restored file hashes/modes.
+`update --rollback --yes --plan-hash HASH` rejects a stale restoration plan. Source
+selection and guard-refresh flags cannot be combined with rollback.
 
 JSON update mode never prompts, including on a terminal. A non-dry-run invocation
 requires `--yes`, even if it might be a no-op. Existing project rules may require

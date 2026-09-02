@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import ast
 import hashlib
+import json
 import os
 import re
 import subprocess
+import tempfile
 from pathlib import Path
 
 from . import config as config_module
+from . import storage
 
 MARKER = "# managed by release-kit: owner publication guard v1"
 COMPATIBLE_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: pre-push v1"
@@ -121,9 +124,11 @@ def _write_managed(path: Path, content: str, marker: str, description: str) -> N
         if marker not in existing and existing.replace("\r\n", "\n") != content:
             raise ProtectionError(f"refusing to replace an unmanaged {description}: {path}")
     path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(path.name + ".relkit-partial")
+    descriptor, name = tempfile.mkstemp(prefix=".relkit-hook-", dir=path.parent)
+    temporary = Path(name)
     try:
-        temporary.write_text(content, encoding="utf-8", newline="\n")
+        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
+            stream.write(content)
         os.chmod(temporary, 0o755)
         temporary.replace(path)
     finally:
@@ -217,10 +222,53 @@ def problem(root: Path) -> str | None:
     return None
 
 
-def install(root: Path) -> Path:
-    path = hook_path(root)
+def install_plan(root: Path) -> dict:
+    """Review owned hook bytes and inputs without installing them."""
+    try:
+        storage.inside(root, root / ".git/hooks/pre-push")
+        path = hook_path(root)
+        storage.inside(root, path)
+    except storage.StorageError as error:
+        raise ProtectionError(str(error)) from error
     effective = effective_hook_path(root)
     if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
         raise ProtectionError(dispatcher_problem)
-    _write_managed(path, hook_content(root), MARKER, "repository pre-push hook")
+    inputs = _guarded_digests(root)
+    for relative in inputs:
+        try:
+            storage.inside(root, root / relative)
+        except storage.StorageError as error:
+            raise ProtectionError(str(error)) from error
+    content = hook_content(root, digests=inputs)
+    if path.exists():
+        existing = path.read_text(encoding="utf-8", errors="replace")
+        if MARKER not in existing and existing.replace("\r\n", "\n") != content:
+            raise ProtectionError(
+                f"refusing to replace an unmanaged repository pre-push hook: {path}"
+            )
+    plan = {
+        "root": str(root),
+        "path": str(path),
+        "before_sha256": _sha256(path) if path.exists() else None,
+        "after_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "inputs": inputs,
+        "effective_hook": str(effective),
+        "dispatcher_sha256": _sha256(effective) if effective != path else None,
+    }
+    return {
+        **plan,
+        "plan_sha256": hashlib.sha256(
+            json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest(),
+    }
+
+
+def install(root: Path, *, plan_hash: str = "") -> Path:
+    plan = install_plan(root)
+    if plan_hash and plan_hash != plan["plan_sha256"]:
+        raise ProtectionError("reviewed hook plan is stale; review a new dry run")
+    path = Path(plan["path"])
+    _write_managed(
+        path, hook_content(root, digests=plan["inputs"]), MARKER, "repository pre-push hook"
+    )
     return path

@@ -255,7 +255,9 @@ def _check_inputs(root: Path, inputs: dict[str, str]) -> None:
             )
 
 
-def _restore(root: Path, git_dir: Path, receipt: dict[str, object]) -> None:
+def _restore_targets(
+    root: Path, git_dir: Path, receipt: dict[str, object]
+) -> list[tuple[Path, bytes, int]]:
     if receipt.get("root") != str(root):
         raise UpdateError("rollback receipt belongs to a different checkout")
     backup_name = receipt.get("backup")
@@ -284,10 +286,16 @@ def _restore(root: Path, git_dir: Path, receipt: dict[str, object]) -> None:
             raise UpdateError("guard has changed since the update; refusing rollback")
     elif hook.exists():
         raise UpdateError("a guard appeared since the update; refusing rollback")
-    if projection.read_bytes() != previous:
-        _atomic(projection, previous, int(receipt["projection_mode"]))
+    targets = [(projection, previous, int(receipt["projection_mode"]))]
     if old_hook is not None:
-        _atomic(hook, old_hook, int(receipt["guard_mode"]))
+        targets.append((hook, old_hook, int(receipt["guard_mode"])))
+    return targets
+
+
+def _restore(root: Path, git_dir: Path, receipt: dict[str, object]) -> None:
+    for path, payload, mode in _restore_targets(root, git_dir, receipt):
+        if path.read_bytes() != payload or path.stat().st_mode & 0o777 != mode & 0o777:
+            _atomic(path, payload, mode)
 
 
 def run(
@@ -325,12 +333,37 @@ def run(
                 f"update lock exists: {lock}; check its process before removing a stale lock"
             ) from error
         if rollback:
-            if any((artifact_path, sha256, repository, release, dry_run, refresh_guard, plan_hash)):
-                raise UpdateError(
-                    "--rollback cannot be combined with source selection or --dry-run"
-                )
+            if any((artifact_path, sha256, repository, release, refresh_guard)):
+                raise UpdateError("--rollback cannot be combined with source selection")
             receipt = _load_receipt(receipt_path)
+            targets = _restore_targets(root, git_dir, receipt)
+            value = {
+                "schema": 1,
+                "tool_version": __version__,
+                "root": str(root),
+                "action": "rollback",
+                "receipt_sha256": protection._sha256(receipt_path),
+                "new_version": receipt["old_version"],
+                "files": [
+                    {
+                        "path": path.relative_to(root).as_posix(),
+                        "before_sha256": protection._sha256(path),
+                        "after_sha256": hashlib.sha256(payload).hexdigest(),
+                        "before_mode": path.stat().st_mode & 0o777,
+                        "after_mode": mode & 0o777,
+                    }
+                    for path, payload, mode in targets
+                ],
+            }
+            digest = hashlib.sha256(
+                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+            ).hexdigest()
+            result.data.update(plan=value, plan_sha256=digest, state="planned")
+            if plan_hash and plan_hash != digest:
+                raise UpdateError("reviewed rollback plan is stale; review a new dry run")
             print(f"relkit update: restore {receipt['old_version']} from {receipt['backup']}")
+            if dry_run:
+                return 0
             _confirm(yes)
             _restore(root, git_dir, receipt)
             receipt["state"] = "rolled-back"

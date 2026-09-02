@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "release-kit"
-version = "0.8.0"
+version = "0.9.0"
 description = "Release-cycle and publication-exposure gates for any repository"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -13,8 +13,12 @@ license = "MIT"
 # engines provisioned by release-kit itself rather than duplicated by every adopter.
 dependencies = []
 
+[project.optional-dependencies]
+mcp = ["mcp==2.1.1"]
+
 [project.scripts]
 relkit = "releasekit.cli:main"
+relkit-mcp = "releasekit_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

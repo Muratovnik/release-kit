@@ -32,7 +32,12 @@ project commands own build/test/application details. See the
 Automation can opt into `--json` on every command. `release status` reads an
 existing run without contacting GitHub; `update --dry-run --json` exposes exact
 file and trust-pin changes. See the [versioned CLI result contract](docs/cli-json.md)
-for schemas, exit meanings and explicit approval boundaries. No MCP server is installed.
+for schemas, exit meanings and explicit approval boundaries.
+
+An optional **full MCP adapter** exposes checks, notes export, guard installation,
+release plan/status/run/resume and update/rollback over stdio. It requires native
+client-mediated confirmation for writes and a startup pin for one project's zipapp.
+It is not installed or registered automatically; see [MCP setup and tools](docs/mcp.md).
 
 ## Distribution
 
