@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-09-02
+
+### Fixed
+
+- Preserve literal square brackets in committed source snapshot filenames,
+  including dynamic web routes. Exact Git blob names are not glob patterns;
+  configured paths, traversal, unsupported files and portability remain guarded.
+
 ## [0.7.0] - 2026-09-02
 
 ### Added

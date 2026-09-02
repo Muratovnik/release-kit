@@ -64,7 +64,7 @@ def source_tree(runner: Runner, sha: str) -> list[tuple[str, str, str]]:
             raise ReleaseError(
                 "release source snapshot requires regular files; links and submodules need owner handling"
             )
-        result.append((mode, oid, settings.relative(name)))
+        result.append((mode, oid, settings.relative(name, from_tree=True)))
     if len({name.casefold() for _, _, name in result}) != len(result):
         raise ReleaseError("source filenames collide on case-insensitive hosts")
     return result

@@ -12,18 +12,21 @@ class SettingsError(ValueError):
     """Invalid coordinator configuration."""
 
 
-def relative(value: str) -> str:
+def relative(value: str, *, from_tree: bool = False) -> str:
     from ..config import _portable_repository_path
 
-    _portable_repository_path(value, "release path")
+    # ls-tree supplies exact blob names, not pathspecs. Brackets are ordinary
+    # portable characters (for example a dynamic route), never glob expansion.
+    _portable_repository_path(value, "release path", allow_glob=from_tree)
     if (
         not value
         or value != value.strip()
         or "\\" in value
+        or any(c in value for c in "*?")
         or any(ord(c) < 32 for c in value)
         or PurePosixPath(value).is_absolute()
         or any(
-            part.casefold() in {".", "..", ".git"} or ":" in part or part.endswith((".", " "))
+            part.casefold() in {"", ".", "..", ".git"} or ":" in part or part.endswith((".", " "))
             for part in value.split("/")
         )
     ):

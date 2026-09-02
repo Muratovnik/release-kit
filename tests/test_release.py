@@ -480,6 +480,38 @@ class ReleaseTests(ReleaseFixture):
         code, output = self.invoke()
         self.assertEqual(0, code, output)
 
+    def test_snapshot_keeps_literal_bracket_routes_from_git(self):
+        route = self.root / "pages/[id]/[...slug].vue"
+        route.parent.mkdir(parents=True)
+        route.write_bytes(b"<template>literal route</template>\n")
+        smoke = self.root / "smoke.py"
+        smoke.write_text(
+            smoke.read_text()
+            + "assert Path('pages/[id]/[...slug].vue').read_bytes() == "
+            + repr(route.read_bytes())
+            + "\n"
+        )
+        self.commit()
+        code, output = self.invoke()
+        self.assertEqual(0, code, output)
+        self.assertEqual("passed", self.receipt()["cleanup"])
+
+    def test_tree_paths_keep_portability_and_traversal_guards(self):
+        for name in (
+            "../escape",
+            ".git/config",
+            "a/./b",
+            "a//b",
+            "a?.vue",
+            "a*.vue",
+            "CON.txt",
+            "a:",
+        ):
+            with self.subTest(name=name), self.assertRaises((ValueError, config.ConfigError)):
+                settings.relative(name, from_tree=True)
+        with self.assertRaises(config.ConfigError):
+            settings.relative("pages/[id].vue")
+
     def test_checksum_manifest_is_not_just_trusted_from_release_digest(self):
         self.payloads["SHA256SUMS"] = ("a" * 64 + "  application.bin\n").encode()
         self.assertIn("checksum manifest does not match", self.invoke()[1])
