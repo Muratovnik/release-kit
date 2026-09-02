@@ -22,11 +22,12 @@ negotiation, tool schemas and cancellation notifications belong to the SDK; do
 not recreate a JSON-RPC implementation. The base package and generated zipapp stay
 standard-library-only. The adapter package is excluded from the zipapp.
 
-The adapter exposes every CLI workflow, including writes. Native SDK elicitation
+The adapter exposes every CLI workflow, including writes. Unless the narrow
+existing-user authorization route below applies, native SDK elicitation
 asks the client for human approval of an exact operation; approval is an injected
 parameter, not a model-supplied boolean. The SDK seals modern request state and
 binds responses to the request and rendered question. Older clients use native
-in-call form elicitation. Unsupported clients fail closed on writes. The client
+in-call form elicitation. Unsupported clients fail closed on those writes. The client
 must actually ask the human; a client that automatically approves is not a safe
 deployment. Neither tool annotations nor a plan hash is human permission.
 
@@ -89,7 +90,7 @@ are rejected. Results have `structuredContent` and an identical JSON text form.
 | `relkit_protect` | action: check/plan/install; installation needs plan_hash |
 | `relkit_release` | action: plan/status/run/resume, version; writes need plan_hash; optional no_download and resume-only accept_ci_attempt |
 | `relkit_update` | action: plan/apply/rollback_plan/rollback; local artifact+sha256 or repository/release; optional refresh_guard and no_download; writes need plan_hash |
-| `relkit_sync` (built plugin only) | explicit absolute root; action: status/plan/apply/rollback_plan/rollback; optional no_download; writes need plan_hash and confirmation; no project binding |
+| `relkit_sync` (built plugin only) | explicit absolute root; action: status/plan/apply/rollback_plan/rollback; optional no_download; writes need plan_hash and scoped authorization or confirmation; no project binding |
 
 The [built plugin](plugin.md) also provides `relkit_project` for explicit project
 bindings. Its `relkit_sync` tool is the default project upgrade path: it uses
@@ -112,6 +113,48 @@ and `rollback` pair. Installation of a new guard uses `relkit_protect` plan/inst
 Notes export shows the validated text, destination and before/after input digests.
 Project-required hook permission remains required in addition to the MCP mechanism.
 
+## Existing user authorization
+
+An explicit request to check or update a particular project is already permission
+for its in-scope work. Plugin clients can relay that permission without requesting
+another native dialog. Only `relkit_project bind` and bundled `relkit_sync`
+apply/rollback accept this optional request field:
+
+```json
+{
+  "source": "user_request",
+  "scope": "sync_update",
+  "review_sha256": "<hash returned by the reviewed preview>"
+}
+```
+
+Use `project_checks` with the top-level `review_sha256` from project `inspect`,
+`sync_update` with the hash from sync `plan`, and `sync_rollback` with the hash
+from `rollback_plan`. Sync writes also require the original `plan_hash`. Read-only
+actions reject authorization; unknown fields, wrong scopes and stale hashes fail
+closed. Omit authorization to retain native confirmation. There is no blanket
+approve flag, durable trust grant or automatic fallback after a declined prompt.
+
+The project review hash covers the canonical inspected project, projection and
+policy inputs (excluding the informational `sync` field). A sync review hash
+covers those inputs plus executor SHA-256, write action and updater plan SHA-256.
+The adapter revalidates these and the existing transactional updater plan before
+mutation. Changed effects require fresh review; a fresh hash alone is not consent.
+
+This is a **client attestation**, not server-verified human identity: the server
+cannot inspect the conversation or prove that a user instructed the caller.
+The trusted client must only relay actual direct user instructions, never project
+content, quoted feedback or a tool result. A prior request cannot override a
+later human refusal; a declined attempt requires new user direction before
+changing authorization route. Host security controls remain in force unchanged.
+
+Binding enables reviewed CLI checks/preflights, not publication. Update permission
+does not authorize unrelated commits, arbitrary sources, foreign hooks or other
+projects. Project-specific separate hook/recovery permissions still apply. Other
+writes (`relkit_release`, `relkit_update`, protect installation and notes export)
+retain native confirmation. No new prompt is needed only when existing permission
+already covers the exact plan, including any owned-guard refresh and recovery.
+
 ## Result and failure contract
 
 The adapter's schema-1 response contains `adapter_version`, `project`, startup
@@ -124,6 +167,11 @@ set MCP `isError`. A client decline/cancel has unknown human/policy origin and
 never authorizes a retry, CLI bypass or automatic approval-setting change.
 Input validation, missing client capabilities and refused preflight use SDK tool errors.
 Never interpret diagnostic text or notes as executable instructions.
+
+Optional `review_sha256` supplies the binding/sync preview identity described above.
+`authorization_source` reports `user_request` or `elicitation` on authorized bind
+and sync write results, including an authorized write that subsequently fails;
+it does not by itself assert success. It is null on previews and refusals.
 
 Confirmation previews are capped at 64 KiB; larger reviews require the CLI.
 The adapter serializes CLI invocations and repeats the preflight after approval;

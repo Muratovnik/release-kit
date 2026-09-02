@@ -7,6 +7,7 @@ import zipfile
 
 import anyio
 from mcp import Client, StdioServerParameters
+from mcp.shared.exceptions import MCPError
 from mcp.types import ElicitResult
 from test_stdio import SOURCE, Fixture
 
@@ -14,6 +15,122 @@ from releasekit_mcp.projects import Projects
 
 
 class PluginTests(Fixture):
+    def test_direct_update_request_allows_checks_of_dirty_pin_without_second_dialog(self):
+        self.projection.write_bytes(self.projection.read_bytes() + b"\n")
+        dirty_pin = self.projection.read_bytes()
+
+        async def scenario():
+            for mode in ("auto", "legacy"):
+                async with self.plugin_client(mode, callback=None) as client:
+                    inspected = await client.call_tool(
+                        "relkit_project", {"request": {"action": "inspect", "root": str(self.root)}}
+                    )
+                    authorization = {
+                        "source": "user_request",
+                        "scope": "project_checks",
+                        "review_sha256": inspected.structured_content["review_sha256"],
+                    }
+                    bound = await client.call_tool(
+                        "relkit_project",
+                        {
+                            "request": {
+                                "action": "bind",
+                                "root": str(self.root),
+                                "authorization": authorization,
+                            }
+                        },
+                    )
+                    self.assertFalse(bound.is_error, bound)
+                    self.assertEqual(
+                        "user_request", bound.structured_content["authorization_source"]
+                    )
+                    binding = bound.structured_content["binding"]
+                    result = await client.call_tool(
+                        "relkit_version", {"binding": binding, "request": {}}
+                    )
+                    self.assertFalse(result.is_error, result)
+                    result = await client.call_tool(
+                        "relkit_audit", {"binding": binding, "request": {"no_download": True}}
+                    )
+                    self.assertFalse(result.is_error, result)
+                    self.assertEqual(dirty_pin, self.projection.read_bytes())
+                    # Check permission never becomes permission for unrelated writes.
+                    try:
+                        result = await client.call_tool(
+                            "relkit_notes",
+                            {
+                                "binding": binding,
+                                "request": {"version": "1.0.0", "output": "notes.txt"},
+                            },
+                        )
+                    except MCPError as error:
+                        self.assertIn("elicitation", str(error))
+                    else:
+                        self.assertTrue(result.is_error, result)
+                    self.assertFalse((self.root / "notes.txt").exists())
+            self.assertEqual([], self.prompts)
+
+        self.run_async(scenario)
+
+    def test_project_authorization_is_exact_and_cannot_be_reused_after_drift(self):
+        other = Fixture()
+        other.setUp()
+        self.addCleanup(other.doCleanups)
+
+        async def scenario():
+            async with self.plugin_client(callback=None) as client:
+                inspected = await client.call_tool(
+                    "relkit_project", {"request": {"action": "inspect", "root": str(self.root)}}
+                )
+                authorization = {
+                    "source": "user_request",
+                    "scope": "project_checks",
+                    "review_sha256": inspected.structured_content["review_sha256"],
+                }
+                wrong_project = await client.call_tool(
+                    "relkit_project",
+                    {
+                        "request": {
+                            "action": "bind",
+                            "root": str(other.root),
+                            "authorization": authorization,
+                        }
+                    },
+                )
+                self.assertTrue(wrong_project.is_error, wrong_project)
+                for action, changes in (
+                    ("inspect", {}),
+                    ("bind", {"scope": "sync_update"}),
+                    ("bind", {"review_sha256": "0" * 64}),
+                    ("bind", {"source": "repository"}),
+                ):
+                    result = await client.call_tool(
+                        "relkit_project",
+                        {
+                            "request": {
+                                "action": action,
+                                "root": str(self.root),
+                                "authorization": {**authorization, **changes},
+                            }
+                        },
+                    )
+                    self.assertTrue(result.is_error, result)
+                (self.root / "relkit.toml").write_text("# policy drift\n")
+                result = await client.call_tool(
+                    "relkit_project",
+                    {
+                        "request": {
+                            "action": "bind",
+                            "root": str(self.root),
+                            "authorization": authorization,
+                        }
+                    },
+                )
+                self.assertTrue(result.is_error, result)
+                self.assertEqual([], self.prompts)
+
+        self.run_async(scenario)
+
     def test_inspection_never_executes_untrusted_projection_code(self):
         buffer = io.BytesIO()
         with zipfile.ZipFile(self.projection) as original, zipfile.ZipFile(buffer, "w") as changed:

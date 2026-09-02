@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-09-02
+
+### Added
+
+- Project binding and bundled sync accept the client's attestation of an existing
+  direct user request, scoped to checks, update or rollback and a fresh review
+  hash. An explicitly requested update needs no second consent dialog. Responses
+  identify the authorization source; project/policy/plan drift still refuses.
+
+### Compatibility
+
+- Native confirmation remains the fallback and is still required for other
+  writes, including publication. Update authority never changes client security
+  settings, authorizes unrelated changes or overrides a subsequent human refusal.
+  Transactional updater checks, owned-hook handling and backups are unchanged.
+
 ## [0.11.0] - 2026-09-02
 
 ### Added

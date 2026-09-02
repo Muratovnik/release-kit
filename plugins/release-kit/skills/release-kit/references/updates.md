@@ -11,18 +11,34 @@ Use `relkit_sync` with `request.root` set to the explicit absolute repository:
    or the older project's executable. It needs no `relkit_project bind`. It can
    create managed project-local scratch/locks, but never writes the projection or
    guard. A dirty checkout or invalid guard is a refusal, not permission to repair.
-3. Review `result.data.plan` and `plan_sha256`, including changed hashes and hook
-   effects. Obtain the project's required hook and rollback authorization. Call
-   `action = "apply"` with that hash as `plan_hash`; native human confirmation is
-   still required. Missing/declined confirmation does not authorize CLI fallback.
+3. Review `result.data.plan`, `plan_sha256` and the response's `review_sha256`,
+   including changed hashes and hook effects. A direct request to update this
+   project already authorizes the ordinary update: do not ask for it again. Check
+   project instructions for any separate hook/rollback requirement; obtain only
+   missing authority. Call `action = "apply"` with `plan_hash` and
+   `authorization = {"source": "user_request", "scope": "sync_update",
+   "review_sha256": <plan response hash>}` when the request covers this plan.
+   Otherwise omit authorization and use native confirmation. Never widen the
+   request to publication, foreign hooks, commits of unrelated changes or another
+   project. A declined attempt requires new user direction, not an automatic
+   retry through this field or CLI.
 4. Check the returned `sync.state`, updater receipt/backup and project gates.
    After a pin change old bindings expire; inspect and bind the new code before
    other project workflows. `relkit_sync` itself needs no server restart.
 
-Rollback uses `rollback_plan` then `rollback` with its own reviewed hash. It runs
+Rollback uses `rollback_plan` then `rollback` with its own reviewed plan hash and
+`review_sha256`, using scope `sync_rollback` only when the user authorized rollback
+(including recovery within an already agreed update workflow). Otherwise use
+native confirmation. It runs
 the installed plugin updater against the project's existing recovery receipt.
 It does not restore an earlier plugin installation. Backups remain in the
 project's `.git/relkit-update-*`; do not remove them without a retention decision.
+
+An authorization hash covers the exact project/policy inputs, executor, action
+and plan. If anything drifts, inspect and review again; do not mechanically copy
+new hashes. Continue under existing permission only while the effects remain in
+scope. Dirty tracked pins must be reviewed and checked before a project-authorized
+commit; an update request alone is not permission to commit unrelated work.
 
 The installed plugin includes `tools/relkit.pyz` and its SHA-256 sidecar. If the
 user explicitly chooses manual CLI operation, that bundled CLI can run `update

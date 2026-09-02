@@ -50,8 +50,10 @@ directory selects the launcher only, never the target project.
 
 ## Use
 
-Start a fresh client task after installation so it discovers the skill and MCP
-tools. Invoke the release-kit skill or ask for a release-kit check/update/plan.
+Verify the discovered skill, tool schema and adapter version after installation.
+A running client may retain an older plugin process; reload or restart that
+client if needed. A new task alone does not prove that the runtime was refreshed.
+Invoke the release-kit skill or ask for a release-kit check/update/plan.
 
 For an update, use `relkit_sync` with an explicit absolute `request.root` and
 `action = "status"`, then `"plan"`. It reports both versions and hashes, and
@@ -63,8 +65,10 @@ candidate from GitHub. Audit engines may still need their verified downloads
 during apply, unless `no_download` is true.
 
 After reviewing the plan and any separate hook/rollback authorization, call
-`"apply"` with `plan_hash = result.data.plan_sha256`. Native human confirmation
-is required immediately before mutation. The same tool supports `rollback_plan`
+`"apply"` with `plan_hash = result.data.plan_sha256`. When the user already
+requested this update, pass the scoped `authorization` described in the
+[MCP contract](mcp.md#existing-user-authorization): no second dialog is needed.
+Otherwise native confirmation remains required. The same tool supports `rollback_plan`
 and `rollback` using the saved project receipt. `aligned` is byte-for-byte equality;
 newer projects and different bytes under the same version are not overwritten.
 Successful updates report `sync.state`, backup and receipt; existing bindings
@@ -76,22 +80,22 @@ to read distribution and policy metadata without running project code. The
 project must be an ordinary checkout with its own `.git` directory and a pinned
 projection at version 0.9.0 or newer. Linked worktrees remain unsupported.
 
-Action `bind` with the same root asks for human trust of the displayed project,
-code hash and policy inputs, then returns an opaque `binding`. Pass that value
+Action `bind` with the same root accepts existing user authorization for the
+reviewed checks, or asks for native confirmation, then returns an opaque `binding`. Pass that value
 alongside `request` to each of the eight workflow tools. No mutable default root
 exists, so interleaved calls for two projects cannot silently switch targets.
 Action `unbind` takes only a binding and forgets it. At most 32 bindings are held.
 
 Bindings are in memory only. Restart, projection drift, policy drift or guard
-changes require a fresh inspection and confirmation. Native elicitation must
-reach the human; automatically approving it is not a supported deployment.
+changes require a fresh inspection and authorization review. Native elicitation,
+when used, must reach the human; automatically approving it is not supported.
 Project trust permits CLI checks/preflights, not publication or hook mutation.
-Every write still uses the existing plan, confirmation and revalidation boundary.
-Unsupported or rejecting clients fail closed. A `confirmation_decline` or
+Every write still uses its existing plan, authorization and revalidation boundary.
+Other writes, including release publication, still require native confirmation.
+A `confirmation_decline` or
 `confirmation_cancel` result reports the client action, not its human/policy
-origin. Do not retry unchanged or bypass it with CLI. Review the client's
-interactive-approval settings with the user, or obtain their explicit choice of
-a separately reviewed manual workflow. Never rewrite those settings from a tool.
+origin. Stop that attempt; changing authorization path or using CLI requires new
+user direction. Never rewrite client approval settings from a tool.
 See the bundled skill for the
 update and release workflows, and [the MCP contract](mcp.md) for CLI failure,
 cancellation and recovery semantics.

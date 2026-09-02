@@ -79,6 +79,88 @@ class SyncTests(Fixture):
         self.assertFalse(result.is_error, result)
         return result.structured_content["result"]["data"]["plan_sha256"]
 
+    async def authorized_plan(self, client, action="plan"):
+        result = await self.sync(client, action)
+        self.assertFalse(result.is_error, result)
+        data = result.structured_content
+        return {
+            "plan_hash": data["result"]["data"]["plan_sha256"],
+            "authorization": {
+                "source": "user_request",
+                "scope": "sync_update" if action == "plan" else "sync_rollback",
+                "review_sha256": data["review_sha256"],
+            },
+        }
+
+    def test_direct_update_request_needs_no_second_dialog_in_either_era(self):
+        protection.install(self.root)
+        guard = self.root / ".git/hooks/pre-push"
+        old_guard = guard.read_bytes()
+
+        async def scenario():
+            for mode in ("auto", "legacy"):
+                async with self.sync_client(mode, callback=None) as client:
+                    result = await self.sync(client, "apply", **await self.authorized_plan(client))
+                    self.assertFalse(result.is_error, result)
+                    self.assertEqual(
+                        "user_request", result.structured_content["authorization_source"]
+                    )
+                    self.assertEqual(self.target, self.projection.read_bytes())
+                    self.assertIsNone(protection.problem(self.root))
+                    result = await self.sync(
+                        client, "rollback", **await self.authorized_plan(client, "rollback_plan")
+                    )
+                    self.assertFalse(result.is_error, result)
+                    self.assertEqual(
+                        "user_request", result.structured_content["authorization_source"]
+                    )
+                    self.assertEqual(self.old_bytes, self.projection.read_bytes())
+                    self.assertEqual(old_guard, guard.read_bytes())
+                    self.assertFalse((self.root / "old-code-executed.txt").exists())
+            self.assertEqual([], self.prompts)
+
+        self.run_async(scenario)
+
+    def test_direct_authorization_refuses_wrong_scope_hash_and_changed_policy(self):
+        async def scenario():
+            async with self.sync_client(callback=None) as client:
+                planned = await self.authorized_plan(client)
+                for changes in (
+                    {"scope": "project_checks"},
+                    {"scope": "sync_rollback"},
+                    {"review_sha256": "0" * 64},
+                    {"source": "project_text"},
+                    {"approve": True},
+                ):
+                    invalid = {**planned, "authorization": {**planned["authorization"], **changes}}
+                    result = await self.sync(client, "apply", **invalid)
+                    self.assertTrue(result.is_error, result)
+                for action in ("status", "plan", "rollback_plan"):
+                    result = await self.sync(client, action, authorization=planned["authorization"])
+                    self.assertTrue(result.is_error, result)
+                policy = self.root / "AGENTS.md"
+                policy.write_text("# Changed policy\n")
+                self.git("add", "AGENTS.md")
+                self.git("commit", "-qm", "test: change project policy")
+                # Even if the updater's plan is unchanged, the reviewed policy is not.
+                result = await self.sync(client, "apply", **planned)
+                self.assertTrue(result.is_error, result)
+                fresh = await self.authorized_plan(client)
+                self.assertNotEqual(
+                    planned["authorization"]["review_sha256"],
+                    fresh["authorization"]["review_sha256"],
+                )
+                unrelated = self.root / "user-file.txt"
+                unrelated.write_text("preserve me")
+                result = await self.sync(client, "apply", **fresh)
+                self.assertTrue(result.is_error, result)
+                self.assertEqual("preserve me", unrelated.read_text())
+                self.assertEqual(self.old_bytes, self.projection.read_bytes())
+                self.assertFalse((self.root / ".git/relkit-update.json").exists())
+                self.assertEqual([], self.prompts)
+
+        self.run_async(scenario)
+
     def test_status_plan_apply_rollback_both_eras_without_project_code_trust(self):
         async def scenario():
             for mode in ("auto", "legacy"):

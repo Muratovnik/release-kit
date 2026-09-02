@@ -70,16 +70,30 @@ class Confirmation(BaseModel):
     approve: bool = Field(description="Approve exactly this operation and its displayed effects")
 
 
+class UserAuthorization(Request):
+    """Client attestation of existing user intent, not a native dialog response."""
+
+    source: Literal["user_request"]
+    scope: Literal["project_checks", "sync_update", "sync_rollback"]
+    review_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
 class Sync(Request):
     root: str
     action: Literal["status", "plan", "apply", "rollback_plan", "rollback"] = "status"
     plan_hash: str = ""
     no_download: bool = False
+    authorization: UserAuthorization | None = None
 
     @model_validator(mode="after")
     def exact_action(self):
         if self.action in ("status", "plan", "rollback_plan") and self.plan_hash:
             raise ValueError("plan_hash is only valid for apply/rollback")
+        if self.authorization and self.authorization.scope != {
+            "apply": "sync_update",
+            "rollback": "sync_rollback",
+        }.get(self.action):
+            raise ValueError("authorization must match sync apply/rollback scope")
         return self
 
 
@@ -87,6 +101,7 @@ class Project(Request):
     action: Literal["inspect", "bind", "unbind"] = "inspect"
     root: str = ""
     binding: str = ""
+    authorization: UserAuthorization | None = None
 
     @model_validator(mode="after")
     def exact_target(self):
@@ -95,6 +110,10 @@ class Project(Request):
                 raise ValueError("unbind requires only binding")
         elif not self.root or self.binding:
             raise ValueError("inspect/bind require only an absolute root")
+        if self.authorization and (
+            self.action != "bind" or self.authorization.scope != "project_checks"
+        ):
+            raise ValueError("authorization is only valid for bind with project_checks scope")
         return self
 
 
@@ -104,6 +123,8 @@ class ProjectResponse(BaseModel):
     action: str
     review: dict | None = None
     binding: str | None = None
+    review_sha256: str | None = None
+    authorization_source: Literal["user_request", "elicitation"] | None = None
     error: str | None = None
     error_code: str | None = None
 
@@ -117,6 +138,8 @@ class Response(BaseModel):
     error: str | None = None
     error_code: str | None = None
     sync: dict | None = None
+    review_sha256: str | None = None
+    authorization_source: Literal["user_request", "elicitation"] | None = None
     diagnostics: str = ""
     diagnostics_truncated: bool = False
     restart_required: bool = False

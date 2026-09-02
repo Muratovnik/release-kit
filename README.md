@@ -41,6 +41,9 @@ for schemas, exit meanings and explicit approval boundaries.
 An optional **full MCP adapter** exposes checks, notes export, guard installation,
 release plan/status/run/resume and update/rollback over stdio. It requires native
 client-mediated confirmation for writes and a startup pin for one project's zipapp.
+The plugin additionally accepts scoped existing user authorization for project
+checks and bundled updates, without a redundant consent dialog; publication still
+has its separate confirmation boundary.
 It is not installed or registered automatically; see [MCP setup and tools](docs/mcp.md).
 
 ## Distribution
