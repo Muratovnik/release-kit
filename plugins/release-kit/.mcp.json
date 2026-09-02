@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "releasekit": {
+      "command": "python",
+      "args": ["scripts/launch.py"],
+      "cwd": ".",
+      "startup_timeout_sec": 180,
+      "tool_timeout_sec": 7300,
+      "env": {"PYTHONUTF8": "1", "PYTHONIOENCODING": "utf-8", "PYTHONDONTWRITEBYTECODE": "1"}
+    }
+  }
+}

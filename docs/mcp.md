@@ -4,6 +4,11 @@ status: experimental
 
 # Full optional MCP adapter
 
+The [installable plugin](plugin.md) combines this adapter with a workflow skill.
+Standalone mode below retains its operator-pinned single-project contract.
+Plugin mode adds explicit human-reviewed bindings; it does not infer the target
+project from the process working directory.
+
 ## Decision and boundary
 
 The adapter belongs to release-kit, not to a workstation service or a new

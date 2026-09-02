@@ -145,7 +145,9 @@ class StdioTests(Fixture):
             for name in original.namelist():
                 payload = original.read(name)
                 if name in ("releasekit/__init__.py", distribution.BUILD_INFO):
-                    payload = payload.replace(__version__.encode(), b"0.9.1")
+                    future = distribution.version_tuple(__version__)
+                    next_version = f"{future[0]}.{future[1]}.{future[2] + 1}".encode()
+                    payload = payload.replace(__version__.encode(), next_version)
                 candidate.writestr(name, payload)
         folder = self.root / ".cache"
         folder.mkdir()

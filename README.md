@@ -1,5 +1,9 @@
 # release-kit
 
+For an installable workflow skill and full MCP tools, see the
+[Release Kit plugin](docs/plugin.md). The standalone CLI and project pins remain
+independent of plugin installation.
+
 One publication gate for repositories with different languages and release systems:
 
 ```bash

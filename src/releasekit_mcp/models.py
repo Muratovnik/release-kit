@@ -69,6 +69,29 @@ class Confirmation(BaseModel):
     approve: bool = Field(description="Approve exactly this operation and its displayed effects")
 
 
+class Project(Request):
+    action: Literal["inspect", "bind", "unbind"] = "inspect"
+    root: str = ""
+    binding: str = ""
+
+    @model_validator(mode="after")
+    def exact_target(self):
+        if self.action == "unbind":
+            if not self.binding or self.root:
+                raise ValueError("unbind requires only binding")
+        elif not self.root or self.binding:
+            raise ValueError("inspect/bind require only an absolute root")
+        return self
+
+
+class ProjectResponse(BaseModel):
+    schema_version: Literal[1] = 1
+    adapter_version: str
+    action: str
+    review: dict | None = None
+    binding: str | None = None
+
+
 class Response(BaseModel):
     schema_version: Literal[1] = 1
     adapter_version: str

@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-02
+
+### Added
+
+- One installable plugin containing the release workflow skill, full MCP adapter
+  and a locked, isolated optional runtime. Plugin packages are built from the same
+  versioned sources as the CLI; project projections are not upgraded implicitly.
+- Explicit, human-confirmed project bindings for plugin mode. Every operation
+  names its binding; no current-directory inference or mutable default project.
+  Bindings expire on restart or reviewed-input drift, and writes still require
+  their own exact-operation confirmation.
+
+### Compatibility
+
+- The standalone operator-pinned MCP interface and dependency-free zipapp remain
+  available. Plugin mode accepts existing project projections from 0.9.0 onward.
+
 ## [0.9.0] - 2026-09-02
 
 ### Added

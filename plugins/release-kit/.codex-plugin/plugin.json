@@ -1,0 +1,19 @@
+{
+  "name": "release-kit",
+  "version": "0.10.0",
+  "description": "Reviewed release workflows, project updates and publication checks.",
+  "author": {
+    "name": "Nikolai Muratov"
+  },
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Release Kit",
+    "shortDescription": "Plan, verify and safely resume project releases.",
+    "longDescription": "A release workflow skill and full MCP tools with explicit project trust, reviewed plans and separate write confirmations. Existing project pins and Git hooks remain under project control.",
+    "developerName": "Nikolai Muratov",
+    "category": "Productivity",
+    "capabilities": ["Interactive", "Write"],
+    "defaultPrompt": ["Check this project's release readiness.", "Review a release-kit update for this project.", "Plan a release without publishing it."]
+  },
+  "mcpServers": "./.mcp.json"
+}
