@@ -17,6 +17,13 @@ local/remote tags, ordinary portable source files (no links/submodules), an acti
 workflow and GitHub CLI 2.98.0 or newer. `gh` is an explicitly provisioned native
 integration, not an automatically installed runtime dependency.
 
+Use the existing checkout by default. An additional local clone is an optional
+project-specific way to isolate checks from active development, not a release
+requirement. Configured commands run in the selected checkout and may modify
+ignored build output; choose that checkout and verify its prerequisites before
+long checks. A disposable hosted repository is for testing this coordinator's
+publication machinery, not a prerequisite for every ordinary project release.
+
 Before adoption, configure the CI publisher to:
 
 - publish only from the intended tag, after its own independent checks;
@@ -84,7 +91,8 @@ distinct portable filenames. `checksum_file` is optional: GitHub SHA-256 asset
 digests are always checked; a declared manifest additionally must contain exactly
 one standard `SHA256  filename` or `SHA256 *filename` line for every other asset.
 
-`require_guard = true` verifies the existing owned guard and compatible dispatcher;
+`require_guard = true` verifies the existing owned guard and compatible dispatcher
+during planning, before project commands and again afterward to detect drift;
 it does not install or refresh either. `owner_audit = true` additionally requires
 the existing private owner policy and `require_guard = true`. These options do not
 grant permission to alter project hooks or override its instructions.

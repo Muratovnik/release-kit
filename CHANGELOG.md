@@ -2,6 +2,26 @@
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-09-03
+
+### Added
+
+- MCP guard installation, release run and release resume accept existing direct
+  user authorization with separate scopes and reviewed project/operation hashes.
+  `resume_plan` previews the saved release and selected resume options without
+  contacting the publisher. Native confirmation remains available when authority
+  is absent; an update request never grants publication permission.
+
+### Fixed
+
+- Required release guards are checked during planning and before project commands,
+  then rechecked after commands for drift. Dirty history audits stop before scans
+  or engine provisioning, retaining the existing failure exit code.
+- The release skill defaults to the existing checkout and distinguishes optional
+  local test isolation from disposable hosted tests of release-kit itself. It
+  reviews prerequisites before long checks and keeps coordinator-owned checks in
+  the managed run rather than manually repeating the release sequence.
+
 ## [0.12.1] - 2026-09-02
 
 ### Fixed

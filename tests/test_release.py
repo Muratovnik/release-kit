@@ -4,6 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
+import runpy
 import subprocess
 import tempfile
 import unittest
@@ -12,7 +13,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import config, storage
+from releasekit import config, protection, storage
 from releasekit.release import coordinator, settings
 from releasekit.release.backend import CommandError, GitHub, ReleaseError, Runner, remote_identity
 
@@ -215,6 +216,32 @@ class ReleaseFixture(unittest.TestCase):
 
 
 class ReleaseTests(ReleaseFixture):
+    def test_existing_checkout_with_current_required_guard_can_plan_without_a_clone(self):
+        path = self.root / "relkit.toml"
+        path.write_text(path.read_text() + "require_guard = true\n")
+        build = runpy.run_path(str(Path(__file__).resolve().parents[1] / "tools/build_zipapp.py"))[
+            "build"
+        ]
+        build(self.root / ".github/relkit.pyz")
+        self.commit()
+        protection.install(self.root)
+        code, output = self.invoke("plan")
+        self.assertEqual(0, code, output)
+        self.assertEqual(str(self.root), json.loads(output)["root"])
+        self.assertEqual(0, self.runner.pushes)
+
+    def test_missing_required_guard_fails_before_project_checks(self):
+        path = self.root / "relkit.toml"
+        path.write_text(path.read_text() + "require_guard = true\n")
+        (self.root / "check.py").write_text("raise AssertionError('check should not start')\n")
+        self.commit()
+        code, output = self.invoke()
+        self.assertEqual(2, code, output)
+        self.assertIn("protect check failed", output)
+        self.assertNotIn("check should not start", output)
+        self.assertEqual(0, self.runner.pushes)
+        self.assertEqual("", self.runner.git("tag", "--list"))
+
     def test_first_release_and_repeat_resume_use_real_git_and_project_commands(self):
         code, output = self.invoke()
         self.assertEqual(0, code, output)

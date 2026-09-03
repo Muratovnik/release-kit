@@ -271,11 +271,12 @@ class Bridge:
             self.reviewed(request.plan_hash, plan["plan_sha256"])
             return Prepared([*argv, "--plan-hash=" + request.plan_hash], argv, True, plan)
         if isinstance(request, models.Release):
-            argv = ["release", request.action, request.version]
+            action = "status" if request.action == "resume_plan" else request.action
+            argv = ["release", action, request.version]
             command = argv[:2]
-            if request.no_download:
+            if request.no_download and request.action != "resume_plan":
                 argv.append("--no-download")
-            if request.action in ("plan", "status"):
+            if action in ("plan", "status"):
                 return Prepared(argv, command)
             probe = ["release", "plan" if request.action == "run" else "status"]
             data = self.success(await self.call([*probe, request.version], probe))

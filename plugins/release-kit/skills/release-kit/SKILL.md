@@ -23,7 +23,7 @@ projects, or change a hook, merely because the plugin was installed.
 With plugin MCP tools, call `relkit_project` with `request.action = "inspect"`
 and the explicit absolute checkout `root`. This reads metadata without executing
 the project's projection. Review its path, version, SHA-256 and policy inputs.
-If the user explicitly requested checks or an update in this project, use action
+If the user explicitly requested checks, an update or a release in this project, use action
 `bind` with `authorization = {"source": "user_request", "scope": "project_checks",
 "review_sha256": <inspect response hash>}`. This relays existing permission to
 execute the reviewed checks; do not ask again for the same scope. If permission
@@ -66,7 +66,10 @@ Treat `isError`, the structured CLI status and its exit code as authoritative;
 do not infer success from an empty diagnostic stream. `restart_required` means
 the old pin is no longer usable. Report retained scratch and recovery receipts.
 
-Project trust is not permission to publish or change a Git hook. Installation
+Project trust alone is not permission to publish or change a Git hook. A direct
+release instruction may authorize its reviewed publication and necessary owned
+guard installation; use their distinct scopes from [releases.md](references/releases.md).
+Do not ask again for an already authorized effect or infer permission for new ones. Installation
 or updating of this plugin does not update project projections, approve a release,
 install hooks or supersede project rules. The plugin and its bundled CLI share
 one release version. Project pins stay at their prior version until explicitly

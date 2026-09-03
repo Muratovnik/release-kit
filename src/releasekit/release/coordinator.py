@@ -176,6 +176,8 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     release = policy.release
     if release is None:
         raise ReleaseError("configure the opt-in [release] contract before planning")
+    if release.require_guard and (problem := protection.problem(runner.root)):
+        raise ReleaseError(f"protect check failed: {problem}")
     if sys.platform not in release.smoke_platforms:
         raise ReleaseError(
             f"no declared downloaded-application smoke for this host ({sys.platform})"
@@ -555,6 +557,8 @@ def _prepare(
     value = state["plan"]
     release = settings.parse(value["settings"])
     clean(runner, value["sha"])
+    if release.require_guard and (problem := protection.problem(runner.root)):
+        raise ReleaseError(f"protect check failed: {problem}")
     # No reuse of local command success across invocations: ignored dependencies,
     # tools, environment and hooks may have changed even if HEAD did not.
     print("relkit release: local checks", flush=True)

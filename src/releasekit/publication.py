@@ -45,6 +45,19 @@ def run(
 ) -> int:
     result = result or Result()
     result.data.update(scope="history" if history else "staged" if staged else "worktree")
+    result.data["engines"] = {"betterleaks": None, "lychee": None}
+    if history:
+        try:
+            changes = audit.worktree_changes(root)
+        except RuntimeError as error:
+            result.error("check_error", error)
+            print(f"relkit audit: {error}", file=sys.stderr)
+            return 2
+        if changes:
+            message = "history audit requires a clean worktree; use --staged before committing"
+            result.error("check_failed", message)
+            print(f"relkit audit: {message}", file=sys.stderr)
+            return 1
     try:
         settings = config_module.load(root)
         policy = owner.discover(root) if owner_mode or require_overlay else None
@@ -103,17 +116,6 @@ def run(
     failures = list(report.failures)
     if policy is not None and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
-    if history:
-        try:
-            changes = audit.worktree_changes(root)
-        except RuntimeError as error:
-            result.error("check_error", error)
-            print(f"relkit audit: {error}", file=sys.stderr)
-            return 2
-        if changes:
-            failures.append(
-                "history audit requires a clean worktree; use --staged before committing"
-            )
     if strict:
         failures.extend(str(finding) for finding in report.baselined)
     if history:

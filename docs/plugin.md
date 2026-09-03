@@ -91,7 +91,11 @@ changes require a fresh inspection and authorization review. Native elicitation,
 when used, must reach the human; automatically approving it is not supported.
 Project trust permits CLI checks/preflights, not publication or hook mutation.
 Every write still uses its existing plan, authorization and revalidation boundary.
-Other writes, including release publication, still require native confirmation.
+Guard installation and release run/resume can use their own scoped user-request
+authorization and fresh operation preview; update authority cannot be reused for
+publication. Native confirmation remains the fallback, and is still required for
+notes export and alternate-source updates. Use `resume_plan` to review the saved
+release and any selected CI attempt before authorized continuation.
 A `confirmation_decline` or
 `confirmation_cancel` result reports the client action, not its human/policy
 origin. Stop that attempt; changing authorization path or using CLI requires new

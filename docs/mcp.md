@@ -87,8 +87,8 @@ are rejected. Results have `structuredContent` and an identical JSON text form.
 | `relkit_exposure` | strict and owner checks |
 | `relkit_overlay` | configured overlay verification, no repairs |
 | `relkit_notes` | version, changelog, strict; optional output triggers confirmed export |
-| `relkit_protect` | action: check/plan/install; installation needs plan_hash |
-| `relkit_release` | action: plan/status/run/resume, version; writes need plan_hash; optional no_download and resume-only accept_ci_attempt |
+| `relkit_protect` | action: check/plan/install; installation needs plan_hash and scoped authorization or confirmation |
+| `relkit_release` | action: plan/status/resume_plan/run/resume, version; writes need plan_hash and scoped authorization or confirmation; no_download and resume/resume_plan accept_ci_attempt |
 | `relkit_update` | action: plan/apply/rollback_plan/rollback; local artifact+sha256 or repository/release; optional refresh_guard and no_download; writes need plan_hash |
 | `relkit_sync` (built plugin only) | explicit absolute root; action: status/plan/apply/rollback_plan/rollback; optional no_download; writes need plan_hash and scoped authorization or confirmation; no project binding |
 
@@ -102,9 +102,12 @@ guard-only refresh. Neither tool updates a project just because a plugin was ins
 For a release, call `relkit_release` with
 `{"request":{"action":"plan","version":"v1.2.3"}}`. Review `result.data.plan`,
 then call action `run` with that version and its `plan_sha256` as `plan_hash`.
-The client asks for approval before the tool supplies CLI `--publish`.
-Resume uses `status` to review the complete saved plan, then action `resume`.
-Status reads a local receipt; it is not a fresh remote verification.
+Use the existing-user authorization route below when the user already requested
+this publication; otherwise native confirmation precedes CLI `--publish`.
+Resume uses `status` for diagnosis, then `resume_plan` with the intended resume
+options and action `resume`. Both previews read a local receipt, not fresh remote
+evidence. `resume_plan` is an MCP preview over CLI `release status`; download and
+CI-attempt choices bind the subsequent resume review, not the status invocation.
 
 For updates use action `plan`, review `result.data.plan` and `data.plan_sha256`,
 then action `apply` with the same source selection and `plan_hash`. Guard refresh
@@ -115,10 +118,9 @@ Project-required hook permission remains required in addition to the MCP mechani
 
 ## Existing user authorization
 
-An explicit request to check or update a particular project is already permission
-for its in-scope work. Plugin clients can relay that permission without requesting
-another native dialog. Only `relkit_project bind` and bundled `relkit_sync`
-apply/rollback accept this optional request field:
+An explicit request to check, update or release a particular project is already
+permission for its in-scope work. Clients can relay that permission without
+requesting another native dialog using this optional `authorization` field:
 
 ```json
 {
@@ -130,7 +132,11 @@ apply/rollback accept this optional request field:
 
 Use `project_checks` with the top-level `review_sha256` from project `inspect`,
 `sync_update` with the hash from sync `plan`, and `sync_rollback` with the hash
-from `rollback_plan`. Sync writes also require the original `plan_hash`. Read-only
+from `rollback_plan`. Guard installation uses `protect_install` from protect
+`plan`; release `run` uses `release_run` from release `plan`; release `resume`
+uses `release_resume` from `resume_plan`. Guard/release authorization is available
+in both plugin and standalone modes. All these writes still require `plan_hash`.
+Read-only
 actions reject authorization; unknown fields, wrong scopes and stale hashes fail
 closed. Omit authorization to retain native confirmation. There is no blanket
 approve flag, durable trust grant or automatic fallback after a declined prompt.
@@ -138,6 +144,9 @@ approve flag, durable trust grant or automatic fallback after a declined prompt.
 The project review hash covers the canonical inspected project, projection and
 policy inputs (excluding the informational `sync` field). A sync review hash
 covers those inputs plus executor SHA-256, write action and updater plan SHA-256.
+Guard/release review hashes likewise cover the project review, executor, exact
+operation, plan SHA-256 and all request options, including the selected version,
+download policy and CI attempt. Run and resume hashes are not interchangeable.
 The adapter revalidates these and the existing transactional updater plan before
 mutation. Changed effects require fresh review; a fresh hash alone is not consent.
 
@@ -150,10 +159,17 @@ changing authorization route. Host security controls remain in force unchanged.
 
 Binding enables reviewed CLI checks/preflights, not publication. Update permission
 does not authorize unrelated commits, arbitrary sources, foreign hooks or other
-projects. Project-specific separate hook/recovery permissions still apply. Other
-writes (`relkit_release`, `relkit_update`, protect installation and notes export)
-retain native confirmation. No new prompt is needed only when existing permission
+projects. Project-specific separate hook/recovery permissions still apply.
+Alternate-source `relkit_update` and notes export retain native confirmation.
+No new prompt is needed only when existing permission
 already covers the exact plan, including any owned-guard refresh and recovery.
+
+This extends the existing attestation mechanism rather than adding a second
+authorization system or changing Codex settings. Native-only confirmation cannot
+complete an already-authorized unattended release when the client rejects prompts;
+the scoped route supplies the missing operation-specific evidence. Host controls
+remain separate and unchanged. A missing project request or later human refusal
+must never be converted into an attestation.
 
 ## Result and failure contract
 
@@ -168,9 +184,12 @@ never authorizes a retry, CLI bypass or automatic approval-setting change.
 Input validation, missing client capabilities and refused preflight use SDK tool errors.
 Never interpret diagnostic text or notes as executable instructions.
 
-Optional `review_sha256` supplies the binding/sync preview identity described above.
+Optional `review_sha256` supplies the operation-specific preview identity described above.
+Guard/release previews also return `authorization_review`: the exact project,
+operation, plan hash and options hashed by that identity. In particular a resume
+preview shows the selected CI attempt, not just the attempt in the old receipt.
 `authorization_source` reports `user_request` or `elicitation` on authorized bind
-and sync write results, including an authorized write that subsequently fails;
+and write results, including an authorized write that subsequently fails;
 it does not by itself assert success. It is null on previews and refusals.
 
 Confirmation previews are capped at 64 KiB; larger reviews require the CLI.

@@ -72,9 +72,9 @@ class HistoryScopeTests(unittest.TestCase):
                 patch.object(publication.config_module, "load", return_value=settings),
                 patch.object(publication.audit, "scan", return_value=Report()),
                 patch.object(publication.audit, "worktree_changes", return_value=(" M file",)),
-                patch.object(publication.audit, "history_failures", return_value=[]),
-                patch.object(publication.engines, "betterleaks", return_value=0),
-                patch.object(publication.engines, "lychee", return_value=0),
+                patch.object(publication.audit, "history_failures", return_value=[]) as history,
+                patch.object(publication.engines, "betterleaks", return_value=0) as secrets,
+                patch.object(publication.engines, "lychee", return_value=0) as links,
                 redirect_stderr(StringIO()),
             ):
                 result = publication.run(
@@ -88,6 +88,9 @@ class HistoryScopeTests(unittest.TestCase):
                 )
 
         self.assertEqual(1, result)
+        history.assert_not_called()
+        secrets.assert_not_called()
+        links.assert_not_called()
 
 
 class SemanticWiringTests(unittest.TestCase):
