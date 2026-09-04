@@ -457,7 +457,9 @@ For this profile:
   `([abc1234](https://example.invalid/commit/abc1234567))`. The 7–64 hexadecimal
   label must match the beginning of the hash in the HTTP(S) `/commit/<hash>` URL.
   Scope and PR links are optional; a PR link alone is not a commit link. Related
-  commits can be grouped into one bullet, and links can wrap onto continuation lines.
+  commits can be grouped into one bullet. Keep at least one matching commit link on
+  the opening source line of its top-level bullet; an indented continuation-line
+  link is rejected because renderers present it as a detached row.
 - `Highlights` and breaking-change sections allow edited prose, migration examples,
   and bullets without commit links. Comments, fenced/indented code and inline code
   are not traceability evidence. A nested detail cannot supply its parent's link.

@@ -156,8 +156,10 @@ be explicitly declared, never inferred from an empty generator result. A subsequ
 heading must compare the actual previous tag to the current tag in this repository.
 Commit links outside editorial sections are checked for existence, matching label,
 repository, reachability and exclusion from the previous release. The Vue-like
-profile additionally requires per-change links; legacy/strict profiles cannot
-prove provenance for prose that supplies none. Standalone `notes` stays Git-free.
+profile additionally requires each top-level change bullet to carry a matching
+commit link on its opening source line; continuation-line links render as detached
+rows and are rejected. Legacy/strict profiles cannot prove provenance for prose
+that supplies none. Standalone `notes` stays Git-free.
 
 CI selection checks workflow ID/path, repository ID, push event, tag name, exact SHA,
 creation time and run attempt, then every required job. A same-named branch is

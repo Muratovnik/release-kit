@@ -174,9 +174,11 @@ def _validate_vue(lines: list[str], start: int, end: int, version: str, first_ve
     nested_detail = False
 
     def finish_bullet() -> None:
-        if bullet_line and not _has_commit_link("\n".join(bullet)):
+        if bullet_line and not _has_commit_link(bullet[0]):
             raise ChangelogError(
-                bullet_line, "ordinary change needs a commit link with a matching hash label"
+                bullet_line,
+                "ordinary change needs a commit link with a matching hash label "
+                "on its top-level bullet line",
             )
 
     def finish_section() -> None:

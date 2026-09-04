@@ -246,10 +246,16 @@ class VueLikeTests(unittest.TestCase):
                 profile="vue-like",
             )
 
-    def test_wrapped_commit_link_and_release_candidate_versions_are_supported(self) -> None:
+    def test_commit_link_wrapped_to_a_continuation_line_is_rejected(self) -> None:
         text = self.notes(
             "### Features\n\n- a useful change\n  ([abc1234](https://example.invalid/commit/abc1234567))"
         )
+        with self.assertRaisesRegex(changelog.ChangelogError, "top-level bullet line") as caught:
+            changelog.entry_for(text, "1.2.0", profile="vue-like")
+        self.assertEqual(5, caught.exception.line)
+
+    def test_release_candidate_versions_keep_inline_commit_links(self) -> None:
+        text = self.notes("### Features\n\n" + self.CHANGE)
         text = text.replace("1.2.0", "1.2.0-rc.1")
         self.assertIsNotNone(changelog.entry_for(text, "v1.2.0-rc.1", profile="vue-like"))
 

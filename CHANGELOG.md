@@ -2,6 +2,15 @@
 
 ## [Unreleased]
 
+## [0.13.1] - 2026-09-04
+
+### Fixed
+
+- Vue-like notes now require commit evidence on the opening source line of each
+  top-level change bullet, preventing renderers from showing hashes as detached
+  rows. Release guidance keeps adopter-internal release tools and their versions
+  out of product-facing notes unless they materially affect product users.
+
 ## [0.13.0] - 2026-09-03
 
 ### Added

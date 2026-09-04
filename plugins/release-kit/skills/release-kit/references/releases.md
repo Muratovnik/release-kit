@@ -34,7 +34,13 @@ Git ownership error against the exact intended repository before any exception.
    file unless an export is needed. Keep structural validation separate from Git
    boundary checks. Follow project-required pre-commit gates and commit only
    authorized changes; `audit --history` needs a clean checkout, while `--staged`
-   checks the prepared index. The coordinator does not create that commit.
+   checks the prepared index. The coordinator does not create that commit. Before
+   validation, curate notes for the released product's users: omit adopter-internal
+   release machinery, tool names/versions and process-only changes unless they
+   materially change installation, updating, compatibility or product use. This
+   distinction does not hide the name of release-kit when release-kit itself is the
+   product. In ordinary sections, keep a matching commit link on the same Markdown
+   source line as the opening bullet; do not hard-wrap it onto an indented line.
 2. Request `relkit_release` action `plan` with the exact version. Review commit
    SHA, previous tag, local checks, intended refs, CI workflow and artifact policy.
    Planning does not authorize server-side changes. Let `run` perform the
