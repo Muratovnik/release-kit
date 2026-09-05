@@ -28,10 +28,8 @@ def _write(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
 
 def build(output: Path, *, repository: str = "") -> None:
     version = distribution.source_version((SOURCE / "__init__.py").read_text(encoding="utf-8"))
-    if (
-        tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]["version"]
-        != version
-    ):
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    if project["version"] != version:
         raise ValueError("package metadata and runtime versions differ")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     if not re.search(
@@ -40,6 +38,18 @@ def build(output: Path, *, repository: str = "") -> None:
         raise ValueError("current version needs a dated changelog entry before distribution")
     if repository:
         distribution.repository_name(repository)
+    # Existing updaters accept this metadata entry, but reject new archive paths.
+    # Carry the full license here without changing the supported zipapp shape.
+    metadata = {
+        "schema": 1,
+        "version": version,
+        "repository": repository,
+        "authors": project["authors"],
+        "license": {
+            "expression": project["license"],
+            "text": (ROOT / "LICENSE").read_text(encoding="utf-8"),
+        },
+    }
     output.parent.mkdir(parents=True, exist_ok=True)
     temporary = output.with_suffix(output.suffix + ".partial")
     try:
@@ -56,7 +66,7 @@ def build(output: Path, *, repository: str = "") -> None:
                 distribution.BUILD_INFO,
                 (
                     json.dumps(
-                        {"schema": 1, "version": version, "repository": repository},
+                        metadata,
                         sort_keys=True,
                     )
                     + "\n"

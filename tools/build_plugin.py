@@ -42,6 +42,7 @@ def payloads():
             name = "lib/" + path.relative_to(ROOT / "src").as_posix()
             payload[name] = storage.inside(ROOT, path).read_bytes()
     payload["README.md"] = b"# Release Kit\n\nSee [installation and use](docs/plugin.md).\n"
+    payload["LICENSE"] = (ROOT / "LICENSE").read_bytes()
     for name in ("plugin.md", "mcp.md", "cli-json.md"):
         payload["docs/" + name] = (ROOT / "docs" / name).read_bytes()
     return version, payload

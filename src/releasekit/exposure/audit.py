@@ -298,6 +298,7 @@ def _blob_history_failures(
     providers: dict[str, Sequence[str]],
     inspect_archives: bool,
     exclude: Sequence[str],
+    forbid_png_metadata: bool = False,
 ) -> list[str]:
     wrapped_names = tuple(name for name in names if len(name.split()) > 1)
     wrapped_workflows = tuple(name for name in owner_workflows if len(name.split()) > 1)
@@ -369,6 +370,8 @@ def _blob_history_failures(
                 ):
                     details[rules.ESCAPES_REPOSITORY] = "Git symlink target leaves the repository"
                 details.update(_external_payload_details(relative, payload))
+                if not excluded and forbid_png_metadata and Path(relative).suffix.lower() == ".png":
+                    details.update({kind: "" for kind in _png_metadata(payload)})
                 if excluded:
                     if text:
                         details.update(
@@ -443,6 +446,7 @@ def _blob_history_failures(
                             forbid_internal_planning=forbid_internal_planning,
                             forbid_machine_observations=forbid_machine_observations,
                             providers=providers,
+                            forbid_png_metadata=forbid_png_metadata,
                         )
                     )
                 for kind, detail in sorted(details.items()):
@@ -926,6 +930,7 @@ def _archive_details(
     forbid_internal_planning: bool,
     forbid_machine_observations: bool,
     providers: dict[str, Sequence[str]],
+    forbid_png_metadata: bool = False,
     _depth: int = 0,
     _surface_relative: str | None = None,
     _budget: list[int] | None = None,
@@ -971,6 +976,9 @@ def _archive_details(
                 ):
                     found.setdefault(kind, f"archive entry {entry_name}")
                 entry_payload = archive.read(entry)
+                if forbid_png_metadata and Path(entry_name).suffix.lower() == ".png":
+                    for kind in _png_metadata(entry_payload):
+                        found.setdefault(kind, f"archive entry {entry_name}")
                 for kind, detail in _external_payload_details(entry_name, entry_payload).items():
                     found.setdefault(kind, f"archive entry {entry_name}; {detail}")
                 mode = entry.external_attr >> 16
@@ -1003,6 +1011,7 @@ def _archive_details(
                         _depth=_depth + 1,
                         _surface_relative=surface_relative,
                         _budget=budget,
+                        forbid_png_metadata=forbid_png_metadata,
                     ).items():
                         found.setdefault(kind, detail)
                 text = _decode_text(entry_payload)
@@ -1060,8 +1069,11 @@ def _payload_details(
     forbid_machine_observations: bool,
     providers: dict[str, Sequence[str]],
     inspect_archives: bool,
+    forbid_png_metadata: bool = False,
 ) -> dict[str, str]:
     found = _external_payload_details(relative, payload)
+    if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
+        found.update({kind: "" for kind in _png_metadata(payload)})
     try:
         text = _decode_text(payload)
     except UnicodeError:
@@ -1098,6 +1110,7 @@ def _payload_details(
                 forbid_internal_planning=forbid_internal_planning,
                 forbid_machine_observations=forbid_machine_observations,
                 providers=providers,
+                forbid_png_metadata=forbid_png_metadata,
             )
         )
     return found
@@ -1227,8 +1240,6 @@ def scan(
             )
             if is_symlink and _symlink_target_escapes(relative, payload):
                 found.add(rules.ESCAPES_REPOSITORY)
-            if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
-                found |= _png_metadata(payload)
             details.update(
                 _payload_details(
                     relative,
@@ -1246,6 +1257,7 @@ def scan(
                     forbid_machine_observations=forbid_machine_observations,
                     providers=provider_surfaces,
                     inspect_archives=inspect_archives,
+                    forbid_png_metadata=forbid_png_metadata,
                 )
             )
         except OSError:
@@ -1325,6 +1337,7 @@ def history_failures(
     provenance_required: Sequence[str] = (),
     provenance: Mapping[str, str] | None = None,
     inspect_archives: bool = True,
+    forbid_png_metadata: bool = False,
 ) -> list[str]:
     """Rules that must hold for every reachable commit before publication."""
     provider_surfaces = providers or {}
@@ -1499,6 +1512,7 @@ def history_failures(
             providers=provider_surfaces,
             inspect_archives=inspect_archives,
             exclude=exclude,
+            forbid_png_metadata=forbid_png_metadata,
         )
     )
     return failures

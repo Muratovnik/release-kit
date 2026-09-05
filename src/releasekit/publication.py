@@ -59,7 +59,7 @@ def run(
             print(f"relkit audit: {message}", file=sys.stderr)
             return 1
     try:
-        settings = config_module.load(root)
+        settings = config_module.load(root, staged=staged)
         policy = owner.discover(root) if owner_mode or require_overlay else None
         owner_rules = policy.load() if policy is not None else owner.OwnerRules()
         names = owner_rules.private_values
@@ -140,6 +140,7 @@ def run(
                     provenance_required=settings.exposure.provenance_required,
                     provenance=settings.exposure.provenance,
                     inspect_archives=settings.exposure.inspect_archives,
+                    forbid_png_metadata=settings.exposure.forbid_png_metadata,
                 )
             )
         except RuntimeError as error:

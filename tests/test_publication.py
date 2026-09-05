@@ -1,14 +1,48 @@
 from __future__ import annotations
 
+import subprocess
 import tempfile
 import unittest
-from contextlib import redirect_stderr
+from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import config, owner, publication
+from releasekit import cli, config, owner, publication
 from releasekit.exposure.audit import Report
+
+
+class StagedPolicyTests(unittest.TestCase):
+    def test_unstaged_policy_cannot_change_the_index_verdict(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            policy = root / "relkit.toml"
+            prefix = "[exposure]\ncheck_secrets = false\ncheck_links = false\n"
+            policy.write_text(prefix + 'forbidden_suffixes = [".internalx"]\n')
+            (root / "example.internalx").write_text("synthetic publication fixture\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+            def check():
+                with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                    return cli.main(["audit", "--staged", "--root", str(root), "--no-download"])
+
+            self.assertEqual(1, check())
+            policy.write_text(prefix)
+            self.assertEqual(1, check(), "unstaged policy must not relax the index")
+            subprocess.run(["git", "add", "relkit.toml"], cwd=root, check=True)
+            policy.write_text("invalid unstaged TOML [")
+            self.assertEqual(0, check(), "unstaged policy must not reject a valid index")
+            subprocess.run(
+                ["git", "rm", "--cached", "-f", "relkit.toml"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+            )
+            policy.write_text(prefix)
+            self.assertEqual(
+                2, check(), "an untracked policy cannot replace a missing index policy"
+            )
 
 
 class HistoryScopeTests(unittest.TestCase):

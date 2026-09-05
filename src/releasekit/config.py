@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from .exposure.audit import _git_bytes
 from .release import settings as release_settings
 from .release.changelog import PROFILES, is_version
 
@@ -242,15 +243,22 @@ class Config:
     release: release_settings.Settings | None = None
 
 
-def load(root: Path, *, required: bool = True) -> Config:
+def load(root: Path, *, required: bool = True, staged: bool = False) -> Config:
     path = root / CONFIG_NAME
     try:
-        raw = tomllib.loads(path.read_text(encoding="utf-8"))
+        if staged:
+            indexed = _git_bytes(root, ["show", f":{CONFIG_NAME}"])
+            if indexed.returncode:
+                raise ConfigError(f"{CONFIG_NAME} could not be read from the Git index")
+            text = indexed.stdout.decode("utf-8")
+        else:
+            text = path.read_text(encoding="utf-8")
+        raw = tomllib.loads(text)
     except FileNotFoundError:
         if required:
             raise ConfigError(f"{CONFIG_NAME} is missing from {root}") from None
         raw = {}
-    except (OSError, UnicodeError, tomllib.TOMLDecodeError) as error:
+    except (OSError, UnicodeError, RuntimeError, tomllib.TOMLDecodeError) as error:
         raise ConfigError(f"{CONFIG_NAME} could not be read: {error}") from error
 
     unknown_top_level = sorted(set(raw) - {"exposure", "changelog", "release"})

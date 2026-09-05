@@ -4,7 +4,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-from releasekit import storage
+from releasekit import config, storage
 
 from .bridge import Bridge, canonical
 
@@ -33,14 +33,22 @@ class Projects:
     @staticmethod
     def review(bridge):
         bridge.check()
+        policy_stamp = bridge.stamp(bridge.root / "relkit.toml")
+        try:
+            policy = config.load(bridge.root, required=False).exposure.betterleaks_config
+        except config.ConfigError as error:
+            raise ValueError(str(error)) from error
+        inputs = {
+            name: bridge.stamp(bridge.root / name)
+            for name in ("relkit.toml", policy, "AGENTS.md", ".git/hooks/pre-push")
+        }
+        if inputs["relkit.toml"] != policy_stamp:
+            raise ValueError("project inputs changed during review; inspect again")
         return {
             "project": str(bridge.root),
             "projection_sha256": bridge.artifact.sha256,
             "projection_version": bridge.artifact.version,
-            "inputs": {
-                name: bridge.stamp(bridge.root / name)
-                for name in ("relkit.toml", ".betterleaks.toml", "AGENTS.md", ".git/hooks/pre-push")
-            },
+            "inputs": inputs,
         }
 
     def bind(self, prepared: ProjectReview):

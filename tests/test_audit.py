@@ -8,9 +8,11 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from releasekit import cli
 from releasekit.exposure import audit, rules
 
 LEAK = 'command = "python C:\\\\Users\\\\someone\\\\adapter.py"\n'
@@ -36,6 +38,65 @@ def _commit(root: Path, message: str = "test: fixture") -> None:
     ):
         subprocess.run(["git", "config", key, value], cwd=root, check=True)
     subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True)
+
+
+class ArchivePngTests(unittest.TestCase):
+    def test_history_audit_checks_pngs_removed_from_the_current_tree(self):
+        dirty = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00tEXt\x00\x00\x00\x00"
+        policy = (
+            "[exposure]\ncheck_secrets = false\ncheck_links = false\nforbid_png_metadata = true\n"
+        )
+        for packed in (False, True):
+            with self.subTest(packed=packed), _repository({"relkit.toml": policy}) as name:
+                root = Path(name)
+                artifact = root / ("artifact.zip" if packed else "picture.png")
+                if packed:
+                    with zipfile.ZipFile(artifact, "w") as archive:
+                        archive.writestr("picture.png", dirty)
+                else:
+                    artifact.write_bytes(dirty)
+                subprocess.run(["git", "add", "."], cwd=root, check=True)
+                _commit(root)
+                subprocess.run(["git", "rm", "-q", artifact.name], cwd=root, check=True)
+                _commit(root, "test: remove current image")
+                with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as diagnostics:
+                    result = cli.main(["audit", "--history", "--root", str(root), "--no-download"])
+                self.assertEqual(1, result)
+                self.assertIn("png-metadata", diagnostics.getvalue())
+                self.assertEqual([], audit.history_failures(root))
+                self.assertEqual(
+                    [],
+                    audit.history_failures(root, forbid_png_metadata=True, exclude=[artifact.name]),
+                )
+
+    def test_png_metadata_is_checked_inside_nested_publication_archives(self):
+        clean = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00IEND\x00\x00\x00\x00"
+        dirty = clean[:8] + b"\x00\x00\x00\x00tEXt\x00\x00\x00\x00" + clean[8:]
+        for staged in (False, True):
+            for payload, expected in ((clean, True), (dirty, False)):
+                with self.subTest(staged=staged, clean=expected), _repository({}) as name:
+                    root = Path(name)
+                    nested = io.BytesIO()
+                    with zipfile.ZipFile(nested, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                        archive.writestr("picture.PNG", payload)
+                    with zipfile.ZipFile(root / "artifact.zip", "w") as archive:
+                        archive.writestr("nested.zip", nested.getvalue())
+                    subprocess.run(["git", "add", "artifact.zip"], cwd=root, check=True)
+                    report = audit.scan(root, staged=staged, forbid_png_metadata=True)
+                    self.assertEqual(expected, report.ok, report.failures)
+                    if not expected:
+                        self.assertTrue(
+                            any(
+                                "png-metadata" in f and "picture.PNG" in f for f in report.failures
+                            ),
+                            report.failures,
+                        )
+                    self.assertTrue(audit.scan(root, staged=staged).ok)
+                    self.assertTrue(
+                        audit.scan(
+                            root, staged=staged, forbid_png_metadata=True, exclude=["artifact.zip"]
+                        ).ok
+                    )
 
 
 class ScopeTests(unittest.TestCase):

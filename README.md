@@ -65,6 +65,10 @@ python tools/build_zipapp.py dist/relkit.pyz
 python tools/build_zipapp.py dist/relkit.pyz --repository example/release-kit
 ```
 
+The source and plugin package include [LICENSE](LICENSE). The standalone zipapp
+carries its full MIT license and maintainer metadata in `releasekit/build.json`;
+using the existing metadata entry keeps earlier project updaters compatible.
+
 Adopters track that projection at `.github/relkit.pyz`. The same file runs on Windows,
 Linux and macOS with Python 3.11 or newer, and reports its release-kit and engine
 versions with `--version`. Engines and their official archives are cached below the
@@ -313,6 +317,10 @@ python .github/relkit.pyz audit --history --owner
 python .github/relkit.pyz audit --history --owner --require-overlay
 ```
 
+Staged mode requires an indexed `relkit.toml` and reads the Betterleaks configuration
+and its relative policy files from the index. Unstaged configuration edits are not
+part of that verdict.
+
 CI runs `--history` without `--owner`: a clean public clone cannot know private names.
 The public config still forbids and requires ignores for private surfaces. On the
 owner's machine, `protect install` installs only the repository-owned
@@ -367,6 +375,10 @@ extensionless ZIP artifacts as well as `.zip`, `.whl`, `.jar`, and `.pyz`. Unsaf
 and symlinks, invalid or over-budget declared archives, private paths, and semantic
 findings inside Unicode entries or bounded nested ZIP-family archives fail with the
 outer artifact and entry named in the diagnostic.
+
+When enabled, `forbid_png_metadata` also applies to PNG entries inside these
+archives and to reachable historical PNGs and archives. Structural exclusions
+remain applicable to this opt-in rule.
 
 Unsupported compressed archives such as tar/gzip, 7z, and RAR fail closed instead of
 receiving a semantic verdict over bytes the built-in inspector cannot decode. Invalid

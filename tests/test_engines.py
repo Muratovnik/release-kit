@@ -11,6 +11,40 @@ from releasekit import engines
 
 
 class EngineCommandTests(unittest.TestCase):
+    def test_staged_secret_policy_and_its_relative_files_come_from_the_index(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            policy = root / "security.toml"
+            policy.write_text('[extend]\npath = "rules.toml"\n')
+            (root / "rules.toml").write_text("# reviewed indexed rules\n")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            policy.write_text("# unrelated worktree policy\n")
+            (root / "rules.toml").write_text("# unrelated worktree rules\n")
+
+            def inspect(command, *, root: Path, **kwargs):
+                selected = Path(command[command.index("--config") + 1])
+                self.assertEqual('[extend]\npath = "rules.toml"\n', selected.read_text())
+                self.assertEqual("# reviewed indexed rules\n", (root / "rules.toml").read_text())
+                return 0
+
+            with (
+                patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
+                patch.object(engines, "_run", side_effect=inspect),
+            ):
+                self.assertEqual(
+                    0,
+                    engines.betterleaks(
+                        root,
+                        config="security.toml",
+                        history=False,
+                        staged=True,
+                        include_candidates=False,
+                        allow_download=False,
+                    ),
+                )
+            self.assertEqual("# unrelated worktree policy\n", policy.read_text())
+
     def setUp(self) -> None:
         temporary = tempfile.TemporaryDirectory(prefix="engine command test ")
         self.addCleanup(temporary.cleanup)
@@ -53,6 +87,7 @@ class EngineCommandTests(unittest.TestCase):
     def test_betterleaks_staged_scope_is_explicit(self) -> None:
         with (
             patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
+            patch.object(engines, "_checkout_index"),
             patch.object(engines, "_run", return_value=0) as invoke,
         ):
             engines.betterleaks(

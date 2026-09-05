@@ -1,12 +1,14 @@
 """Distribution checks without importing the optional MCP SDK."""
 
 import hashlib
+import io
 import json
 import os
 import runpy
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 import zipfile
 from pathlib import Path
@@ -21,6 +23,24 @@ BUILDER = runpy.run_path(str(ROOT / "tools/build_plugin.py"))
 
 
 class PluginBuildTests(unittest.TestCase):
+    def test_distributions_carry_the_license_and_human_package_metadata(self):
+        project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
+        self.assertTrue(project.get("authors"), "the declared human maintainer must be identified")
+        license_text = (ROOT / "LICENSE").read_text(encoding="utf-8")
+        self.assertIn("Permission is hereby granted, free of charge", license_text)
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as plugin:
+                self.assertEqual(license_text, plugin.read("release-kit/LICENSE").decode())
+                payload = plugin.read("release-kit/tools/relkit.pyz")
+            with zipfile.ZipFile(io.BytesIO(payload)) as cli:
+                metadata = json.loads(cli.read(distribution.BUILD_INFO))
+                self.assertEqual(license_text, metadata["license"]["text"])
+                self.assertEqual("MIT", metadata["license"]["expression"])
+                self.assertEqual(project["authors"], metadata["authors"])
+            self.assertEqual(__version__, distribution.inspect(payload).version)
+
     def test_joint_release_exports_exact_bundled_cli_and_refuses_overwrite(self):
         builder = runpy.run_path(str(ROOT / "tools/build_release.py"))["build_release"]
         with tempfile.TemporaryDirectory(prefix="release set ") as temporary:

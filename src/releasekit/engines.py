@@ -98,7 +98,18 @@ def betterleaks(
     if staged or history:
         with storage.temporary(root, "engine-") as workspace:
             environment.update({key: str(workspace.path) for key in ("TMP", "TEMP", "TMPDIR")})
-            return _run(command, root=root, environment=environment)
+            working_directory = root
+            if staged:
+                # The scanner's configuration (including relative extension files)
+                # belongs to the same index as the scanned changes.
+                _checkout_index(root, workspace.path)
+                workspace.remember()
+                command[command.index("--config") + 1] = str(
+                    storage.inside(workspace.path, workspace.path / config)
+                )
+                command[command.index("git") + 1] = str(root.resolve())
+                working_directory = workspace.path
+            return _run(command, root=working_directory, environment=environment)
 
     # Directory mode does not use Git's publication boundary and would otherwise
     # inspect .git, caches, dependencies, and ignored private mounts. Materialize

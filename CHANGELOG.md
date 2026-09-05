@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+## [0.13.2] - 2026-09-05
+
+### Fixed
+
+- Staged audits read the indexed publication policy and Betterleaks configuration,
+  including relative policy files, so unrelated working-tree edits cannot change
+  the verdict for a prepared commit.
+- MCP project bindings expire when the configured Betterleaks policy changes,
+  including projects that use a custom policy filename.
+- The PNG metadata policy also checks images inside nested ZIP-family artifacts
+  and reachable historical copies, while preserving explicit structural exclusions.
+- Source and plugin packages include the MIT license and human maintainer metadata.
+  The standalone zipapp carries the full license in its existing build metadata,
+  preserving compatibility with earlier project updaters.
+
 ## [0.13.1] - 2026-09-04
 
 ### Fixed

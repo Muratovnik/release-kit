@@ -15,6 +15,28 @@ from releasekit_mcp.projects import Projects
 
 
 class PluginTests(Fixture):
+    def test_configured_scanner_policy_drift_requires_a_new_binding(self):
+        policy = self.root / ".gitleaks.toml"
+        (self.root / "relkit.toml").write_text(
+            '[exposure]\nbetterleaks_config = ".gitleaks.toml"\n'
+        )
+        policy.write_text("[extend]\nuseDefault = true\n")
+        projects = Projects()
+        reviewed = projects.inspect(str(self.root))
+        binding = projects.bind(reviewed)
+        (self.root / "README.md").write_text("ordinary source edits remain supported\n")
+        projects.get(binding)
+        policy.write_text('[extend]\nuseDefault = true\n[allowlist]\npaths = [".*"]\n')
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            projects.get(binding)
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            projects.bind(reviewed)
+        refreshed = projects.bind(projects.inspect(str(self.root)))
+        projects.get(refreshed)
+        policy.unlink()
+        with self.assertRaisesRegex(ValueError, "inputs changed"):
+            projects.get(refreshed)
+
     def test_direct_update_request_allows_checks_of_dirty_pin_without_second_dialog(self):
         self.projection.write_bytes(self.projection.read_bytes() + b"\n")
         dirty_pin = self.projection.read_bytes()
