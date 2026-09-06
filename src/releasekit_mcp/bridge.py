@@ -11,12 +11,15 @@ from pathlib import Path
 import anyio
 
 from releasekit import __version__, distribution, storage
+from releasekit import canonical as canonical_json
 
 from . import models, process
 
+# The adapter and the project CLI fingerprint the same reviewed plans; a divergent
+# encoder here would silently break every plan_hash comparison across the boundary.
+canonical = canonical_json.dumps
 
-def canonical(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+MAX_REVIEW_INPUT_BYTES = 8 * 1024 * 1024
 
 
 @dataclass
@@ -53,7 +56,7 @@ class Bridge:
         self.git_identity = storage.identity(self.root / ".git")
         self.root_identity = storage.identity(self.root)
         self.projection = storage.inside(self.root, self.root / ".github/relkit.pyz")
-        if self.projection.stat().st_size > 8 * 1024 * 1024:
+        if self.projection.stat().st_size > distribution.MAX_ARCHIVE_BYTES:
             raise ValueError("projection exceeds the distribution limit")
         self.artifact = distribution.inspect(self.projection.read_bytes())
         if not re.fullmatch(r"[0-9a-fA-F]{64}", sha256) or self.artifact.sha256 != sha256.lower():
@@ -110,7 +113,7 @@ class Bridge:
         storage.inside(self.root, path)
         if not path.exists():
             return None
-        if not path.is_file() or path.stat().st_size > 8 * 1024 * 1024:
+        if not path.is_file() or path.stat().st_size > MAX_REVIEW_INPUT_BYTES:
             raise ValueError("review inputs must be ordinary files of at most 8 MiB")
         return {"sha256": storage.digest(path), "identity": storage.identity(path)}
 

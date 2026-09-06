@@ -4,7 +4,7 @@ import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
-from releasekit import config, storage
+from releasekit import config, distribution, storage
 
 from .bridge import Bridge, canonical
 
@@ -25,7 +25,7 @@ class Projects:
             raise ValueError("project must be an explicit absolute checkout root")
         root_path = storage.checked(Path(root))
         projection = storage.inside(root_path, root_path / ".github/relkit.pyz")
-        if projection.stat().st_size > 8 * 1024 * 1024:
+        if projection.stat().st_size > distribution.MAX_ARCHIVE_BYTES:
             raise ValueError("projection exceeds the distribution limit")
         bridge = Bridge(root_path, storage.digest(projection), timeout=self.timeout, bundle=bundle)
         return ProjectReview(bridge, self.review(bridge))

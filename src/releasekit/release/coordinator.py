@@ -15,7 +15,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
-from .. import __version__, config, owner, protection, publication, storage
+from .. import __version__, canonical, config, owner, protection, publication, storage
 from ..result import Result
 from . import changelog, settings
 from .backend import (
@@ -34,9 +34,7 @@ from .backend import (
 
 
 def fingerprint(value: object) -> str:
-    return hashlib.sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    return canonical.fingerprint(value)
 
 
 def version_tag(value: str) -> tuple[str, str]:

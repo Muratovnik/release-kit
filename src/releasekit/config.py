@@ -6,6 +6,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
+from . import paths
 from .exposure.audit import _git_bytes
 from .release import settings as release_settings
 from .release.changelog import PROFILES, is_version
@@ -39,11 +40,7 @@ EXPOSURE_KEYS = frozenset(
 
 PROVIDER_ROLES = frozenset({"product-data-provider"})
 PROVENANCE_KINDS = frozenset({"synthetic", "anonymized", "machine-derived"})
-WINDOWS_RESERVED_STEMS = frozenset(
-    {"aux", "con", "nul", "prn"}
-    | {f"com{number}" for number in range(1, 10)}
-    | {f"lpt{number}" for number in range(1, 10)}
-)
+WINDOWS_RESERVED_STEMS = paths.WINDOWS_RESERVED_STEMS
 
 
 class ConfigError(Exception):
@@ -86,7 +83,7 @@ def _portable_repository_path(value: str, key: str, *, allow_glob: bool = False)
         ":" in part
         or any(character in part for character in '<>"|')
         or part.endswith((" ", "."))
-        or part.split(".", maxsplit=1)[0].casefold() in WINDOWS_RESERVED_STEMS
+        or paths.reserved_stem(part)
         for part in path.parts
     ):
         raise ConfigError(f"{key} must be portable across supported filesystems")

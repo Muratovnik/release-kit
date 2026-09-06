@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__, config, distribution, protection, storage
+from . import __version__, canonical, config, distribution, protection, storage
 from .result import Result
 
 PROJECTION = protection.PROJECTION_PATH
@@ -355,9 +355,7 @@ def run(
                     for path, payload, mode in targets
                 ],
             }
-            digest = hashlib.sha256(
-                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+            digest = canonical.fingerprint(value)
             result.data.update(plan=value, plan_sha256=digest, state="planned")
             if plan_hash and plan_hash != digest:
                 raise UpdateError("reviewed rollback plan is stale; review a new dry run")
@@ -481,9 +479,7 @@ def run(
                 "guard_inputs_before": protection.recorded_digests(root) if old_hook else {},
                 "guard_inputs_after": new_digests,
             }
-            digest = hashlib.sha256(
-                json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+            digest = canonical.fingerprint(value)
             result.data.update(plan=value, plan_sha256=digest, state="planned")
             if plan_hash and plan_hash != digest:
                 raise UpdateError("reviewed update plan is stale; review a new dry run")

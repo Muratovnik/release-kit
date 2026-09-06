@@ -4,15 +4,14 @@ from __future__ import annotations
 
 import ast
 import hashlib
-import json
 import os
 import re
 import subprocess
 import tempfile
 from pathlib import Path
 
+from . import canonical, storage
 from . import config as config_module
-from . import storage
 
 MARKER = "# managed by release-kit: owner publication guard v1"
 COMPATIBLE_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: pre-push v1"
@@ -265,12 +264,7 @@ def install_plan(root: Path) -> dict:
         "effective_hook": str(effective),
         "dispatcher_sha256": _sha256(effective) if effective != path else None,
     }
-    return {
-        **plan,
-        "plan_sha256": hashlib.sha256(
-            json.dumps(plan, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
-    }
+    return {**plan, "plan_sha256": canonical.fingerprint(plan)}
 
 
 def install(root: Path, *, plan_hash: str = "") -> Path:

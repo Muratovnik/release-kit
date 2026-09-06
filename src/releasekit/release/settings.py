@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, fields
-from pathlib import PurePosixPath
 from string import Formatter
+
+from ..paths import reserved_stem
 
 
 class SettingsError(ValueError):
@@ -18,17 +19,10 @@ def relative(value: str, *, from_tree: bool = False) -> str:
     # ls-tree supplies exact blob names, not pathspecs. Brackets are ordinary
     # portable characters (for example a dynamic route), never glob expansion.
     _portable_repository_path(value, "release path", allow_glob=from_tree)
-    if (
-        not value
-        or value != value.strip()
-        or "\\" in value
-        or any(c in value for c in "*?")
-        or any(ord(c) < 32 for c in value)
-        or PurePosixPath(value).is_absolute()
-        or any(
-            part.casefold() in {"", ".", "..", ".git"} or ":" in part or part.endswith((".", " "))
-            for part in value.split("/")
-        )
+    # Beyond the shared rule: an exact blob name never carries a glob, an empty
+    # segment or Git's own directory, and it is used verbatim rather than normalized.
+    if any(character in value for character in "*?") or any(
+        part.casefold() in {"", ".", "..", ".git"} for part in value.split("/")
     ):
         raise ValueError(f"release path must be portable and repository-relative: {value!r}")
     return value
@@ -37,9 +31,7 @@ def relative(value: str, *, from_tree: bool = False) -> str:
 def filename(value: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._+-]{0,199}", value) or value.endswith("."):
         raise ValueError(f"invalid exact release asset filename: {value!r}")
-    if value.split(".")[0].casefold() in {"con", "prn", "aux", "nul"} | {
-        f"{prefix}{number}" for prefix in ("com", "lpt") for number in range(1, 10)
-    }:
+    if reserved_stem(value):
         raise ValueError("release asset filename is reserved on Windows")
     return value
 

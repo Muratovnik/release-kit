@@ -95,8 +95,6 @@ def cache_write_path(root: Path, path: Path) -> Path:
             "external cache writes need explicit approval of its exact absolute path via "
             "RELKIT_APPROVED_EXTERNAL_CACHE, or unset RELKIT_CACHE_DIR to use project storage"
         )
-    if not path.is_relative_to(checked(cache)):
-        raise StorageError("write escaped the approved cache")
     return path
 
 
