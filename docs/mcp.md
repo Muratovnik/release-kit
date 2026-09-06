@@ -108,6 +108,8 @@ Resume uses `status` for diagnosis, then `resume_plan` with the intended resume
 options and action `resume`. Both previews read a local receipt, not fresh remote
 evidence. `resume_plan` is an MCP preview over CLI `release status`; download and
 CI-attempt choices bind the subsequent resume review, not the status invocation.
+Recording an attempt as abandoned is CLI-only (`release abandon --reason`); the
+adapter exposes no tool for it.
 
 For updates use action `plan`, review `result.data.plan` and `data.plan_sha256`,
 then action `apply` with the same source selection and `plan_hash`. Guard refresh

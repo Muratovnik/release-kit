@@ -32,12 +32,22 @@ Before adoption, configure the CI publisher to:
 - use the selected committed changelog entry as its release body;
 - produce GitHub build-provenance attestations for **every configured asset**, from
   this same workflow and commit, with the tag as source ref;
-- expose the configured required job names in the selected workflow run.
+- expose the configured required job names in the selected workflow run, each
+  declared as a job id or literal `name:` in a block-style `jobs:` mapping;
+  planning refuses an undeclared `required_jobs` entry before any tag exists and
+  matches matrix labels by their prefix before ` (`.
 
 The coordinator does not enable repository settings, change CI or grant permissions.
 The operator must review this integration before allowing a push. A missing
 attestation or incorrect publication can be detected **after publication**; this is
 not a server-side transaction or a promise that a bad release can be unpublished.
+The exact asset set, notes, sizes and digests are likewise compared only once CI
+has published the immutable release: a mismatch is detected, cannot be corrected,
+and spends the version number. Keep the workflow's upload steps and `assets` in
+step; the owner guard pins the workflow for that reason, and `plan` prints the
+declared set as a separate block. Moving the final draft-to-published step into
+the coordinator would close that window but contradicts the CI-alone-publishes
+contract; it is a recorded owner decision, not part of this version.
 Reusable signer workflows, alternative signature schemes, prereleases, automatic
 build dispatch and multi-platform local execution are not supported by this version.
 Artifacts for every platform are verified; application smoke runs only on the
@@ -97,7 +107,7 @@ it does not install or refresh either. `owner_audit = true` additionally require
 the existing private owner policy and `require_guard = true`. These options do not
 grant permission to alter project hooks or override its instructions.
 
-## Plan, run, resume
+## Plan, run, resume, abandon
 
 ```bash
 relkit release plan v1.0.0
@@ -105,6 +115,8 @@ relkit release run v1.0.0 --publish --plan-hash REVIEWED_SHA256
 relkit release resume v1.0.0 --publish
 # After manually reviewing a CI rerun of the SAME run, explicitly accept its attempt:
 relkit release resume v1.0.0 --publish --accept-ci-attempt 2
+# Only after the owner removed the remote tag of an attempt that will never publish:
+relkit release abandon v1.0.0 --reason "CI cancelled; remote tag removed"
 ```
 
 For a vendored projection, replace `relkit` with `python .github/relkit.pyz`.
@@ -116,6 +128,13 @@ previous tag/object, notes, asset names, workflow identity, refspecs and fingerp
 It does not run project commands, create service files, tag, push or publish.
 `--publish` on `plan` still cannot publish. A stale `--plan-hash` stops execution.
 Without a supplied hash, `run --publish` authorizes its freshly computed plan.
+
+Beside the JSON, `plan` prints an operator block on stderr: the exact asset set,
+the post-publication timing of its verification, the checksum-manifest rule, jobs
+it could not verify statically, workflow jobs outside `required_jobs`, and the
+fact that local checks ran on this host only while CI owns the platform matrix.
+JSON callers read the same facts from `data.plan.caveats`, `workflow_jobs` and
+`host`. A green local run is never evidence for the other platforms.
 
 `run` requires a clean repository including untracked candidates. It runs each
 declared check once, the worktree and history audits, and configured guard checks.
@@ -129,8 +148,9 @@ is performed. History backups are neither created nor needed by this workflow.
 The saved receipt binds the plan, repository ID, SHA, tag object, CI run/attempt,
 release ID, asset IDs/sizes/digests and separate publication/verification/cleanup
 results. A repository-wide exclusive lock prevents concurrent runs; it is never
-stolen automatically. After a killed process, inspect the PID and exact lock path
-reported in the error, and remove only that stale lock after proving it is inactive.
+stolen automatically. A busy lock reports its recorded PID, tag and root together
+with whether that PID is still running; remove only that exact stale lock after
+proving the process is inactive.
 
 `resume` first checks actual remote identity/refs/release, including after a lost
 push response. It never adopts an unrelated tag/release or silently substitutes
@@ -139,6 +159,17 @@ then resume, rather than creating a duplicate. A newer attempt of the same run n
 the explicit flag above; its artifact attestations must also identify that attempt.
 Missing/deleted/rewritten objects require owner investigation, not automatic repair.
 Keep the same release-kit version and checkout for an unfinished run.
+
+`abandon` is the sanctioned end of an attempt that will never publish, for example
+a tag that CI rejected and that the owner then deleted from the remote. It needs
+`--reason`, the repository lock, an absent remote tag and no release or draft; a
+published release cannot be abandoned, and no `--publish` is involved. It records
+the outcome in the existing receipt without deleting any ref, log or scratch file,
+and reports a remaining local tag that the owner must delete explicitly. `resume`
+then refuses that attempt; the next `run` for the same version archives the receipt
+as `.git/relkit/releases/vX.Y.Z.abandoned-<timestamp>/` and starts a new one. An
+older receipt can be abandoned by a newer release-kit. The MCP adapter has no tool
+for this; use the CLI.
 
 Local checks are not cached across invocations: a commit SHA does not identify
 ignored dependencies, environment, tool binaries or hooks. After a verified push,
@@ -228,5 +259,6 @@ publication test is authorized by running the isolated test suite.
 
 `release status vX.Y.Z` reads the saved receipt without changing files or checking
 GitHub. Its exit `0` means the read succeeded, not that the published release is
-currently valid. All commands accept the opt-in [structured CLI contract](cli-json.md);
+currently valid. `release abandon` exits `0` once the outcome is recorded and `2`
+when it is refused. All commands accept the opt-in [structured CLI contract](cli-json.md);
 recorded publication, verification and cleanup remain separate fields.

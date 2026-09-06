@@ -349,6 +349,32 @@ class JsonReleaseTests(ReleaseFixture):
         self.assertEqual(2, self.command("resume", "--publish")[0])
         self.assertEqual(before, path.read_bytes())
 
+    def test_abandon_envelope_records_the_outcome_and_refuses_publication_flags(self):
+        self.github.ci_result = "failure"
+        self.github.no_release = True
+        self.assertEqual(1, self.command("run", "--publish")[0])
+        subprocess.run(
+            ["git", "tag", "-d", "v1.0.0"], cwd=self.server, check=True, capture_output=True
+        )
+        self.runner.git("tag", "-d", "v1.0.0")
+        code, value, _ = self.command("abandon", "--reason", "cancelled", "--publish")
+        self.assertEqual(2, code, value)
+        self.assertEqual("release_error", value["errors"][0]["code"])
+        code, value, _ = self.command("abandon", "--reason", "cancelled")
+        self.assertEqual(0, code, value)
+        self.assertEqual(["release", "abandon"], value["command"])
+        self.assertEqual("abandoned", value["data"]["release"]["outcome"]["status"])
+        self.assertEqual("cancelled", value["data"]["release"]["outcome"]["reason"])
+        self.assertEqual("local-receipt", value["data"]["release"]["observation"])
+        self.assertIsNone(value["next_action"])
+        self.assertEqual(2, self.command("resume", "--publish")[0])
+        self.github.ci_result = "success"
+        self.github.no_release = False
+        code, value, _ = self.command("run", "--publish")
+        self.assertEqual(0, code, value)
+        self.assertTrue(Path(value["data"]["archived_receipt"]).is_dir())
+        self.assertIsNone(value["data"]["release"]["outcome"])
+
     def test_status_rejects_linked_receipt_and_publication_flags(self):
         self.assertEqual(2, self.command("status", "--publish")[0])
         self.assertEqual(0, self.invoke()[0])

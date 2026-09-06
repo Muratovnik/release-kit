@@ -62,6 +62,11 @@ Git ownership error against the exact intended repository before any exception.
    `release_resume` with that preview's `review_sha256`. A changed
    `accept_ci_attempt` needs its own explicit authority and matching preview.
    The coordinator reconciles remote state before further publication actions.
+   If the attempt will never publish (for example CI rejected the tag and the
+   owner then deleted it from the remote), record that with the project CLI:
+   `release abandon vX.Y.Z --reason "..."`; MCP has no tool for it. The next
+   `run` for that version archives the old receipt instead of refusing. Never
+   delete refs or receipts to reuse a version.
 
 The request authorizes effects, not every future plan. Review changed targets,
 refs, policy and CI attempts; request new authority only if the effects exceed

@@ -28,9 +28,9 @@ owns their versions, official release URLs, SHA-256 digests, platform selection 
 invocation. An adopting repository owns only `relkit.toml` and, where needed, a narrow
 `.betterleaks.toml`. It does not carry download snippets or another secret/link parser.
 
-An optional `relkit release plan/run/resume` coordinator connects a prepared commit,
-annotated tag, existing tag CI and verified publication. CI remains the sole publisher;
-project commands own build/test/application details. See the
+An optional `relkit release plan/run/resume/status/abandon` coordinator connects a
+prepared commit, annotated tag, existing tag CI and verified publication. CI remains
+the sole publisher; project commands own build/test/application details. See the
 [managed-release contract and adoption prerequisites](docs/release-coordinator.md).
 
 Automation can opt into `--json` on every command. `release status` reads an
@@ -332,7 +332,8 @@ verifies that contract before changing the repository guard; it never creates or
 replaces the external dispatcher.
 
 The repository guard pins SHA-256 for the tracked release-kit projection,
-`relkit.toml`, and the configured Betterleaks policy before it executes
+`relkit.toml`, the configured Betterleaks policy and, once the `[release]`
+coordinator is configured, the tag workflow that publishes, before it executes
 repository-controlled code. A reviewed change to any of those inputs requires an
 explicit `update --refresh-guard` (with backup and validation) or `protect install`.
 `--require-overlay` adds the exact link/target/tracking oracle.

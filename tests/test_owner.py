@@ -250,6 +250,62 @@ class ProtectionTests(unittest.TestCase):
             self.assertEqual(original_guard, local.read_bytes())
             self.assertEqual(incompatible, dispatcher.read_text(encoding="utf-8"))
 
+    def test_guard_pins_the_release_workflow_once_the_coordinator_is_configured(self) -> None:
+        # Field case: a workflow commit added four upload steps without touching
+        # relkit.toml, and the guard stayed silent until after publication.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            workflow = root / ".github" / "workflows" / "release.yml"
+            workflow.parent.mkdir(parents=True)
+            workflow.write_text(
+                "on: push\njobs:\n  publish:\n    runs-on: ubuntu-latest\n", encoding="utf-8"
+            )
+            (root / "relkit.toml").write_text(
+                "[exposure]\n"
+                '[release]\nrepository = "example/project"\n'
+                'workflow = ".github/workflows/release.yml"\nrequired_jobs = ["publish"]\n'
+                'version_file = "VERSION"\nversion_pattern = "^(.+)$"\n'
+                'assets = ["example-{version}.zip"]\nchecks = [["python", "check.py"]]\n'
+                'smoke = [["python", "smoke.py"]]\nsmoke_platforms = ["linux", "darwin", "win32"]\n',
+                encoding="utf-8",
+            )
+
+            protection.install(root)
+
+            self.assertIsNone(protection.problem(root))
+            self.assertIn(".github/workflows/release.yml", protection.recorded_digests(root))
+            workflow.write_text(
+                workflow.read_text(encoding="utf-8") + "  upload:\n    runs-on: ubuntu-latest\n",
+                encoding="utf-8",
+            )
+            problem = protection.problem(root) or ""
+            self.assertIn("drifted", problem)
+            self.assertIn(".github/workflows/release.yml: pinned", problem)
+            protection.install(root)
+            self.assertIsNone(protection.problem(root))
+
+    def test_check_reports_a_hooks_path_git_cannot_run_instead_of_installed(self) -> None:
+        # Field hypothesis: core.hooksPath pointing at a missing directory leaves a
+        # byte-perfect guard inert; check and install must say so, not "installed".
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            protection.install(root)
+            self.assertIsNone(protection.problem(root))
+            subprocess.run(
+                ["git", "config", "--local", "core.hooksPath", str(root / "missing-hooks")],
+                cwd=root,
+                check=True,
+            )
+
+            problem = protection.problem(root) or ""
+
+            self.assertIn("dispatcher is not installed at", problem)
+            self.assertIn("missing-hooks", problem)
+            with self.assertRaisesRegex(protection.ProtectionError, "not installed at"):
+                protection.install(root)
+
 
 if __name__ == "__main__":
     unittest.main()

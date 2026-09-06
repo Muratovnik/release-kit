@@ -31,16 +31,26 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def guarded_inputs(policy: config_module.Config) -> list[str]:
+    """Repository files the guard pins before it runs repository-controlled code."""
+    relatives = [config_module.CONFIG_NAME, PROJECTION_PATH]
+    if policy.exposure.check_secrets:
+        relatives.append(policy.exposure.betterleaks_config)
+    if policy.release is not None:
+        # The tag workflow is the file that actually publishes. A changed upload
+        # step must be reviewed against the declared exact asset set before a
+        # push, not discovered after the immutable release exists.
+        relatives.append(policy.release.workflow)
+    return list(dict.fromkeys(relatives))
+
+
 def _guarded_digests(root: Path) -> dict[str, str]:
     try:
-        settings = config_module.load(root).exposure
+        policy = config_module.load(root)
     except config_module.ConfigError as error:
         raise ProtectionError(str(error)) from error
-    relatives = [config_module.CONFIG_NAME, PROJECTION_PATH]
-    if settings.check_secrets:
-        relatives.append(settings.betterleaks_config)
     answer: dict[str, str] = {}
-    for relative in dict.fromkeys(relatives):
+    for relative in guarded_inputs(policy):
         path = root / relative
         if not path.is_file():
             raise ProtectionError(f"guarded publication input is unavailable: {path}")

@@ -2,6 +2,35 @@
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-09-06
+
+### Added
+
+- `relkit release abandon vX.Y.Z --reason "..."` records that an unpublished
+  attempt ends: the remote tag must already be gone and no release or draft may
+  exist. The receipt keeps its history with the recorded outcome, `resume` then
+  refuses the attempt, and the next `run` for the same version archives the old
+  receipt beside the new one instead of refusing. No ref is ever deleted.
+- Planning reads the committed tag workflow's block-style `jobs:` mapping and
+  refuses a `required_jobs` entry that no job id or literal name declares, before
+  any tag exists. Matrix labels match by their prefix before ` (`; expression
+  names and flow-style mappings are reported as unverifiable rather than guessed,
+  and jobs outside `required_jobs` are listed as optional.
+- `release plan` prints the exact asset set and the plan's caveats as a separate
+  operator block: the set is verified only after the immutable release exists, a
+  checksum manifest must list every other asset, and a green local run is not the
+  CI platform matrix. `data.plan.caveats`, `workflow_jobs` and `host` carry the
+  same facts in JSON.
+
+### Fixed
+
+- The owner pre-push guard also pins the configured release workflow once the
+  `[release]` coordinator is configured, so an upload step that changes the
+  published file set needs the same review as `relkit.toml`. Existing guards
+  report the new input as drift until refreshed.
+- A busy release lock reports its recorded PID, tag and root together with
+  whether that PID is still running, instead of only the lock path.
+
 ## [0.13.2] - 2026-09-05
 
 ### Fixed

@@ -76,7 +76,14 @@ update; it must not be interpreted as proof that no side effects occurred.
   guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
   with `install --plan-hash HASH` to reject drift. Preview does not write a hook.
 - `release plan`: `data.plan` is the existing described plan, including
-  `plan_sha256`, pinned SHA, previous tag, exact refspecs, assets and future actions.
+  `plan_sha256`, pinned SHA, previous tag, exact refspecs, assets, future actions,
+  statically read `workflow_jobs` (declared/unverified/optional), the planning
+  `host` and operator `caveats`; the same caveats print on stderr.
+- `release abandon`: `data.release` is the updated local receipt with
+  `outcome.status = "abandoned"`, its reason and time; `next_action` is `null`.
+  Refusals (`--reason` missing, remote tag or release still present, published
+  release, publication flags) return `2` without changing the receipt. A later
+  `run` for the same version reports the moved receipt as `data.archived_receipt`.
 - `release run/resume`: `data.release` appears once a run is recorded. It includes
   `observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded tool
   version, complete described `plan`, CI identity, artifacts, stage/stages, publication, verification, cleanup,

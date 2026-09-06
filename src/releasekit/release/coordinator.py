@@ -168,6 +168,96 @@ def notes_for(
     return entry.replace("\r\n", "\n").rstrip("\n")
 
 
+_JOBS_HEADER = re.compile(r"jobs:[ \t]*(?:#.*)?")
+_MAPPING_KEY = re.compile(r"( *)([A-Za-z_][A-Za-z0-9_-]*):[ \t]*(?:#.*)?")
+_NAME_KEY = re.compile(r"( *)name:[ \t]*(.*)")
+
+
+def _literal_scalar(raw: str) -> str | None:
+    """A plain or quoted YAML scalar; None for expressions, blocks, anchors, flows."""
+    value = raw.strip()
+    if value[:1] in {"'", '"'}:
+        quote = value[0]
+        end = value.find(quote, 1)
+        while quote == "'" and end != -1 and value[end + 1 : end + 2] == "'":
+            end = value.find(quote, end + 2)
+        if end == -1:
+            return None
+        value = value[1:end].replace("''", "'") if quote == "'" else value[1:end]
+    else:
+        value = value.split(" #", 1)[0].rstrip()
+    if not value or "${{" in value or value[0] in "|>&*!{[":
+        return None
+    return value
+
+
+def workflow_jobs(text: str) -> dict[str, str | None] | None:
+    """Job ids and display names of a block-style top-level `jobs:` mapping.
+
+    A job without `name:` is displayed under its id; an expression name is None.
+    Returns None when the mapping cannot be read without a YAML engine (flow style,
+    anchors, tabs or a missing key), so the caller reports that instead of guessing.
+    """
+    lines = text.replace("\r\n", "\n").split("\n")
+    start = next((i for i, line in enumerate(lines) if _JOBS_HEADER.fullmatch(line)), None)
+    if start is None:
+        return None
+    jobs: dict[str, str | None] = {}
+    indent = child_indent = None
+    current = None
+    for line in lines[start + 1 :]:
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if not line.startswith(" "):
+            break
+        width = len(line) - len(line.lstrip(" "))
+        if line[width : width + 1] == "\t":
+            return None
+        indent = width if indent is None else indent
+        if width < indent:
+            return None
+        if width == indent:
+            match = _MAPPING_KEY.fullmatch(line)
+            if not match or match[2] in jobs:
+                return None
+            current = match[2]
+            jobs[current] = current
+            child_indent = None
+            continue
+        if current is None:
+            return None
+        child_indent = width if child_indent is None else child_indent
+        if width == child_indent and (match := _NAME_KEY.fullmatch(line)):
+            jobs[current] = _literal_scalar(match[2])
+    return jobs or None
+
+
+def job_coverage(required: list[str], jobs: dict[str, str | None] | None) -> dict:
+    """Static evidence that each required CI job exists before any tag is pushed.
+
+    GitHub displays matrix jobs as `name (values)`; the prefix before ` (` is the
+    declared id or literal name. Jobs with expression names cannot be refuted here.
+    """
+    if jobs is None:
+        return {"declared": None, "missing": [], "unverified": list(required), "optional": []}
+    known = {name for name in jobs.values() if name}
+    bases = {name: name.split(" (", 1)[0] for name in required}
+    unmatched = [name for name in required if name not in known and bases[name] not in known]
+    dynamic = any(name is None for name in jobs.values())
+    covered = set(required) | set(bases.values())
+    return {
+        "declared": jobs,
+        "missing": [] if dynamic else unmatched,
+        "unverified": unmatched if dynamic else [],
+        "optional": [
+            job
+            for job, name in jobs.items()
+            if name is not None and job not in covered and name not in covered
+        ],
+    }
+
+
 def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     repository(runner)
     clean(runner)
@@ -197,7 +287,15 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     )
     if observed != [version] and observed != [tag]:
         raise ReleaseError("version_file must contain exactly one matching requested version")
-    source(runner, sha, release.workflow)
+    coverage = job_coverage(
+        release.required_jobs, workflow_jobs(source(runner, sha, release.workflow))
+    )
+    if coverage["missing"]:
+        raise ReleaseError(
+            f"required_jobs are not declared by {release.workflow}: "
+            + ", ".join(coverage["missing"])
+            + "; fix the name or the workflow before a tag exists"
+        )
     refs = remote_refs(runner, release.remote)
     if f"refs/heads/{tag}" in refs or runner.git(
         "for-each-ref", "--format=%(refname)", f"refs/heads/{tag}"
@@ -260,11 +358,49 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
         "notes": notes,
         "assets": assets,
         "checksum_file": checksum_file,
+        "workflow_jobs": {key: coverage[key] for key in ("declared", "unverified", "optional")},
+        "host": sys.platform,
         "pushes": pushes,
         "source_config_sha256": hashlib.sha256(
             source(runner, sha, config.CONFIG_NAME).encode()
         ).hexdigest(),
     }
+
+
+def caveats(value: dict) -> list[str]:
+    """Operator-facing limits of this plan that the JSON alone does not spell out."""
+    jobs = value.get("workflow_jobs") or {}
+    lines = [
+        (
+            f"CI must publish exactly the {len(value['assets'])} planned asset(s); the set is "
+            "verified only after the immutable release exists and cannot be corrected afterwards"
+        )
+    ]
+    if value["checksum_file"]:
+        lines.append(
+            f"{value['checksum_file']} must list every other planned asset; a second "
+            "manifest cannot be a published asset"
+        )
+    if "declared" in jobs and jobs["declared"] is None:
+        lines.append(
+            f"{value['settings']['workflow']} jobs could not be read statically; "
+            "required_jobs are checked only against the finished CI run"
+        )
+    elif jobs.get("unverified"):
+        lines.append(
+            "required_jobs matched no literal job id or name and rely on expression names: "
+            + ", ".join(jobs["unverified"])
+        )
+    if jobs.get("optional"):
+        lines.append(
+            "workflow jobs outside required_jobs do not gate publication: "
+            + ", ".join(jobs["optional"])
+        )
+    lines.append(
+        f"local checks run on {value.get('host', 'this host')} only; a green local run "
+        "is not the CI platform matrix"
+    )
+    return lines
 
 
 def described_plan(value: dict) -> dict:
@@ -282,11 +418,22 @@ def described_plan(value: dict) -> dict:
             "smoke downloaded files from pinned source",
             "cleanup inventoried temporary files",
         ],
+        "caveats": caveats(value),
     }
 
 
 def show_plan(value: dict) -> None:
-    print(json.dumps(described_plan(value), indent=2, sort_keys=True))
+    described = described_plan(value)
+    print(json.dumps(described, indent=2, sort_keys=True))
+    # The JSON is data; this block is what an operator must read before --publish.
+    print(
+        f"relkit release: exact asset set for {value['tag']} ({len(value['assets'])} file(s)):",
+        file=sys.stderr,
+    )
+    for name in value["assets"]:
+        print(f"  {name}", file=sys.stderr)
+    for line in described["caveats"]:
+        print(f"relkit release: note: {line}", file=sys.stderr)
 
 
 def _state_path(root: Path, tag: str) -> Path:
@@ -361,10 +508,11 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
                 "temporary",
                 "retained_temporaries",
                 "error",
+                "outcome",
             )
         },
     }
-    if state["verification"] != "passed":
+    if state["verification"] != "passed" and not state.get("outcome"):
         result.next_action = [
             "relkit",
             "release",
@@ -849,6 +997,131 @@ def _verify(
     _stage(path, state, "application-smoke", "passed")
 
 
+def _process_alive(pid: int) -> bool | None:
+    """Best-effort liveness that never signals the process (Windows os.kill terminates)."""
+    if pid <= 0:
+        return None
+    if sys.platform == "win32":
+        import ctypes
+
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        kernel32.OpenProcess.restype = ctypes.c_void_p
+        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
+        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
+        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+        if not handle:
+            return {5: True, 87: False}.get(ctypes.get_last_error())
+        try:
+            code = ctypes.c_ulong()
+            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+                return None
+            return code.value == 259  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return None
+    return True
+
+
+def _lock_owner(lock: Path) -> str:
+    try:
+        owner_record = json.loads(lock.read_text(encoding="utf-8"))
+        pid, tag, root = owner_record["pid"], owner_record["tag"], owner_record["root"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return "its recorded owner is unreadable"
+    alive = _process_alive(pid) if type(pid) is int else None
+    liveness = {
+        True: "a process with this PID is running",
+        False: "no process with this PID is running",
+        None: "PID liveness could not be checked",
+    }[alive]
+    return f"pid {pid} ({liveness}), tag {tag}, root {root}"
+
+
+def _acquire_lock(root: Path, tag: str) -> Path:
+    lock = storage.service_root(root) / "release.lock"
+    storage.checked(lock).parent.mkdir(parents=True, exist_ok=True)
+    try:
+        with lock.open("x", encoding="utf-8") as stream:
+            stream.write(json.dumps({"pid": os.getpid(), "tag": tag, "root": str(root)}))
+    except FileExistsError as error:
+        raise ReleaseError(
+            f"another release owns {lock}: {_lock_owner(lock)}; after a crash verify its "
+            "PID is stopped before manually removing this exact lock"
+        ) from error
+    return lock
+
+
+def _abandon(runner: Runner, github: GitHub | None, state: dict, path: Path, reason: str) -> None:
+    """Record that an unpublished attempt ends here, without touching any ref."""
+    value = state["plan"]
+    tag = value["tag"]
+    if outcome := state.get("outcome"):
+        raise ReleaseError(f"{tag} was already recorded as {outcome['status']} at {outcome['at']}")
+    if state["publication"] == "published" or state["verification"] == "passed":
+        raise ReleaseError("a published release cannot be abandoned; its version is taken")
+    release = settings.parse(value["settings"])
+    remote_identity(runner, release.remote, release.repository)
+    github = github or GitHub(runner, release.repository)
+    ref = f"refs/tags/{tag}"
+    if ref in remote_refs(runner, release.remote):
+        raise ReleaseError(
+            f"{tag} still exists on {release.remote}; abandon records only an attempt whose "
+            "remote tag is gone, and release-kit never deletes refs"
+        )
+    if github.release(tag) is not None:
+        raise ReleaseError(
+            f"a release or draft exists for {tag}; the CI owner must resolve it before the "
+            "attempt can be abandoned"
+        )
+    state["outcome"] = {
+        "status": "abandoned",
+        "reason": reason,
+        "at": datetime.now(UTC).isoformat(),
+        "tool_version": __version__,
+        "remote_tag": "absent",
+        "release": "absent",
+    }
+    state["stage"] = "abandoned"
+    state.setdefault("stages", {})["abandoned"] = "recorded"
+    _save(path, state)
+    if ref in local_tags(runner):
+        print(
+            f"relkit release: local tag {tag} still exists; delete it explicitly "
+            f"(git tag -d {tag}) before a new run, release-kit never deletes refs",
+            file=sys.stderr,
+        )
+
+
+def _archive_abandoned(runner: Runner, path: Path, tag: str) -> Path | None:
+    """Move an abandoned receipt aside so the same version can be attempted again."""
+    try:
+        saved = read_state(runner, path, tag, same_version=False)
+    except (ReleaseError, OSError, ValueError, KeyError, TypeError):
+        return None
+    if (saved.get("outcome") or {}).get("status") != "abandoned":
+        return None
+    directory = storage.checked(path.parent)
+    stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
+    for suffix in ("", *(f"-{n}" for n in range(1, 100))):
+        target = directory.with_name(f"{tag}.abandoned-{stamp}{suffix}")
+        if not target.exists():
+            break
+    else:
+        raise ReleaseError("too many archived attempts for one tag in one second")
+    directory.rename(storage.checked(target))
+    if runner.log is not None and Path(runner.log).is_relative_to(directory):
+        runner.log = None  # the new attempt opens its own log once its receipt exists
+    return target
+
+
 def run(
     root: Path,
     action: str,
@@ -858,6 +1131,7 @@ def run(
     plan_hash: str = "",
     no_download: bool = False,
     accept_ci_attempt: int = 0,
+    reason: str = "",
     runner: Runner | None = None,
     github: GitHub | None = None,
     result: Result | None = None,
@@ -878,6 +1152,17 @@ def run(
         _, tag = version_tag(version)
         if accept_ci_attempt and (action != "resume" or accept_ci_attempt < 1):
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")
+        if reason and action != "abandon":
+            raise ReleaseError("--reason is accepted only by release abandon")
+        if action == "abandon":
+            if not reason.strip():
+                raise ReleaseError(
+                    "abandon requires a non-empty --reason that is kept in the receipt"
+                )
+            if publish or plan_hash or no_download:
+                raise ReleaseError(
+                    "abandon records a local outcome; publication flags are not accepted"
+                )
         if action == "plan":
             value = plan(runner, version, github=github)
             result.data["plan"] = described_plan(value)
@@ -897,31 +1182,48 @@ def run(
             )
             print(f"relkit release: receipt: {path}")
             return 0
+        if action == "abandon":
+            lock = _acquire_lock(root, tag)
+            lock_owned = True
+            path = storage.checked(_state_path(root, tag))
+            saved = read_state(runner, path, tag, same_version=False)
+            _abandon(runner, github, saved, path, reason.strip())
+            record_result(result, saved, path, saved=True)
+            print(
+                f"relkit release: recorded {tag} as abandoned; a new run may reuse the "
+                f"version once its local tag is gone; receipt: {path}"
+            )
+            return 0
         if action not in {"run", "resume"}:
             raise ReleaseError("unknown release action")
         if not publish:
             raise ReleaseError(
                 "run/resume require --publish after reviewing release plan; plan is read-only"
             )
-        lock = storage.service_root(root) / "release.lock"
-        storage.checked(lock).parent.mkdir(parents=True, exist_ok=True)
-        try:
-            with lock.open("x", encoding="utf-8") as stream:
-                stream.write(json.dumps({"pid": os.getpid(), "tag": tag, "root": str(root)}))
-        except FileExistsError as error:
-            raise ReleaseError(
-                f"another release owns {lock}; after a crash verify its PID is stopped before manually removing this exact lock"
-            ) from error
+        lock = _acquire_lock(root, tag)
         lock_owned = True
         state_path = storage.checked(_state_path(root, tag))
         if action == "resume":
+            saved = read_state(runner, state_path, tag, same_version=False)
+            if outcome := saved.get("outcome"):
+                raise ReleaseError(
+                    f"{tag} was recorded as {outcome['status']} at {outcome['at']}; "
+                    "start a new release run instead of resuming"
+                )
             saved = read_state(runner, state_path, tag, same_version=True)
             value = saved["plan"]
             state = saved
             validate_saved_plan(runner, value)
         else:
             if state_path.exists():
-                raise ReleaseError(f"a run for {tag} is already recorded; use release resume")
+                archived = _archive_abandoned(runner, state_path, tag)
+                if archived is None:
+                    raise ReleaseError(
+                        f"a run for {tag} is already recorded; use release resume, or "
+                        "release abandon --reason for an attempt that will never publish"
+                    )
+                result.data["archived_receipt"] = str(archived)
+                print(f"relkit release: archived the abandoned attempt receipt: {archived}")
             value = plan(runner, version, github=github)
             if plan_hash and fingerprint(value) != plan_hash:
                 raise ReleaseError("reviewed plan is stale; plan again before publishing")

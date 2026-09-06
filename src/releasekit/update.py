@@ -389,11 +389,10 @@ def run(
                 "guard ownership before 0.5.0 requires the documented side-by-side migration"
             )
         inputs = {
-            config.CONFIG_NAME: protection._sha256(_safe_path(root / config.CONFIG_NAME, root))
+            relative: protection._sha256(_safe_path(root / relative, root))
+            for relative in protection.guarded_inputs(settings)
+            if relative != PROJECTION
         }
-        if settings.exposure.check_secrets:
-            relative = settings.exposure.betterleaks_config
-            inputs[relative] = protection._sha256(_safe_path(root / relative, root))
         with storage.temporary(root, "download-") as workspace:
             temporary = workspace.path
             if refresh_guard:

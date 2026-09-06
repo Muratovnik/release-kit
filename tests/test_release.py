@@ -4,8 +4,10 @@ import contextlib
 import hashlib
 import io
 import json
+import os
 import runpy
 import subprocess
+import sys
 import tempfile
 import unittest
 import zipfile
@@ -59,6 +61,8 @@ class FakeGitHub:
         self.extra_asset = False
         self.on_wait = None
         self.signatures_checked = 0
+        self.no_release = False
+        self.orphan_release = False
 
     def api(self, path="", **_kwargs):
         if not path:
@@ -68,8 +72,14 @@ class FakeGitHub:
         raise AssertionError(path)
 
     def release(self, tag):
+        if self.no_release:
+            return None
         refs = self.fixture.runner.git("ls-remote", "--tags", "origin")
-        if f"refs/tags/{tag}\t" not in refs and f"refs/tags/{tag}\n" not in refs + "\n":
+        if (
+            not self.orphan_release
+            and f"refs/tags/{tag}\t" not in refs
+            and f"refs/tags/{tag}\n" not in refs + "\n"
+        ):
             return None
         return {
             "id": 21,
@@ -158,13 +168,16 @@ class ReleaseFixture(unittest.TestCase):
         server = Path(temporary.name) / "server.git"
         self.runner.git("init", "--bare", "-q", str(server))
         self.runner.git("remote", "add", "origin", str(server))
+        self.server = server
         self.notes = "## [1.0.0] (2026-09-02)\n\n### Highlights\n\n- First useful release."
         (self.root / "CHANGELOG.md").write_text(self.notes + "\n", encoding="utf-8")
         (self.root / "VERSION").write_text("1.0.0\n")
         (self.root / ".gitignore").write_text(".cache/\n__pycache__/\n")
         workflow = self.root / ".github/workflows/release.yml"
         workflow.parent.mkdir(parents=True)
-        workflow.write_text("on: {push: {tags: ['v*']}}\njobs: {}\n")
+        workflow.write_text(
+            "on: {push: {tags: ['v*']}}\njobs:\n  publish:\n    runs-on: ubuntu-latest\n"
+        )
         (self.root / "check.py").write_text(
             "from pathlib import Path\nassert Path('VERSION').read_text().strip() == '1.0.0'\n"
         )
@@ -199,17 +212,22 @@ class ReleaseFixture(unittest.TestCase):
 
     def invoke(self, action="run", **kwargs):
         stream = io.StringIO()
+        publish = kwargs.pop("publish", action != "abandon")
         with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
             code = coordinator.run(
                 self.root,
                 action,
                 "v1.0.0",
-                publish=True,
+                publish=publish,
                 runner=self.runner,
                 github=self.github,
                 **kwargs,
             )
         return code, stream.getvalue()
+
+    def plan_json(self, output):
+        """The plan JSON precedes the operator block that `plan` prints on stderr."""
+        return json.loads(output.split("\nrelkit release:", 1)[0])
 
     def receipt(self):
         return json.loads(coordinator._state_path(self.root, "v1.0.0").read_text())
@@ -227,7 +245,7 @@ class ReleaseTests(ReleaseFixture):
         protection.install(self.root)
         code, output = self.invoke("plan")
         self.assertEqual(0, code, output)
-        self.assertEqual(str(self.root), json.loads(output)["root"])
+        self.assertEqual(str(self.root), self.plan_json(output)["root"])
         self.assertEqual(0, self.runner.pushes)
 
     def test_missing_required_guard_fails_before_project_checks(self):
@@ -262,7 +280,7 @@ class ReleaseTests(ReleaseFixture):
         code, output = self.invoke("plan")
         self.assertEqual(0, code, output)
         self.assertEqual(before, set(self.root.rglob("*")))
-        self.assertIn("plan_sha256", json.loads(output))
+        self.assertIn("plan_sha256", self.plan_json(output))
         self.assertEqual(0, self.runner.pushes)
 
     def test_permission_required_before_creating_service_files(self):
@@ -594,6 +612,205 @@ class ReleaseTests(ReleaseFixture):
         self.assertEqual(1, code, output)
         self.assertIn("canonical exact-ref", output)
         self.assertEqual(0, self.runner.pushes)
+
+    def test_plan_prints_the_exact_asset_set_and_caveats_outside_the_json(self):
+        code, output = self.invoke("plan")
+        self.assertEqual(0, code, output)
+        described = self.plan_json(output)
+        self.assertEqual(["application.bin", "SHA256SUMS"], described["assets"])
+        self.assertEqual({"publish": "publish"}, described["workflow_jobs"]["declared"])
+        self.assertEqual([], described["workflow_jobs"]["optional"])
+        self.assertEqual(sys.platform, described["host"])
+        self.assertEqual(coordinator.caveats(described), described["caveats"])
+        notes = output.split("\nrelkit release:", 1)[1]
+        self.assertIn(
+            "exact asset set for v1.0.0 (2 file(s)):\n  application.bin\n  SHA256SUMS\n", notes
+        )
+        self.assertIn("verified only after the immutable release exists", notes)
+        self.assertIn("SHA256SUMS must list every other planned asset", notes)
+        self.assertIn(f"local checks run on {sys.platform} only", notes)
+        self.assertNotIn("could not be read statically", notes)
+
+    def test_required_job_missing_from_the_workflow_fails_before_any_tag(self):
+        (self.root / ".github/workflows/release.yml").write_text(
+            "on: push\njobs:\n  build:\n    runs-on: ubuntu-latest\n"
+        )
+        self.commit()
+        code, output = self.invoke()
+        self.assertEqual(2, code, output)
+        self.assertIn(
+            "required_jobs are not declared by .github/workflows/release.yml: publish", output
+        )
+        self.assertEqual("", self.runner.git("tag", "--list"))
+        self.assertEqual(0, self.runner.pushes)
+        self.assertFalse((self.root / ".git/relkit/releases").exists())
+
+    def test_matrix_labels_literal_names_and_optional_jobs_are_read_statically(self):
+        (self.root / ".github/workflows/release.yml").write_text(
+            "on: push\n"
+            "jobs:\n"
+            "  native-smoke:\n"
+            "    strategy: {matrix: {os: [ubuntu-24.04]}}\n"
+            "    runs-on: ${{ matrix.os }}\n"
+            "  lint:\n"
+            "    runs-on: ubuntu-latest\n"
+            "  publish:\n"
+            "    name: 'Publish (release)'  # display name\n"
+            "    needs: [native-smoke]\n"
+            "    steps:\n"
+            "      - name: not a job\n"
+            "        run: echo\n"
+        )
+        path = self.root / "relkit.toml"
+        path.write_text(
+            path.read_text().replace(
+                'required_jobs = ["publish"]',
+                'required_jobs = ["native-smoke (ubuntu-24.04)", "Publish (release)"]',
+            )
+        )
+        self.commit()
+        code, output = self.invoke("plan")
+        self.assertEqual(0, code, output)
+        jobs = self.plan_json(output)["workflow_jobs"]
+        self.assertEqual(
+            {"native-smoke": "native-smoke", "lint": "lint", "publish": "Publish (release)"},
+            jobs["declared"],
+        )
+        self.assertEqual([], jobs["unverified"])
+        self.assertEqual(["lint"], jobs["optional"])
+        self.assertIn("do not gate publication: lint", output)
+
+    def test_flow_style_and_expression_job_names_are_reported_not_guessed(self):
+        workflow = self.root / ".github/workflows/release.yml"
+        workflow.write_text("on: push\njobs: {publish: {runs-on: ubuntu-latest}}\n")
+        self.commit()
+        code, output = self.invoke("plan")
+        self.assertEqual(0, code, output)
+        self.assertIsNone(self.plan_json(output)["workflow_jobs"]["declared"])
+        self.assertIn("could not be read statically", output)
+        workflow.write_text(
+            "on: push\njobs:\n  build:\n    name: Build ${{ matrix.os }}\n"
+            "    strategy: {matrix: {os: [ubuntu-latest]}}\n"
+        )
+        self.commit()
+        code, output = self.invoke("plan")
+        self.assertEqual(0, code, output)
+        jobs = self.plan_json(output)["workflow_jobs"]
+        self.assertEqual({"build": None}, jobs["declared"])
+        self.assertEqual(["publish"], jobs["unverified"])
+        self.assertEqual([], jobs["optional"])
+        self.assertIn("rely on expression names: publish", output)
+
+    def test_workflow_job_parser_reads_only_what_it_can_prove(self):
+        self.assertIsNone(coordinator.workflow_jobs("name: x\n"))
+        self.assertIsNone(coordinator.workflow_jobs("jobs:\n"))
+        self.assertIsNone(coordinator.workflow_jobs("jobs:\n\tbuild:\n"))
+        self.assertIsNone(coordinator.workflow_jobs("jobs:\n  build: &base\n    x: 1\n"))
+        self.assertIsNone(coordinator.workflow_jobs("jobs:\n  build:\n   x: 1\n  <<: *base\n"))
+        self.assertIsNone(coordinator.workflow_jobs("jobs:\n  build:\n    x: 1\n  build:\n"))
+        self.assertEqual(
+            {"build": "Build  it", "test": None, "docs": "docs", "it": "it's"},
+            coordinator.workflow_jobs(
+                "jobs: # comment\n"
+                "  # leading comment\n"
+                "  build:  # trailing\n"
+                '    name: "Build  it" # comment\n'
+                "  test:\n"
+                "    name: |\n"
+                "      multi\n"
+                "  docs:\n"
+                "    steps:\n"
+                "      - name: step\n"
+                "  it:\n"
+                "    name: 'it''s'\n"
+                "env: {}\n"
+            ),
+        )
+
+    def test_busy_lock_reports_its_recorded_owner_and_liveness(self):
+        finished = subprocess.Popen([sys.executable, "-c", "pass"])
+        finished.wait()
+        lock = storage.service_root(self.root) / "release.lock"
+        lock.parent.mkdir(parents=True, exist_ok=True)
+        lock.write_text(json.dumps({"pid": finished.pid, "tag": "v0.9.0", "root": "elsewhere"}))
+        code, output = self.invoke()
+        self.assertEqual(2, code, output)
+        self.assertIn(
+            f"pid {finished.pid} (no process with this PID is running), tag v0.9.0, root elsewhere",
+            output,
+        )
+        lock.write_text(json.dumps({"pid": os.getpid(), "tag": "v1.0.0", "root": str(self.root)}))
+        self.assertIn(f"pid {os.getpid()} (a process with this PID is running)", self.invoke()[1])
+        self.assertTrue(lock.exists())
+        self.assertEqual(0, self.runner.pushes)
+
+    def test_abandon_records_the_outcome_and_frees_the_version_once_the_remote_tag_is_gone(self):
+        # Field case: CI rejected the pushed tag, no release was created, the owner
+        # later deleted the remote tag; the receipt must not trap the version forever.
+        self.github.ci_result = "failure"
+        self.github.no_release = True
+        code, output = self.invoke()
+        self.assertEqual(1, code, output)
+        self.assertTrue(self.receipt()["pushed"])
+        self.assertEqual("not-pushed", self.receipt()["publication"])
+        self.assertIn("still exists on origin", self.invoke("abandon", reason="CI cancelled")[1])
+        subprocess.run(
+            ["git", "tag", "-d", "v1.0.0"], cwd=self.server, check=True, capture_output=True
+        )
+        self.assertIn("previously pushed tag disappeared", self.invoke("resume")[1])
+        self.assertIn("non-empty --reason", self.invoke("abandon")[1])
+        self.assertIn(
+            "publication flags are not accepted",
+            self.invoke("abandon", reason="x", publish=True)[1],
+        )
+        self.assertIn("use release resume, or release abandon", self.invoke()[1])
+        code, output = self.invoke("abandon", reason="CI cancelled; remote tag removed by owner")
+        self.assertEqual(0, code, output)
+        self.assertIn("local tag v1.0.0 still exists", output)
+        receipt = self.receipt()
+        self.assertEqual("abandoned", receipt["outcome"]["status"])
+        self.assertEqual("CI cancelled; remote tag removed by owner", receipt["outcome"]["reason"])
+        self.assertEqual("recorded", receipt["stages"]["abandoned"])
+        self.assertIn("disappeared", receipt["error"])
+        code, output = self.invoke("resume")
+        self.assertEqual(2, code, output)
+        self.assertIn("recorded as abandoned", output)
+        self.assertIn("already recorded as abandoned", self.invoke("abandon", reason="again")[1])
+        self.runner.git("tag", "-d", "v1.0.0")
+        self.github.ci_result = "success"
+        self.github.no_release = False
+        code, output = self.invoke()
+        self.assertEqual(0, code, output)
+        self.assertIn("archived the abandoned attempt receipt", output)
+        self.assertEqual("passed", self.receipt()["verification"])
+        self.assertNotIn("outcome", self.receipt())
+        releases = coordinator._state_path(self.root, "v1.0.0").parent.parent
+        archived = [p for p in releases.iterdir() if p.name.startswith("v1.0.0.abandoned-")]
+        self.assertEqual(1, len(archived))
+        old = json.loads((archived[0] / "state.json").read_text())
+        self.assertEqual("abandoned", old["outcome"]["status"])
+        self.assertEqual(2, self.runner.pushes)
+
+    def test_abandon_refuses_a_published_release_and_misplaced_reasons(self):
+        self.assertIn("accepted only by release abandon", self.invoke("plan", reason="x")[1])
+        self.assertEqual(0, self.invoke()[0])
+        code, output = self.invoke("abandon", reason="mistake")
+        self.assertEqual(2, code, output)
+        self.assertIn("cannot be abandoned", output)
+        self.assertNotIn("outcome", self.receipt())
+
+    def test_abandon_refuses_while_a_release_or_draft_exists_without_the_tag(self):
+        self.github.draft = True
+        self.assertEqual(3, self.invoke()[0])
+        subprocess.run(
+            ["git", "tag", "-d", "v1.0.0"], cwd=self.server, check=True, capture_output=True
+        )
+        self.github.orphan_release = True
+        code, output = self.invoke("abandon", reason="x")
+        self.assertEqual(2, code, output)
+        self.assertIn("a release or draft exists for v1.0.0", output)
+        self.assertEqual("draft", self.receipt()["publication"])
+        self.assertNotIn("outcome", self.receipt())
 
 
 class BackendTests(unittest.TestCase):
