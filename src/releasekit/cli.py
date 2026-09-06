@@ -162,6 +162,15 @@ def _protect(arguments: argparse.Namespace) -> int:
             return 1
         arguments.result.data["guard"] = "valid"
         print("relkit protect: owner pre-push guard is installed")
+        if protection.outdated_template(root):
+            message = (
+                "the installed guard is an older release-kit template pinning the current "
+                "inputs; run `relkit protect install` to adopt the current one"
+            )
+            arguments.result.warnings.append(
+                {"code": "guard_template_outdated", "message": message}
+            )
+            print(f"relkit protect: {message}")
         return 0
     try:
         plan = protection.install_plan(root)

@@ -20,6 +20,7 @@ from mcp.types import ElicitResult
 
 from releasekit import __version__, distribution
 from releasekit_mcp.bridge import Bridge
+from releasekit_mcp.projects import Projects
 
 ROOT = Path(__file__).resolve().parents[2]
 SOURCE = ROOT / "src"
@@ -388,9 +389,47 @@ class BridgeTests(Fixture):
             Bridge(self.root, "0" * 64)
         with (
             patch.dict(os.environ, {"GIT_DIR": str(self.root / ".git")}),
-            self.assertRaisesRegex(ValueError, "GIT_"),
+            self.assertRaisesRegex(ValueError, "GIT_DIR"),
         ):
             Bridge(self.root, self.digest)
+
+    def test_an_ordinary_git_variable_is_not_a_reason_to_refuse_to_start(self):
+        # GIT_SSH_COMMAND and friends describe how Git talks to its operator; they
+        # do not redirect the repository, and refusing them rejects normal machines.
+        with patch.dict(
+            os.environ,
+            {"GIT_SSH_COMMAND": "ssh -i /dev/null", "GIT_PAGER": "cat", "GIT_ASKPASS": "true"},
+        ):
+            self.assertEqual(self.root, Bridge(self.root, self.digest).root)
+
+    def test_a_checkout_git_refuses_is_reported_instead_of_raised(self):
+        outside = tempfile.TemporaryDirectory()
+        self.addCleanup(outside.cleanup)
+        broken = Path(outside.name).resolve() / "broken"
+        (broken / ".git").mkdir(parents=True)
+
+        with self.assertRaisesRegex(ValueError, "git could not identify the bound checkout"):
+            Bridge(broken, self.digest)
+
+    def test_the_reviewed_binding_covers_the_publishing_workflow(self):
+        workflow = self.root / ".github/workflows/release.yml"
+        workflow.parent.mkdir(parents=True)
+        workflow.write_text("on: push\njobs:\n  publish:\n    runs-on: ubuntu-latest\n")
+        (self.root / "relkit.toml").write_text(
+            POLICY + "\n"
+            '[release]\nrepository = "example/project"\n'
+            'workflow = ".github/workflows/release.yml"\nrequired_jobs = ["publish"]\n'
+            'version_file = "VERSION"\nversion_pattern = "^(.+)$"\n'
+            'assets = ["example-{version}.zip"]\nchecks = [["python", "check.py"]]\n'
+            'smoke = [["python", "smoke.py"]]\nsmoke_platforms = ["linux", "darwin", "win32"]\n'
+        )
+        bridge = Bridge(self.root, self.digest)
+
+        review = Projects.review(bridge)
+
+        self.assertIn(".github/workflows/release.yml", review["inputs"])
+        workflow.write_text(workflow.read_text() + "  upload:\n    runs-on: ubuntu-latest\n")
+        self.assertNotEqual(review, Projects.review(bridge))
 
     def test_hardlink_output_is_not_overwritten(self):
         original = self.root / "original.txt"

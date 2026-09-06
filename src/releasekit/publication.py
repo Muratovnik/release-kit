@@ -53,8 +53,18 @@ def run(
             result.error("check_error", error)
             print(f"relkit audit: {error}", file=sys.stderr)
             return 2
-        if changes:
-            message = "history audit requires a clean worktree; use --staged before committing"
+        # An untracked file is scanned by the worktree pass and cannot reach a
+        # remote; only a tracked difference makes the audited tree disagree with the
+        # commits under audit. Refusing every push over an unrelated scratch file is
+        # how an owner learns to pass --no-verify, which costs the whole gate.
+        tracked = sorted(item for item in changes if not item.startswith("??"))
+        result.data["untracked_present"] = len(changes) - len(tracked)
+        if tracked:
+            listed = ", ".join(tracked[:5]) + (", ..." if len(tracked) > 5 else "")
+            message = (
+                f"history audit requires a clean tracked tree ({len(tracked)} change(s): "
+                f"{listed}); commit or set them aside, or use --staged before committing"
+            )
             result.error("check_failed", message)
             print(f"relkit audit: {message}", file=sys.stderr)
             return 1

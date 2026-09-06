@@ -533,7 +533,28 @@ class PathTests(unittest.TestCase):
             subprocess.run(["git", "add", "fixture.png"], cwd=root, check=True)
             report = audit.scan(root, forbid_png_metadata=True, staged=True)
 
-        self.assertEqual(["fixture.png: png-metadata"], report.failures)
+        self.assertEqual(["fixture.png: png-metadata (PNG tEXt chunk)"], report.failures)
+
+    def test_a_truncated_png_says_so_instead_of_naming_a_metadata_chunk(self) -> None:
+        # The owner action differs: one file has metadata to strip, the other is
+        # damaged and nothing can be concluded about it.
+        with _repository({"placeholder.md": "x\n"}) as name:
+            root = Path(name)
+            (root / "fixture.png").write_bytes(
+                b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x10\x00IDAT" + b"\x00" * 8
+            )
+            subprocess.run(["git", "add", "fixture.png"], cwd=root, check=True)
+            report = audit.scan(root, forbid_png_metadata=True, staged=True)
+
+        self.assertEqual(
+            [
+                (
+                    "fixture.png: png-metadata (PNG chunk stream is truncated; "
+                    "metadata cannot be ruled out)"
+                )
+            ],
+            report.failures,
+        )
 
 
 class SemanticPublicationTests(unittest.TestCase):

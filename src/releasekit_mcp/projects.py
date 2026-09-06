@@ -35,13 +35,20 @@ class Projects:
         bridge.check()
         policy_stamp = bridge.stamp(bridge.root / "relkit.toml")
         try:
-            policy = config.load(bridge.root, required=False).exposure.betterleaks_config
+            policy = config.load(bridge.root, required=False)
         except config.ConfigError as error:
             raise ValueError(str(error)) from error
-        inputs = {
-            name: bridge.stamp(bridge.root / name)
-            for name in ("relkit.toml", policy, "AGENTS.md", ".git/hooks/pre-push")
-        }
+        names = [
+            "relkit.toml",
+            policy.exposure.betterleaks_config,
+            "AGENTS.md",
+            ".git/hooks/pre-push",
+        ]
+        if policy.release is not None:
+            # The workflow is what publishes, and the owner guard pins it. A change
+            # to it must expire this binding exactly like a change to the policy.
+            names.append(policy.release.workflow)
+        inputs = {name: bridge.stamp(bridge.root / name) for name in dict.fromkeys(names)}
         if inputs["relkit.toml"] != policy_stamp:
             raise ValueError("project inputs changed during review; inspect again")
         return {

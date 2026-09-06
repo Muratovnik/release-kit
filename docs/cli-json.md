@@ -64,6 +64,8 @@ update; it must not be interpreted as proof that no side effects occurred.
   `path`, `kind`, `detail`; plus string arrays `stale`, `unreadable`, `excluded`.
 - `audit`: the same exposure report, `scope` (`worktree`, `staged`, `history`),
   and `engines` mapping names to native exit codes or `null` when not completed.
+  History scope adds `untracked_present`, the number of untracked entries the
+  verdict ignored; a tracked difference is a failure and names the entries.
   Native engine diagnostics are not presented as invented structured findings.
   The top-level exit also includes history, guard and overlay failures.
 - `notes`: validated `notes` including final newline, requested `version`, and
@@ -72,6 +74,9 @@ update; it must not be interpreted as proof that no side effects occurred.
 - `overlay`: `verified_mounts` counts mounts checked, `skipped` names out-of-scope
   mounts. Inspect `errors` before treating checked mounts as valid.
 - `protect`: `guard` (`valid`, `invalid`, `installed`), with `path` on installation.
+  A valid guard written by an older release-kit adds a `guard_template_outdated`
+  warning; its pins are still enforced and `protect install` adopts the current
+  template.
   `install --dry-run` returns `data.plan` with exact before/after hook hashes,
   guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
   with `install --plan-hash HASH` to reject drift. Preview does not write a hook.

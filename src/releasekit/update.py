@@ -57,11 +57,11 @@ def _safe_path(path: Path, root: Path) -> Path:
 
 
 def _repository(root: Path) -> Path:
-    if any(
-        os.environ.get(name)
-        for name in ("GIT_DIR", "GIT_WORK_TREE", "GIT_COMMON_DIR", "GIT_INDEX_FILE")
-    ):
-        raise UpdateError("unset Git directory/index environment overrides before updating")
+    if redirected := storage.redirected_git():
+        raise UpdateError(
+            "unset Git directory/index environment overrides before updating: "
+            + ", ".join(redirected)
+        )
     top = Path(_run(["git", "rev-parse", "--show-toplevel"], root).strip()).resolve()
     if top != root:
         raise UpdateError("--root must name the repository root, not a subdirectory")
@@ -255,6 +255,21 @@ def _check_inputs(root: Path, inputs: dict[str, str]) -> None:
             )
 
 
+def _guard_of_record(root: Path, receipt: dict[str, object]) -> bool:
+    """Whether the installed hook is an intact guard pinning this update's artifact.
+
+    A receipt written before 0.15.0 does not name the bytes it wrote, and recomputing
+    the guard is not an answer: a release that adds a guarded input or changes the
+    template makes the current hook differ from the installed one, which is exactly
+    the release being rolled back.
+    """
+    try:
+        recorded = protection.recorded_digests(root)
+    except (protection.ProtectionError, config.ConfigError, OSError, UnicodeError):
+        return False
+    return recorded.get(PROJECTION) == receipt["new_sha256"]
+
+
 def _restore_targets(
     root: Path, git_dir: Path, receipt: dict[str, object]
 ) -> list[tuple[Path, bytes, int]]:
@@ -279,10 +294,16 @@ def _restore_targets(
         old_hook = _safe_path(backup / "pre-push", root).read_bytes()
         if protection._sha256(backup / "pre-push") != receipt["guard_sha256"]:
             raise UpdateError("guard backup has changed")
-        # Pending transactions may have installed the deterministic refreshed hook
-        # before writing the receipt's completed state.
-        expected = protection.hook_content(root).encode()
-        if not hook.exists() or hook.read_bytes() not in (old_hook, expected):
+        # The receipt pins the exact bytes this transaction installs, and rollback
+        # must accept them. Recomputing the guard is not an alternative: a release
+        # that adds a guarded input or changes the template makes the current hook
+        # differ from the installed one, which is precisely what is being undone.
+        accepted = {receipt["guard_sha256"], hashlib.sha256(old_hook).hexdigest()}
+        if isinstance(receipt.get("new_guard_sha256"), str):
+            accepted.add(receipt["new_guard_sha256"])
+        if not hook.exists() or (
+            protection._sha256(hook) not in accepted and not _guard_of_record(root, receipt)
+        ):
             raise UpdateError("guard has changed since the update; refusing rollback")
     elif hook.exists():
         raise UpdateError("a guard appeared since the update; refusing rollback")
@@ -531,6 +552,7 @@ def run(
                 "projection_mode": stat.S_IMODE(projection.stat().st_mode),
                 "guard_mode": hook_mode,
                 "guard_sha256": protection._sha256(hook) if old_hook is not None else None,
+                "new_guard_sha256": hashlib.sha256(new_hook).hexdigest() if new_hook else None,
                 "inputs": inputs,
             }
             _save_receipt(receipt_path, receipt)

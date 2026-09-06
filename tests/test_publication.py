@@ -126,6 +126,35 @@ class HistoryScopeTests(unittest.TestCase):
         secrets.assert_not_called()
         links.assert_not_called()
 
+    def test_an_untracked_scratch_file_does_not_block_the_history_verdict(self) -> None:
+        # Field friction: an unrelated untracked file blocked every push, and the
+        # only way through was --no-verify, which switches the whole gate off.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            settings = config.Config(root=root)
+            with (
+                patch.object(publication.config_module, "load", return_value=settings),
+                patch.object(publication.audit, "scan", return_value=Report()),
+                patch.object(publication.audit, "worktree_changes", return_value=("?? notes.md",)),
+                patch.object(publication.audit, "history_failures", return_value=[]) as history,
+                patch.object(publication.engines, "betterleaks", return_value=0),
+                patch.object(publication.engines, "lychee", return_value=0),
+                redirect_stdout(StringIO()),
+                redirect_stderr(StringIO()),
+            ):
+                result = publication.run(
+                    root,
+                    history=True,
+                    staged=False,
+                    strict=False,
+                    owner_mode=False,
+                    require_overlay=False,
+                    allow_download=False,
+                )
+
+        self.assertEqual(0, result)
+        history.assert_called_once()
+
 
 class SemanticWiringTests(unittest.TestCase):
     @staticmethod

@@ -231,19 +231,10 @@ class GitHub:
 
 def repository(runner: Runner) -> None:
     root = storage.checked(runner.root)
-    if any(
-        os.environ.get(name)
-        for name in (
-            "GIT_DIR",
-            "GIT_WORK_TREE",
-            "GIT_COMMON_DIR",
-            "GIT_INDEX_FILE",
-            "GIT_OBJECT_DIRECTORY",
-            "GIT_ALTERNATE_OBJECT_DIRECTORIES",
-        )
-    ):
+    if redirected := storage.redirected_git():
         raise ReleaseError(
-            "unset Git directory/index/object overrides before coordinating a release"
+            "unset Git directory/index/object overrides before coordinating a release: "
+            + ", ".join(redirected)
         )
     if Path(runner.git("rev-parse", "--show-toplevel")).resolve() != root:
         raise ReleaseError("--root must name the repository root")
@@ -318,6 +309,26 @@ def local_tags(runner: Runner) -> dict[str, str]:
         line.split("\t", 1)
         for line in runner.git(
             "for-each-ref", "--format=%(refname)\t%(objectname)", "refs/tags"
+        ).splitlines()
+    )
+
+
+def tag_commits(runner: Runner) -> dict[str, str]:
+    """Every tag's commit, peeled in one process instead of one per tag."""
+    answer: dict[str, str] = {}
+    for line in runner.git(
+        "for-each-ref", "--format=%(refname)\t%(objectname)\t%(*objectname)", "refs/tags"
+    ).splitlines():
+        ref, object_id, peeled = line.split("\t")
+        answer[ref] = peeled or object_id
+    return answer
+
+
+def merged_tags(runner: Runner, commit: str) -> set[str]:
+    """Tags reachable from the commit; Git peels annotated tags for this filter."""
+    return set(
+        runner.git(
+            "for-each-ref", "--format=%(refname)", "--merged", commit, "refs/tags"
         ).splitlines()
     )
 

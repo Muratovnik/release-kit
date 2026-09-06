@@ -60,18 +60,17 @@ def _guarded_digests(root: Path) -> dict[str, str]:
     return answer
 
 
-def hook_content(root: Path, *, digests: dict[str, str] | None = None) -> str:
-    expected = repr(_guarded_digests(root) if digests is None else digests)
-    return f"""#!/bin/sh
-{MARKER}
-root=$(git rev-parse --show-toplevel) || exit 2
-python - "$root" <<'PY' || exit 2
-import hashlib
+# The verification body is identical in every template version: only the shell that
+# selects an interpreter has changed. Keeping it in one place keeps the historical
+# templates below honest, and they must never be edited again.
+_HOOK_BODY_HEAD = """import hashlib
 import pathlib
 import sys
 
 root = pathlib.Path(sys.argv[1])
-expected = {expected}
+expected = """
+
+_HOOK_BODY_TAIL = """
 for relative, digest in expected.items():
     path = root / relative
     try:
@@ -80,14 +79,65 @@ for relative, digest in expected.items():
         observed = ""
     if observed != digest:
         print(
-            f"release-kit guarded input changed: {{relative}}; "
+            f"release-kit guarded input changed: {relative}; "
             "review it and run `relkit protect install`",
             file=sys.stderr,
         )
         raise SystemExit(2)
-PY
-exec python "$root/{PROJECTION_PATH}" audit --history --owner
 """
+
+
+def _hook_v1(expected: str) -> str:
+    """Through 0.14.0. Frozen so an older installed guard is still recognized."""
+    return (
+        "#!/bin/sh\n"
+        f"{MARKER}\n"
+        "root=$(git rev-parse --show-toplevel) || exit 2\n"
+        "python - \"$root\" <<'PY' || exit 2\n"
+        + _HOOK_BODY_HEAD
+        + expected
+        + _HOOK_BODY_TAIL
+        + "PY\n"
+        f'exec python "$root/{PROJECTION_PATH}" audit --history --owner\n'
+    )
+
+
+def _hook_v2(expected: str) -> str:
+    """Current. `python` is not on every PATH, and a Windows Store alias is not an
+    interpreter: probe the candidates instead of failing the push with a shell error
+    that names neither release-kit nor the missing runtime."""
+    return (
+        "#!/bin/sh\n"
+        f"{MARKER}\n"
+        "root=$(git rev-parse --show-toplevel) || exit 2\n"
+        "relkit_python=\n"
+        "for relkit_candidate in python python3 py; do\n"
+        '  if command -v "$relkit_candidate" >/dev/null 2>&1 &&'
+        ' "$relkit_candidate" -c "" >/dev/null 2>&1; then\n'
+        "    relkit_python=$relkit_candidate\n"
+        "    break\n"
+        "  fi\n"
+        "done\n"
+        'if [ -z "$relkit_python" ]; then\n'
+        '  echo "release-kit guard needs a working python, python3 or py on PATH" >&2\n'
+        "  exit 2\n"
+        "fi\n"
+        '"$relkit_python" - "$root" <<\'PY\' || exit 2\n'
+        + _HOOK_BODY_HEAD
+        + expected
+        + _HOOK_BODY_TAIL
+        + "PY\n"
+        f'exec "$relkit_python" "$root/{PROJECTION_PATH}" audit --history --owner\n'
+    )
+
+
+# Newest first. An installed guard from any of these is intact; only the newest is
+# ever written, so `protect install` migrates a repository forward.
+HOOK_TEMPLATES = (_hook_v2, _hook_v1)
+
+
+def hook_content(root: Path, *, digests: dict[str, str] | None = None) -> str:
+    return _hook_v2(repr(_guarded_digests(root) if digests is None else digests))
 
 
 def _git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
@@ -164,9 +214,8 @@ def _dispatcher_problem(path: Path) -> str | None:
     return None
 
 
-def recorded_digests(root: Path) -> dict[str, str]:
-    """Read only a complete known guard template, never evaluate its embedded code."""
-    text = hook_path(root).read_text(encoding="utf-8").replace("\r\n", "\n")
+def _recorded(text: str) -> tuple[dict[str, str], bool] | None:
+    """The pins of an intact known template, and whether it is the current one."""
     lines = [
         line.removeprefix("expected = ")
         for line in text.splitlines()
@@ -176,18 +225,33 @@ def recorded_digests(root: Path) -> dict[str, str]:
         recorded = ast.literal_eval(lines[0]) if len(lines) == 1 else None
     except (ValueError, SyntaxError):
         recorded = None
-    if (
-        not isinstance(recorded, dict)
-        or not all(
-            isinstance(path, str)
-            and isinstance(digest, str)
-            and re.fullmatch(r"[0-9a-f]{64}", digest)
-            for path, digest in recorded.items()
-        )
-        or text != hook_content(root, digests=recorded)
+    if not isinstance(recorded, dict) or not all(
+        isinstance(path, str) and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+        for path, digest in recorded.items()
     ):
+        return None
+    expected = repr(recorded)
+    for index, template in enumerate(HOOK_TEMPLATES):
+        if template(expected) == text:
+            return recorded, index == 0
+    return None
+
+
+def recorded_digests(root: Path) -> dict[str, str]:
+    """Read only a complete known guard template, never evaluate its embedded code."""
+    text = hook_path(root).read_text(encoding="utf-8").replace("\r\n", "\n")
+    if (found := _recorded(text)) is None:
         raise ProtectionError("pre-push hook is not an intact supported release-kit guard template")
-    return recorded
+    return found[0]
+
+
+def outdated_template(root: Path) -> bool:
+    """An intact guard written by an older release-kit; its pins are still enforced."""
+    try:
+        found = _recorded(hook_path(root).read_text(encoding="utf-8").replace("\r\n", "\n"))
+    except (ProtectionError, OSError, UnicodeError):
+        return False
+    return found is not None and not found[1]
 
 
 def digest_changes(root: Path) -> list[str]:
@@ -214,6 +278,11 @@ def problem(root: Path) -> str | None:
             changes = digest_changes(root)
         except (ProtectionError, OSError, UnicodeError) as error:
             return f"owner pre-push guard has drifted: {path}; {error}; manual owner review is required"
+        if not changes:
+            # An intact older template pinning exactly the current inputs enforces the
+            # same thing the current one does. Failing every push and every update on
+            # the release that changes the template is how a gate gets switched off.
+            return None
         return (
             f"owner pre-push guard has drifted: {path}\n  "
             + "\n  ".join(changes)

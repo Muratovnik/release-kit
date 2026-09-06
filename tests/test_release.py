@@ -315,8 +315,31 @@ class ReleaseTests(ReleaseFixture):
 
     def test_local_remote_tag_drift_is_not_repaired(self):
         self.runner.git("tag", "v0.1.0")
-        self.assertIn("tags disagree", self.invoke()[1])
+        output = self.invoke()[1]
+        self.assertIn("tags disagree", output)
+        self.assertIn("v0.1.0", output, "the owner has to be told which tag to reconcile")
         self.assertEqual(0, self.runner.pushes)
+
+    def test_a_tag_outside_the_stable_line_is_not_a_reason_to_refuse(self):
+        # Field friction: any personal or pre-release local tag made planning refuse,
+        # and the only remedy was deleting somebody's tag.
+        self.runner.git("tag", "scratch/before-refactor")
+        self.runner.git("tag", "--annotate", "v1.0.0-rc1", "--message", "candidate")
+
+        code, output = self.invoke()
+
+        self.assertEqual(0, code, output)
+
+    def test_a_stable_tag_outside_the_release_ancestry_still_stops_the_plan(self):
+        self.runner.git("checkout", "-q", "--detach", "HEAD")
+        (self.root / "divergent.txt").write_text("side branch")
+        self.commit()
+        self.runner.git("tag", "--annotate", "v0.9.0", "--message", "Sideways release")
+        self.runner.git("push", "origin", "refs/tags/v0.9.0:refs/tags/v0.9.0")
+        self.runner.git("checkout", "-q", "-")
+
+        self.assertIn("outside this release ancestry", self.invoke()[1])
+        self.assertEqual(1, self.runner.pushes, "only this test's own tag push happened")
 
     def test_preexisting_tag_or_draft_not_adopted(self):
         self.runner.git("tag", "v1.0.0")

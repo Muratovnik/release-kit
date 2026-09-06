@@ -27,10 +27,18 @@ from .backend import (
     ancestor,
     clean,
     local_tags,
+    merged_tags,
     remote_identity,
     remote_refs,
     repository,
+    tag_commits,
 )
+
+STABLE_TAG = re.compile(r"refs/tags/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
+
+CI_POLL_SECONDS = 5
+CI_POLL_CEILING_SECONDS = 30.0
+CI_RECONCILE_SECONDS = 60.0
 
 
 def fingerprint(value: object) -> str:
@@ -72,33 +80,37 @@ def source_tree(runner: Runner, sha: str) -> list[tuple[str, str, str]]:
 def previous_tag(
     runner: Runner, refs: dict[str, str], version: str, sha: str, first: str, target: str
 ) -> dict | None:
-    local = local_tags(runner)
-    remote = {
-        ref: oid
-        for ref, oid in refs.items()
-        if ref.startswith("refs/tags/") and not ref.endswith("^{}")
-    }
+    # Only the stable release line is this command's business. A personal local tag
+    # or somebody else's remote tag is not a reason to refuse to plan a release.
+    local = {ref: oid for ref, oid in local_tags(runner).items() if STABLE_TAG.fullmatch(ref)}
+    remote = {ref: oid for ref, oid in refs.items() if STABLE_TAG.fullmatch(ref)}
     local.pop(f"refs/tags/{target}", None)
     remote.pop(f"refs/tags/{target}", None)
     if local != remote:
+        differing = sorted(
+            ref.removeprefix("refs/tags/")
+            for ref in local.keys() | remote.keys()
+            if local.get(ref) != remote.get(ref)
+        )
         raise ReleaseError(
-            "local/remote tags disagree; review and fetch explicitly (no automatic repair)"
+            "local and remote stable release tags disagree ("
+            + ", ".join(differing)
+            + "); review and fetch explicitly (no automatic repair)"
         )
     candidates = []
     current = tuple(map(int, version.split(".")))
+    commits = tag_commits(runner) if local else {}
+    reachable = merged_tags(runner, sha) if local else set()
     for ref, oid in local.items():
-        if not re.fullmatch(r"refs/tags/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", ref):
-            continue
         tag = ref.removeprefix("refs/tags/")
         number = tuple(map(int, tag[1:].split(".")))
-        commit = runner.git("rev-parse", f"{ref}^{{commit}}")
-        if not ancestor(runner, commit, sha):
+        if ref not in reachable:
             raise ReleaseError(
                 f"stable tag {tag} is outside this release ancestry; explicit reconciliation is required"
             )
         if number >= current:
             raise ReleaseError(f"version must advance the existing stable tag {tag}")
-        candidates.append((number, {"tag": tag, "oid": oid, "sha": commit}))
+        candidates.append((number, {"tag": tag, "oid": oid, "sha": commits[ref]}))
     if not candidates:
         if changelog.normalize(first) != version:
             raise ReleaseError(
@@ -139,6 +151,7 @@ def notes_for(
     if not previous and urls and urls != [expected]:
         raise ReleaseError("first release heading points to the wrong tag/repository")
     section = ""
+    included: set[str] | None = None
     for line in lines[1:]:
         if line.startswith("### "):
             section = line[4:].strip()
@@ -159,10 +172,19 @@ def notes_for(
             ):
                 raise ReleaseError("changelog commit link must belong to the configured repository")
             commit = runner.git("rev-parse", "--verify", f"{target[1]}^{{commit}}")
-            if not commit.startswith(match[1].lower()) or not ancestor(runner, commit, sha):
+            if not commit.startswith(match[1].lower()):
                 raise ReleaseError("changelog references a commit outside the release")
-            if previous and ancestor(runner, commit, previous["sha"]):
-                raise ReleaseError("changelog change was already included in the previous release")
+            if included is None and previous:
+                # One walk decides every link in the entry: two merge-base processes
+                # per referenced commit is the slowest part of planning a release.
+                included = set(runner.git("rev-list", sha, "--not", previous["sha"]).split())
+            if included is None or commit not in included:
+                if not ancestor(runner, commit, sha):
+                    raise ReleaseError("changelog references a commit outside the release")
+                if previous and ancestor(runner, commit, previous["sha"]):
+                    raise ReleaseError(
+                        "changelog change was already included in the previous release"
+                    )
     return entry.replace("\r\n", "\n").rstrip("\n")
 
 
@@ -807,8 +829,14 @@ def _ci(
     value = state["plan"]
     print("relkit release: waiting for the planned tag workflow", flush=True)
     _stage(path, state, "ci")
+    # Full reconciliation costs about a dozen Git and GitHub calls. It is the right
+    # check on entry, on completion and periodically, and a waste on every poll of a
+    # run that is still going: an hour of five-second reconciles is thousands of API
+    # requests against GitHub's secondary rate limits.
+    pushed, published = _reconcile(runner, github, state)
+    reconciled = time.monotonic()
+    delay = float(CI_POLL_SECONDS)
     while True:
-        pushed, published = _reconcile(runner, github, state)
         if not pushed:
             raise ReleaseError("tag disappeared while waiting for CI")
         matches = []
@@ -843,6 +871,10 @@ def _ci(
             state["ci"] = identity
             _save(path, state)
             if run["status"] == "completed":
+                pushed, published = _reconcile(runner, github, state)
+                reconciled = time.monotonic()
+                if not pushed:
+                    raise ReleaseError("tag disappeared while waiting for CI")
                 if run["conclusion"] != "success":
                     raise ReleaseError(
                         f"CI failed ({run['conclusion']}); release publication is {state['publication']}"
@@ -867,7 +899,11 @@ def _ci(
         _save(path, state)
         if time.monotonic() >= deadline:
             raise Pending("tag CI/publication is still pending")
-        time.sleep(min(5, max(0, deadline - time.monotonic())))
+        time.sleep(min(delay, max(0, deadline - time.monotonic())))
+        delay = min(CI_POLL_CEILING_SECONDS, delay * 1.5)
+        if time.monotonic() - reconciled >= CI_RECONCILE_SECONDS:
+            pushed, published = _reconcile(runner, github, state)
+            reconciled = time.monotonic()
 
 
 def _asset_identity(asset: dict) -> dict:
@@ -917,16 +953,40 @@ def _checksums(value: dict, directory: Path, assets: list[dict]) -> None:
         raise ReleaseError("checksum manifest does not match every other planned asset")
 
 
+def _blob_sizes(runner: Runner, sha: str) -> dict[str, int]:
+    sizes: dict[str, int] = {}
+    for record in runner.call(["git", "ls-tree", "-r", "-z", "--long", "--full-tree", sha]).split(
+        "\0"
+    ):
+        if not record:
+            continue
+        fields = record.split("\t", 1)[0].split()
+        if len(fields) == 4 and fields[1] == "blob":
+            sizes[fields[2]] = int(fields[3])
+    return sizes
+
+
 def _snapshot(runner: Runner, value: dict, workspace: storage.Workspace) -> Path:
+    from ..exposure.audit import _batch_objects, _history_batches
+
     snapshot = workspace.path / "source"
     snapshot.mkdir()
+    targets: dict[str, list[tuple[Path, str]]] = {}
     for mode, oid, name in source_tree(runner, value["sha"]):
         target = storage.inside(snapshot, snapshot / name)
         target.parent.mkdir(parents=True, exist_ok=True)
-        # Bypass archive attributes and checkout filters: smoke reads exact blobs.
-        runner.call(["git", "cat-file", "blob", oid], binary=True, output=target)
-        target.chmod(0o755 if mode == "100755" else 0o644)
-        workspace.remember(target)
+        targets.setdefault(oid, []).append((target, mode))
+    sizes = _blob_sizes(runner, value["sha"])
+    # Bypass archive attributes and checkout filters: smoke reads exact blobs. One
+    # process per file is minutes of spawn overhead on a repository of any size, so
+    # read them in batches bounded by bytes rather than by file count.
+    for batch in _history_batches([(oid, sizes.get(oid, 0)) for oid in targets]):
+        for oid, payload in _batch_objects(runner.root, batch, expected_type="blob"):
+            for target, mode in targets[oid]:
+                target.write_bytes(payload)
+                target.chmod(0o755 if mode == "100755" else 0o644)
+                # Identity is recorded once the file is final; cleanup compares it.
+                workspace.remember(target)
     return snapshot
 
 
@@ -1139,7 +1199,6 @@ def run(
     state = None
     state_path = None
     lock = None
-    lock_owned = False
     workspace = None
     try:
         root = storage.checked(root)
@@ -1182,7 +1241,6 @@ def run(
             return 0
         if action == "abandon":
             lock = _acquire_lock(root, tag)
-            lock_owned = True
             path = storage.checked(_state_path(root, tag))
             saved = read_state(runner, path, tag, same_version=False)
             _abandon(runner, github, saved, path, reason.strip())
@@ -1199,7 +1257,6 @@ def run(
                 "run/resume require --publish after reviewing release plan; plan is read-only"
             )
         lock = _acquire_lock(root, tag)
-        lock_owned = True
         state_path = storage.checked(_state_path(root, tag))
         if action == "resume":
             saved = read_state(runner, state_path, tag, same_version=False)
@@ -1208,7 +1265,10 @@ def run(
                     f"{tag} was recorded as {outcome['status']} at {outcome['at']}; "
                     "start a new release run instead of resuming"
                 )
-            saved = read_state(runner, state_path, tag, same_version=True)
+            if saved["plan"]["tool_version"] != __version__:
+                raise ReleaseError(
+                    "saved plan identity/version is invalid; use the same release-kit version and checkout"
+                )
             value = saved["plan"]
             state = saved
             validate_saved_plan(runner, value)
@@ -1234,7 +1294,7 @@ def run(
                 "cleanup": "not-run",
             }
             _save(state_path, state)
-        if plan_hash and plan_hash != fingerprint(value):
+        if action == "resume" and plan_hash and plan_hash != fingerprint(value):
             raise ReleaseError("supplied plan hash differs from the saved plan")
         if sys.platform not in value["settings"]["smoke_platforms"]:
             raise ReleaseError("resume host is not declared for the downloaded-application smoke")
@@ -1336,7 +1396,7 @@ def run(
     finally:
         if action == "status" and runner is not None:
             runner.log = original_log
-        if lock_owned and lock is not None:
+        if lock is not None:
             try:
                 storage.checked(lock).unlink()
             except (OSError, storage.StorageError):

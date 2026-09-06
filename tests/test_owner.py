@@ -306,6 +306,50 @@ class ProtectionTests(unittest.TestCase):
             with self.assertRaisesRegex(protection.ProtectionError, "not installed at"):
                 protection.install(root)
 
+    def test_the_guard_resolves_an_interpreter_instead_of_assuming_python(self) -> None:
+        # Field case: a push failed with a bare shell error on a host that ships
+        # python3 but no python. The hook has to name the missing runtime itself.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+
+            content = protection.install(root).read_text(encoding="utf-8")
+
+            self.assertIn("for relkit_candidate in python python3 py; do", content)
+            self.assertIn("release-kit guard needs a working python", content)
+            self.assertNotIn("\nexec python ", content)
+            self.assertNotIn('\npython - "$root"', content)
+
+    def test_an_intact_older_template_is_refreshable_rather_than_a_failing_push(self) -> None:
+        # A release that changes the template must not turn every adopter's push and
+        # update into a failure: the older guard pins the same inputs and still runs.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            path = protection.install(root)
+            pins = protection.recorded_digests(root)
+            path.write_text(protection._hook_v1(repr(pins)), encoding="utf-8", newline="\n")
+
+            self.assertIsNone(protection.problem(root))
+            self.assertTrue(protection.outdated_template(root))
+            self.assertEqual(pins, protection.recorded_digests(root))
+            self.assertEqual([], protection.digest_changes(root))
+
+            protection.install(root)
+
+            self.assertFalse(protection.outdated_template(root))
+            self.assertIsNone(protection.problem(root))
+
+    def test_a_stale_pin_in_an_older_template_is_still_reported_as_drift(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            path = protection.install(root)
+            pins = dict(protection.recorded_digests(root), **{"relkit.toml": "0" * 64})
+            path.write_text(protection._hook_v1(repr(pins)), encoding="utf-8", newline="\n")
+
+            self.assertIn("drifted", protection.problem(root) or "")
+
 
 if __name__ == "__main__":
     unittest.main()

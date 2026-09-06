@@ -36,6 +36,15 @@ before starting the adapter. A pinned hash detects drift, not malicious code in
 an initially trusted project. Project commands and arbitrary shell commands are
 not MCP tools. Existing hosted releases are never mutated by adapter tests.
 
+The adapter refuses to start with an inherited Git variable that would point Git
+at another repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
+`GIT_INDEX_FILE`, `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY`,
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`). Variables that only describe how Git talks
+to its operator, such as `GIT_SSH_COMMAND` or `GIT_ASKPASS`, are left alone. A
+reviewed binding stamps `relkit.toml`, the Betterleaks policy, `AGENTS.md`, the
+installed pre-push hook and, when `[release]` is configured, the tag workflow;
+changing any of them expires the binding.
+
 Primary references: [official SDK](https://github.com/modelcontextprotocol/python-sdk),
 [SDK installation](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/get-started/installation.md),
 [MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).

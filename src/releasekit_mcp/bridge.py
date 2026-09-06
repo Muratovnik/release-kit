@@ -2,7 +2,6 @@
 
 import hashlib
 import json
-import os
 import re
 import subprocess
 from dataclasses import dataclass
@@ -36,19 +35,27 @@ class Bridge:
         self.root = storage.checked(root)
         if not self.root.is_dir() or not (self.root / ".git").is_dir():
             raise ValueError("bind an ordinary checkout with its own .git directory")
-        if any(
-            key.startswith("GIT_") and key not in {"GIT_PAGER", "GIT_TERMINAL_PROMPT"}
-            for key in os.environ
-        ):
-            raise ValueError("remove inherited GIT_* overrides before starting the adapter")
-        found = subprocess.run(
-            ["git", "rev-parse", "--show-toplevel", "--git-common-dir"],
-            cwd=self.root,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=30,
-        ).stdout.splitlines()
+        if redirected := storage.redirected_git():
+            raise ValueError(
+                "remove inherited Git location overrides before starting the adapter: "
+                + ", ".join(redirected)
+            )
+        try:
+            found = subprocess.run(
+                ["git", "rev-parse", "--show-toplevel", "--git-common-dir"],
+                cwd=self.root,
+                capture_output=True,
+                text=True,
+                check=True,
+                timeout=30,
+            ).stdout.splitlines()
+        except (OSError, subprocess.SubprocessError) as error:
+            # A refusing Git (safe.directory, a broken checkout, a timeout) is an
+            # answer the client can act on, not an adapter traceback.
+            detail = (getattr(error, "stderr", "") or "").strip()
+            raise ValueError(f"git could not identify the bound checkout: {detail or error}") from (
+                error
+            )
         if len(found) != 2 or Path(found[0]).resolve() != self.root:
             raise ValueError("project is not the canonical Git checkout root")
         if (self.root / found[1]).resolve() != self.root / ".git":

@@ -160,6 +160,16 @@ the explicit flag above; its artifact attestations must also identify that attem
 Missing/deleted/rewritten objects require owner investigation, not automatic repair.
 Keep the same release-kit version and checkout for an unfinished run.
 
+While CI runs, the coordinator polls the selected workflow run with a backoff from
+5 to 30 seconds and reconciles the full remote state on entry, when the run
+completes and about once a minute in between. Reconciling on every poll would
+spend an hour-long wait against GitHub's secondary rate limits.
+
+Planning compares only the stable `vX.Y.Z` tags between the local checkout and the
+remote, and names the ones that disagree. A personal local tag or a pre-release
+candidate is not a reason to refuse to plan; a stable tag outside the release
+ancestry still is.
+
 `abandon` is the sanctioned end of an attempt that will never publish, for example
 a tag that CI rejected and that the owner then deleted from the remote. It needs
 `--reason`, the repository lock, an absent remote tag and no release or draft; a

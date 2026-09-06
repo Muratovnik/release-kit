@@ -334,7 +334,10 @@ replaces the external dispatcher.
 The repository guard pins SHA-256 for the tracked release-kit projection,
 `relkit.toml`, the configured Betterleaks policy and, once the `[release]`
 coordinator is configured, the tag workflow that publishes, before it executes
-repository-controlled code. A reviewed change to any of those inputs requires an
+repository-controlled code. It resolves `python`, `python3` or `py` rather than
+assuming one of them, and a guard written by an earlier release-kit keeps
+enforcing its pins until `relkit protect install` adopts the current template.
+A reviewed change to any of those inputs requires an
 explicit `update --refresh-guard` (with backup and validation) or `protect install`.
 `--require-overlay` adds the exact link/target/tracking oracle.
 History mode refuses a dirty worktree; use `--staged` while preparing a commit, then

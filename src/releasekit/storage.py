@@ -109,10 +109,29 @@ def identity(path: Path) -> tuple[int, int, int]:
     return info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)
 
 
-def environment(path: Path) -> dict[str, str]:
+# Only these move Git's directory, index or object store. The rest of the GIT_*
+# namespace describes how Git talks to its operator (pager, askpass, ssh command,
+# committer identity); refusing those rejects ordinary workstations for nothing.
+GIT_LOCATION_OVERRIDES = (
+    "GIT_ALTERNATE_OBJECT_DIRECTORIES",
+    "GIT_COMMON_DIR",
+    "GIT_DIR",
+    "GIT_INDEX_FILE",
+    "GIT_NAMESPACE",
+    "GIT_OBJECT_DIRECTORY",
+    "GIT_WORK_TREE",
+)
+
+
+def redirected_git() -> list[str]:
+    """Inherited variables that would silently point Git at another repository."""
+    return sorted(name for name in GIT_LOCATION_OVERRIDES if os.environ.get(name))
+
+
+def confinement(path: Path) -> dict[str, str]:
+    """Point every scratch and cache variable a child may honour at one owned path."""
     local = str(checked(path))
     return {
-        **os.environ,
         **{
             key: local
             for key in (
@@ -127,6 +146,10 @@ def environment(path: Path) -> dict[str, str]:
         "PYTHONDONTWRITEBYTECODE": "1",
         "GH_NO_UPDATE_NOTIFIER": "1",
     }
+
+
+def environment(path: Path) -> dict[str, str]:
+    return {**os.environ, **confinement(path)}
 
 
 def atomic_json(path: Path, value: object) -> None:

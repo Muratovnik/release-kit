@@ -23,7 +23,7 @@ import struct
 import subprocess
 import zipfile
 from collections import Counter
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -231,6 +231,30 @@ def _batch_blobs(root: Path, object_ids: Sequence[str]) -> list[tuple[str, bytes
     return _batch_objects(root, object_ids, expected_type="blob")
 
 
+HISTORY_BATCH_OBJECTS = 128
+HISTORY_BATCH_BYTES = 64 * 1024 * 1024
+
+
+def _history_batches(sized: Sequence[tuple[str, int]]) -> Iterator[list[str]]:
+    """Read history in bounded pieces.
+
+    A fixed object count says nothing about memory: 128 versions of a vendored
+    binary is gigabytes held at once, and the batch then times out on every run
+    with no way for the repository to get past it. Bound the bytes instead; a
+    single blob over the budget is still read, alone.
+    """
+    batch: list[str] = []
+    total = 0
+    for object_id, size in sized:
+        if batch and (len(batch) >= HISTORY_BATCH_OBJECTS or total + size > HISTORY_BATCH_BYTES):
+            yield batch
+            batch, total = [], 0
+        batch.append(object_id)
+        total += size
+    if batch:
+        yield batch
+
+
 def _changed_blob_paths(
     root: Path,
     exclude: Sequence[str],
@@ -327,16 +351,16 @@ def _blob_history_failures(
         return []
     checks = _git(
         root,
-        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
         stdin="\n".join(paths) + "\n",
     )
     if checks.returncode != 0:
         return [checks.stderr.strip() or "Git history object type inventory failed"]
-    blob_ids = [
-        record.partition(" ")[0]
-        for record in checks.stdout.splitlines()
-        if record.endswith(" blob")
-    ]
+    sized_blobs: list[tuple[str, int]] = []
+    for record in checks.stdout.splitlines():
+        fields = record.split(" ")
+        if len(fields) == 3 and fields[1] == "blob" and fields[2].isdigit():
+            sized_blobs.append((fields[0], int(fields[2])))
     failures: list[str] = []
     failures.extend(
         f"history {relative}: {EXTERNAL_REPOSITORY} (Git submodule content is not audited)"
@@ -353,9 +377,9 @@ def _blob_history_failures(
         rules.MACHINE_OBSERVATION,
         rules.PROVIDER_SURFACE,
     }
-    for offset in range(0, len(blob_ids), 128):
+    for batch in _history_batches(sized_blobs):
         try:
-            blobs = _batch_blobs(root, blob_ids[offset : offset + 128])
+            blobs = _batch_blobs(root, batch)
         except (RuntimeError, ValueError) as error:
             return [str(error)]
         for object_id, payload in blobs:
@@ -371,7 +395,7 @@ def _blob_history_failures(
                     details[rules.ESCAPES_REPOSITORY] = "Git symlink target leaves the repository"
                 details.update(_external_payload_details(relative, payload))
                 if not excluded and forbid_png_metadata and Path(relative).suffix.lower() == ".png":
-                    details.update({kind: "" for kind in _png_metadata(payload)})
+                    details.update(_png_metadata(payload))
                 if excluded:
                     if text:
                         details.update(
@@ -784,21 +808,22 @@ def unignored(root: Path, required: Sequence[str]) -> list[str]:
     return missing
 
 
-def _png_metadata(payload: bytes) -> set[str]:
+def _png_metadata(payload: bytes) -> dict[str, str]:
+    """The finding is the same; the reason an owner has to act on is not."""
     if not payload.startswith(b"\x89PNG\r\n\x1a\n"):
-        return set()
+        return {}
     offset = 8
     while offset + 12 <= len(payload):
         length = struct.unpack(">I", payload[offset : offset + 4])[0]
         chunk_type = payload[offset + 4 : offset + 8]
         offset += 12 + length
         if offset > len(payload):
-            return {PNG_METADATA}
+            return {PNG_METADATA: "PNG chunk stream is truncated; metadata cannot be ruled out"}
         if chunk_type in PNG_METADATA_CHUNKS:
-            return {PNG_METADATA}
+            return {PNG_METADATA: f"PNG {chunk_type.decode('ascii', 'replace')} chunk"}
         if chunk_type == b"IEND":
             break
-    return set()
+    return {}
 
 
 def _is_lfs_pointer(payload: bytes) -> bool:
@@ -977,8 +1002,8 @@ def _archive_details(
                     found.setdefault(kind, f"archive entry {entry_name}")
                 entry_payload = archive.read(entry)
                 if forbid_png_metadata and Path(entry_name).suffix.lower() == ".png":
-                    for kind in _png_metadata(entry_payload):
-                        found.setdefault(kind, f"archive entry {entry_name}")
+                    for kind, detail in _png_metadata(entry_payload).items():
+                        found.setdefault(kind, f"archive entry {entry_name}; {detail}")
                 for kind, detail in _external_payload_details(entry_name, entry_payload).items():
                     found.setdefault(kind, f"archive entry {entry_name}; {detail}")
                 mode = entry.external_attr >> 16
@@ -1073,7 +1098,7 @@ def _payload_details(
 ) -> dict[str, str]:
     found = _external_payload_details(relative, payload)
     if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
-        found.update({kind: "" for kind in _png_metadata(payload)})
+        found.update(_png_metadata(payload))
     try:
         text = _decode_text(payload)
     except UnicodeError:

@@ -336,6 +336,29 @@ class UpdateTests(UpdateFixture):
         self.assertEqual(old_hook, self.hook.read_bytes())
         self.assertIsNone(protection.problem(self.root))
 
+    def test_rollback_accepts_the_guard_the_receipt_says_it_installed(self) -> None:
+        # Field case: 0.14.0 added the release workflow to the guarded inputs, so the
+        # guard recomputed at rollback time no longer matched the installed one and
+        # `update --rollback` refused to undo the very release that changed the list.
+        old_hook = self.guard()
+        self.assertEqual(0, self.invoke()[0])
+        receipt = self.receipt()
+        self.assertEqual(
+            sha(self.hook.read_bytes()),
+            receipt["new_guard_sha256"],
+            "the receipt pins what it wrote",
+        )
+        with patch.object(
+            protection,
+            "hook_content",
+            side_effect=lambda root, **_: protection._hook_v1("{'extra': %r}" % ("0" * 64)),
+        ):
+            code, output = self.invoke(rollback=True)
+
+        self.assertEqual(0, code, output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertEqual(old_hook, self.hook.read_bytes())
+
     def test_rollback_refuses_later_edits(self) -> None:
         self.guard()
         self.assertEqual(0, self.invoke()[0])

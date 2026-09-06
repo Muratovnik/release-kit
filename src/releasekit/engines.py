@@ -97,7 +97,7 @@ def betterleaks(
     environment[f"GIT_CONFIG_VALUE_{count}"] = str(root.resolve())
     if staged or history:
         with storage.temporary(root, "engine-") as workspace:
-            environment.update({key: str(workspace.path) for key in ("TMP", "TEMP", "TMPDIR")})
+            environment.update(storage.confinement(workspace.path))
             working_directory = root
             if staged:
                 # The scanner's configuration (including relative extension files)
@@ -119,7 +119,7 @@ def betterleaks(
         snapshot = workspace.path
         _materialize_worktree(root, snapshot, include_candidates=include_candidates)
         workspace.remember()
-        environment.update({key: str(snapshot) for key in ("TMP", "TEMP", "TMPDIR")})
+        environment.update(storage.confinement(snapshot))
         command += ["dir", str(snapshot)]
         return _run(command, root=root, environment=environment)
 

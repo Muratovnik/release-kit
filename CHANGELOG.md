@@ -2,6 +2,53 @@
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-09-06
+
+### Fixed
+
+- The pre-push guard resolves an interpreter instead of assuming `python` is on
+  PATH. It tries `python`, `python3` and `py`, rejects a Windows Store alias by
+  running each candidate, and says which runtime is missing rather than failing
+  the push with a bare shell error. An installed guard from an earlier release is
+  still recognized as intact and keeps enforcing its pins; `relkit protect check`
+  reports the older template and `protect install` adopts the current one.
+- `relkit update --rollback` accepts the guard the receipt says the update wrote.
+  The previous check recomputed the guard, so any release that changed the guarded
+  input list or the template refused to undo itself. Receipts now pin the exact
+  installed bytes as `new_guard_sha256`, and an intact guard pinning the installed
+  artifact is accepted for receipts written before this version.
+- `relkit audit --history` blocks on a tracked difference rather than on any
+  untracked file. An untracked file is scanned by the worktree pass and cannot
+  reach a remote, and refusing every push over an unrelated scratch file was the
+  fastest route to `--no-verify`. The refusal now names the offending entries.
+- Release planning compares only the stable `vX.Y.Z` tags between local and
+  remote, and names the ones that disagree. A personal local tag or a pre-release
+  candidate no longer refuses to plan a release.
+- The MCP adapter refuses only the Git variables that redirect the repository
+  (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_NAMESPACE`
+  and the object-directory pair), not the whole `GIT_*` namespace. A Git that
+  refuses to identify the checkout is reported as a tool error instead of an
+  unhandled `CalledProcessError`.
+- A reviewed MCP project binding stamps the configured release workflow, so a
+  change to the file that publishes expires the binding like a policy change.
+- A truncated PNG is reported as a truncated chunk stream rather than as a named
+  metadata chunk; the finding kind is unchanged.
+
+### Changed
+
+- Waiting for CI polls the workflow run with a backoff from 5 to 30 seconds and
+  reconciles the full remote state on entry, on completion and about once a
+  minute, instead of reconciling on every poll. An hour-long wait no longer costs
+  thousands of GitHub API requests.
+- History auditing reads Git objects in batches bounded by bytes rather than by a
+  fixed count of 128, so a repository with large blobs in its history stops
+  spiking memory and timing out. The release source snapshot uses the same
+  batched read instead of one `git cat-file` process per file, and planning
+  resolves the previous tag and the changelog's commit references with a handful
+  of Git processes instead of two or three per tag and per link.
+- Engine child processes get the same scratch and cache confinement as every
+  other child (`XDG_*` as well as `TMP`/`TEMP`/`TMPDIR`).
+
 ## [0.14.0] - 2026-09-06
 
 ### Added
