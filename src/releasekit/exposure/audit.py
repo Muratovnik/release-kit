@@ -785,7 +785,12 @@ def worktree_paths(root: Path, *, include_candidates: bool = True) -> tuple[str,
 
 
 def worktree_changes(root: Path) -> tuple[str, ...]:
-    """Tracked or untracked changes that make a history verdict non-reproducible."""
+    """Porcelain status entries: tracked differences and untracked candidates.
+
+    The caller decides which of them invalidate its verdict. A tracked difference
+    means a scanned file is not the committed one; an untracked entry only adds a
+    file that no commit contains, which the worktree pass scans anyway.
+    """
     result = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     if result.returncode != 0:
         raise RuntimeError(result.stderr.strip() or "git status failed")
