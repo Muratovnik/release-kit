@@ -120,6 +120,22 @@ class PlatformTests(unittest.TestCase):
 
 
 class PinTests(unittest.TestCase):
+    def setUp(self) -> None:
+        # These tests assert the project-default cache location, so an inherited
+        # RELKIT_CACHE_DIR must not decide whether the suite passes. A release runs
+        # them as a configured check on whatever workstation publishes.
+        guard = patch.dict(
+            os.environ,
+            {
+                key: value
+                for key, value in os.environ.items()
+                if key not in {"RELKIT_CACHE_DIR", "RELKIT_APPROVED_EXTERNAL_CACHE"}
+            },
+            clear=True,
+        )
+        guard.start()
+        self.addCleanup(guard.stop)
+
     def test_every_supported_asset_has_a_release_sha256(self) -> None:
         for tool in toolchain.TOOLS.values():
             with self.subTest(tool=tool.name):

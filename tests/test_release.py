@@ -5,6 +5,7 @@ import hashlib
 import io
 import json
 import os
+import re
 import runpy
 import subprocess
 import sys
@@ -15,9 +16,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import config, protection, storage
-from releasekit.release import coordinator, settings
+from releasekit import __version__, config, protection, storage
+from releasekit.release import changelog, coordinator, settings
 from releasekit.release.backend import CommandError, GitHub, ReleaseError, Runner, remote_identity
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 class LocalRunner(Runner):
@@ -976,3 +979,75 @@ class BackendTests(unittest.TestCase):
         for name in ("payload.", "../outside", "NUL.zip", "a/b"):
             with self.subTest(asset=name), self.assertRaises(ValueError):
                 settings.filename(name)
+
+
+class SelfHostingTests(unittest.TestCase):
+    """This repository publishes itself, so its own contract has to stay consistent.
+
+    Every one of these disagreements would otherwise surface for the first time
+    during a release, after a tag exists and the version number is already spent.
+    """
+
+    def setUp(self) -> None:
+        policy = config.load(ROOT)
+        self.assertIsNotNone(policy.release, "this repository declares its own [release]")
+        self.policy = policy
+        self.release = policy.release
+        self.workflow = (ROOT / self.release.workflow).read_text(encoding="utf-8")
+
+    def test_required_jobs_are_declared_by_its_own_publishing_workflow(self) -> None:
+        coverage = coordinator.job_coverage(
+            self.release.required_jobs, coordinator.workflow_jobs(self.workflow)
+        )
+        self.assertEqual([], coverage["missing"])
+        self.assertEqual([], coverage["unverified"], "a static answer beats a tag-time surprise")
+
+    def test_the_workflow_publishes_exactly_the_declared_asset_set(self) -> None:
+        # The coordinator compares the published set against the signed release
+        # attestation only after the immutable release exists.
+        self.assertEqual(
+            sorted(self.release.assets),
+            sorted(set(re.findall(r"dist/([A-Za-z0-9._-]+)", self.workflow))),
+        )
+
+    def test_the_declared_asset_set_is_exactly_what_the_builder_produces(self) -> None:
+        # The one disagreement the contract cannot answer statically. The published set
+        # is compared to the signed attestation only after the immutable release
+        # exists, so a forgotten asset is found by spending the version number.
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "dist"
+            completed = subprocess.run(
+                [sys.executable, "tools/build_release.py", str(output)],
+                cwd=ROOT,
+                env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+                capture_output=True,
+                encoding="utf-8",
+                errors="replace",
+                check=False,
+            )
+            self.assertEqual(0, completed.returncode, completed.stderr)
+            produced = sorted(path.name for path in output.iterdir())
+
+        self.assertEqual(sorted(self.release.assets), produced)
+
+    def test_the_version_file_and_changelog_describe_exactly_this_version(self) -> None:
+        observed = re.findall(
+            self.release.version_pattern,
+            (ROOT / self.release.version_file).read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        self.assertEqual([__version__], observed)
+        self.assertIsNotNone(
+            changelog.entry_for(
+                (ROOT / self.release.changelog).read_text(encoding="utf-8"),
+                __version__,
+                profile=self.policy.changelog.profile,
+            ),
+            "the version being built needs its own validated changelog entry",
+        )
+
+    def test_declared_project_commands_exist_in_this_checkout(self) -> None:
+        for command in self.release.checks + self.release.smoke:
+            script = next((arg for arg in command if arg.endswith(".py")), None)
+            self.assertIsNotNone(script, command)
+            self.assertTrue((ROOT / script).is_file(), script)

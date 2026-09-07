@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.18.0](https://github.com/Muratovnik/release-kit/compare/v0.16.0...v0.18.0) - 2026-09-07
+
+### Added
+
+- This repository publishes itself with its own coordinator. It declares the
+  `[release]` contract, a tag-triggered workflow that is the sole publisher, the
+  gates it runs as `tools/check.py` and a downloaded-application smoke that reads
+  only the published assets. Until now both releases were made by hand, so the
+  contract the tool asks adopters to accept was the one path it never exercised.
+- `relkit update --prune-backups` removes update backups that no receipt can
+  restore. One receipt names one backup, so every other directory was already
+  unreachable through `--rollback` and simply accumulated. It removes only
+  directories with this updater's exact naming, inside the repository's own Git
+  directory, not the one the current receipt names, and holding nothing but the
+  files this updater writes; anything else is reported and left alone. It takes no
+  update source, refuses while an interrupted update still needs its backup,
+  previews with `--dry-run` and confirms like any other write. A completed update
+  now also reports how many such backups remain.
+
 ### Fixed
 
 - `relkit update --refresh-guard` adopts a guard template written by an earlier
@@ -15,23 +34,6 @@
   installed it listed the guard anyway. The transition is now printed only when
   those bytes are really written, and a run with nothing to update names the command
   that adopts the older template rather than implying it just did.
-
-## [0.17.0] - 2026-09-07
-
-### Added
-
-- `relkit update --prune-backups` removes update backups that no receipt can
-  restore. One receipt names one backup, so every other directory was already
-  unreachable through `--rollback` and simply accumulated. It removes only
-  directories with this updater's exact naming, inside the repository's own Git
-  directory, not the one the current receipt names, and holding nothing but the
-  files this updater writes; anything else is reported and left alone. It takes no
-  update source, refuses while an interrupted update still needs its backup,
-  previews with `--dry-run` and confirms like any other write. A completed update
-  now also reports how many such backups remain.
-
-### Fixed
-
 - `relkit update` no longer leaves a scratch directory behind on every run,
   including a dry run. The workspace confines the XDG directories for its
   children, so `gh` wrote its own device id beside the download; because only
@@ -39,6 +41,12 @@
   refused to sweep it and retained the directory. The updater now adopts that one
   known subtree after the download, and everything else still stays retained and
   reported.
+- `tools/build_zipapp.py` accepted only an unlinked dated changelog heading, while
+  the release coordinator requires that heading to compare the actual previous tag
+  to the released one. No project could satisfy both, which is why this repository
+  could not publish itself; the builder now accepts the linked form.
+
+0.17.0 was prepared but never published; the entries above include its changes.
 
 ## [0.16.0] - 2026-09-07
 

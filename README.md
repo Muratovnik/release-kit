@@ -538,3 +538,26 @@ Human editing is never regenerated or reformatted during publication.
 PYTHONPATH=src python -m unittest discover -s tests -p "test_*.py"
 python -m ruff check src tests tools
 ```
+
+`python tools/check.py` runs that list as one command, with the exact import path
+instead of an inherited one. It is what the release coordinator runs as this
+repository's configured check, and what CI runs on Linux, macOS and Windows.
+
+### Releasing this repository
+
+release-kit publishes itself with its own coordinator, so the contract it asks
+adopters to accept is the one it uses. `relkit.toml` declares the `[release]`
+section, `.github/workflows/release.yml` is the sole publisher, and the coordinator
+only plans, runs the declared checks, pushes `main` and the tag together, then
+verifies what CI published against GitHub's signed release attestation.
+
+```bash
+PYTHONPATH=src python -m releasekit.cli release plan vX.Y.Z
+PYTHONPATH=src python -m releasekit.cli release run vX.Y.Z --publish --plan-hash REVIEWED
+```
+
+A release needs the version in `pyproject.toml`, `src/releasekit/__init__.py` and the
+three plugin files to agree, and a changelog heading whose compare link names the
+actual previous tag. `tests/test_release.py` checks those agreements statically, so a
+renamed CI job or a forgotten asset fails before a tag exists rather than after.
+See [docs/release-coordinator.md](docs/release-coordinator.md) for the full contract.

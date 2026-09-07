@@ -73,6 +73,31 @@ class DistributionTests(unittest.TestCase):
                     builder(output)
                 self.assertFalse(output.exists())
 
+    def test_builder_accepts_the_linked_heading_the_coordinator_requires(self) -> None:
+        # The coordinator requires the released heading to compare the actual previous
+        # tag to this one. A builder that took only an unlinked heading meant no
+        # project could satisfy both, including this one.
+        builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "src/releasekit"
+            source.mkdir(parents=True)
+            (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
+            (source / "cli.py").write_text("def main():\n    return 0\n")
+            (root / "pyproject.toml").write_text(
+                '[project]\nversion = "0.6.0"\nauthors = []\nlicense = "MIT"\n'
+            )
+            (root / "LICENSE").write_text("license text\n")
+            (root / "CHANGELOG.md").write_text(
+                "## [0.6.0](https://example.invalid/o/r/compare/v0.5.0...v0.6.0) - 2026-01-01\n"
+            )
+            output = root / "relkit.pyz"
+
+            with patch.dict(builder.__globals__, {"ROOT": root, "SOURCE": source}):
+                builder(output)
+
+            self.assertEqual("0.6.0", distribution.inspect(output.read_bytes()).version)
+
     def test_version_is_inspected_without_executing_source(self) -> None:
         payload = archive_bytes(
             {

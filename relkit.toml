@@ -9,3 +9,38 @@ betterleaks_config = ".gitleaks.toml"
 # is what an exclusion is for, and it is the only one here. It is not a baseline:
 # nothing under tests/ is debt waiting to be removed.
 exclude = ["tests/*"]
+
+# The entry the coordinator publishes is validated, never regenerated. Strict is the
+# release path's own floor anyway; declaring it keeps `relkit notes` in CI and the
+# coordinator on one profile instead of one flag apart.
+[changelog]
+profile = "strict"
+
+# This tool publishes itself with its own coordinator. Naming this repository is not
+# the hardcoding the rule above forbids: it is this repository's own identity, like
+# the author in its package metadata. Nothing here names a project it guards.
+#
+# CI alone publishes. `relkit release` runs these checks, pushes main and the tag
+# together, then verifies what the workflow published against the signed release
+# attestation. No guard is pinned here: this repository vendors no projection of
+# itself, so `require_guard` has no input to verify.
+[release]
+repository = "Muratovnik/release-kit"
+workflow = ".github/workflows/release.yml"
+required_jobs = ["check", "publish"]
+branch = "main"
+version_file = "pyproject.toml"
+version_pattern = '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$'
+assets = [
+    "relkit.pyz",
+    "relkit.pyz.sha256",
+    "release-kit-plugin.zip",
+    "release-kit-plugin.zip.sha256",
+    "release.json",
+]
+checks = [["{python}", "tools/check.py"]]
+smoke = [["{python}", "tools/smoke.py", "--assets", "{assets}", "--version", "{version}"]]
+smoke_platforms = ["linux", "darwin", "win32"]
+# The suite alone runs for minutes on a cold checkout; the default 600 leaves no
+# room for a slower host, and a check killed by its own timeout reads as a failure.
+command_timeout = 1800
