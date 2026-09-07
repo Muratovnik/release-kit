@@ -61,6 +61,10 @@
   the release coordinator requires that heading to compare the actual previous tag
   to the released one. No project could satisfy both, which is why this repository
   could not publish itself; the builder now accepts the linked form.
+- A saved release receipt written before `require_provenance` existed no longer
+  raises on the missing key. It was recorded when provenance was unconditional, so it
+  reads as requiring it: an older attempt must not finish with less verification than
+  it was authorized under. One function answers that question for every caller.
 - The gate runner hands its children a canonical temp directory. `storage.checked`
   deliberately refuses a service path with a link in it, and macOS puts the standard
   temp directory behind `/var -> /private/var`, so every fixture that treats a temp

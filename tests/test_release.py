@@ -356,6 +356,17 @@ class ReleaseTests(ReleaseFixture):
         self.assertEqual("passed", self.receipt()["verification"])
         self.assertIs(False, self.github.provenance_verified)
 
+    def test_a_plan_written_before_the_setting_existed_still_requires_provenance(self):
+        # An older receipt has no require_provenance. It was written when provenance
+        # was unconditional, so the missing key must read as required, never waived.
+        value = self.plan_json(self.invoke("plan")[1])
+        del value["settings"]["require_provenance"]
+
+        self.assertTrue(coordinator.required_provenance(value))
+        self.assertIn(
+            "must produce build-provenance attestations", "\n".join(coordinator.caveats(value))
+        )
+
     def test_plan_is_read_only_even_when_publish_is_given(self):
         before = set(self.root.rglob("*"))
         code, output = self.invoke("plan")
