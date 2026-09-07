@@ -11,6 +11,11 @@
   gates it runs as `tools/check.py` and a downloaded-application smoke that reads
   only the published assets. Until now both releases were made by hand, so the
   contract the tool asks adopters to accept was the one path it never exercised.
+- A second workflow runs the same gates on Linux, macOS and Windows for every
+  branch push and on request, publishing nothing. Without it the only way to run
+  CI was to push a tag, which means every platform failure costs a version number.
+  Neither matrix cancels the remaining platforms on the first failure any more:
+  that is how a second, unrelated platform failure stays hidden for one more release.
 - `relkit update --prune-backups` removes update backups that no receipt can
   restore. One receipt names one backup, so every other directory was already
   unreachable through `--rollback` and simply accumulated. It removes only
@@ -45,6 +50,12 @@
   the release coordinator requires that heading to compare the actual previous tag
   to the released one. No project could satisfy both, which is why this repository
   could not publish itself; the builder now accepts the linked form.
+- The gate runner hands its children a canonical temp directory. `storage.checked`
+  deliberately refuses a service path with a link in it, and macOS puts the standard
+  temp directory behind `/var -> /private/var`, so every fixture that treats a temp
+  directory as a project root failed there: 107 of 373 tests, for a reason unrelated
+  to the code under test. The suite had never run on macOS, and the first run that
+  did was a release.
 
 0.17.0 was prepared but never published; the entries above include its changes.
 

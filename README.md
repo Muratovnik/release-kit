@@ -560,4 +560,9 @@ A release needs the version in `pyproject.toml`, `src/releasekit/__init__.py` an
 three plugin files to agree, and a changelog heading whose compare link names the
 actual previous tag. `tests/test_release.py` checks those agreements statically, so a
 renamed CI job or a forgotten asset fails before a tag exists rather than after.
+
+`.github/workflows/check.yml` runs the same gates on all three platforms for every
+branch push and on request, and publishes nothing. Use it to find a platform failure
+before a tag exists: a failure inside a release run costs the version number, because
+the tag cannot move to a fixed commit.
 See [docs/release-coordinator.md](docs/release-coordinator.md) for the full contract.

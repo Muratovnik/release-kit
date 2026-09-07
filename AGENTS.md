@@ -68,12 +68,24 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 ## Verification commands
 
 ```powershell
+python tools/check.py
 $env:PYTHONPATH = "src"
+python -m releasekit.cli audit
+```
+
+`tools/check.py` runs the declared gates in order, with an exact import path and a
+canonical temp directory:
+
+```
 python -m unittest discover -s tests -p "test_*.py"
 python -m ruff check src tests tools
 python -m ruff format --check src tests tools
-python -m releasekit.cli audit
 ```
+
+Run it rather than the bare commands. The suite writes service paths into temp
+directories, and `storage.checked` refuses a service path with a link in it, so on a
+host whose temp directory is behind a link the bare command fails for reasons that
+have nothing to do with the change under test.
 
 Every change to a rule needs a test that fails without it. A regression that a real
 repository hit gets a test that names what it hit, not a generic one.

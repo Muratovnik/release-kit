@@ -1015,7 +1015,7 @@ class SelfHostingTests(unittest.TestCase):
         # is compared to the signed attestation only after the immutable release
         # exists, so a forgotten asset is found by spending the version number.
         with tempfile.TemporaryDirectory() as temporary:
-            output = Path(temporary) / "dist"
+            output = Path(temporary).resolve() / "dist"
             completed = subprocess.run(
                 [sys.executable, "tools/build_release.py", str(output)],
                 cwd=ROOT,

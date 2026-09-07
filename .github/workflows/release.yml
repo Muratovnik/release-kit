@@ -19,7 +19,9 @@ jobs:
     permissions:
       contents: read
     strategy:
-      fail-fast: true
+      # Every platform reports. Cancelling the others on the first failure is how a
+      # second, unrelated platform failure stays hidden for another release.
+      fail-fast: false
       matrix:
         os:
           - ubuntu-latest
