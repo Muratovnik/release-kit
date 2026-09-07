@@ -57,6 +57,7 @@ class FakeGitHub:
         self.download_valid = True
         self.body_suffix = ""
         self.missing_job = False
+        self.writes_child_state = False
         self.job_names = ["publish"]
         self.failed_jobs = ()
         self.extra_run = False
@@ -82,7 +83,16 @@ class FakeGitHub:
             return {"id": 8, "path": ".github/workflows/release.yml", "state": "active"}
         raise AssertionError(path)
 
+    def _child_state(self):
+        """What `gh` does on every call: write its Sigstore cache under our XDG root."""
+        if not self.writes_child_state or self.fixture.runner.temporary is None:
+            return
+        state = Path(self.fixture.runner.temporary) / "gh/.sigstore/root"
+        state.mkdir(parents=True, exist_ok=True)
+        (state / "tuf-repo.json").write_text(str(self.signatures_checked), encoding="utf-8")
+
     def release(self, tag):
+        self._child_state()
         if self.no_release:
             return None
         refs = self.fixture.runner.git("ls-remote", "--tags", "origin")
@@ -382,6 +392,20 @@ class ReleaseTests(ReleaseFixture):
         self.assertIn(
             "must produce build-provenance attestations", "\n".join(coordinator.caveats(value))
         )
+
+    def test_the_coordinators_own_child_state_is_not_reported_as_retained(self):
+        # Field case: every successful release ended with `cleanup retained
+        # changed/unowned files`, because `gh` writes its Sigstore cache under the XDG
+        # root handed to children and the inventory ran before the last two gh calls.
+        # `remember` inventories a path once, so it has to run after the last consumer.
+        self.github.writes_child_state = True
+
+        code, output = self.invoke()
+
+        self.assertEqual(0, code, output)
+        self.assertEqual("passed", self.receipt()["cleanup"])
+        self.assertNotIn("retained", output)
+        self.assertFalse(Path(self.receipt()["temporary"]).exists())
 
     def test_plan_is_read_only_even_when_publish_is_given(self):
         before = set(self.root.rglob("*"))
@@ -1132,7 +1156,9 @@ class SelfHostingTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             output = Path(temporary).resolve() / "dist"
             completed = subprocess.run(
-                [sys.executable, "tools/build_release.py", str(output)],
+                # Deliberately from the worktree: this compares the declared set with
+                # what the builder produces, on whatever tree is being developed.
+                [sys.executable, "tools/build_release.py", "--allow-divergent", str(output)],
                 cwd=ROOT,
                 env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
                 capture_output=True,

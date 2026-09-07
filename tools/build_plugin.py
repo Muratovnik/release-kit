@@ -82,7 +82,7 @@ def build_plugin(output: Path):
         temporary.replace(output)
     digest = hashlib.sha256(output.read_bytes()).hexdigest()
     receipt = storage.checked(output.with_suffix(output.suffix + ".sha256"))
-    receipt.write_text(f"{digest}  {output.name}\n", encoding="utf-8")
+    receipt.write_text(f"{digest}  {output.name}\n", encoding="utf-8", newline="\n")
     return digest
 
 

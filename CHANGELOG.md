@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- The projection no longer describes the host that built it. `ZipInfo` takes
+  `create_system` from `sys.platform`, so the same content produced a different
+  archive on Windows than on Linux, while `external_attr` already carried Unix
+  permission bits: the archive claimed a DOS host for Unix modes. The digest
+  manifests picked up the platform newline for the same reason. Measured against the
+  published 0.18.0: with these two corrections a Windows build of the release commit
+  reproduces all five published assets byte for byte, and the compressed sizes were
+  already identical, so no compression or zlib difference was ever involved.
+- `tools/build_release.py` refuses inputs that are not the committed bytes, naming
+  each file. A CRLF worktree copy of an LF blob builds a different artifact while
+  Git may report nothing, because whether `status` notices depends on its stat cache
+  and the clean filter calls the two contents equal; four files in this repository
+  were in that state. Comparing raw bytes against the committed blob is the only
+  oracle that sees it. `--allow-divergent` builds from the worktree for development,
+  and the release path does not pass it.
+- A successful release no longer reports its own tool's cache as retained. `gh`
+  writes its Sigstore cache under the XDG root the coordinator hands its children,
+  and the inventory ran before the last two `gh` calls; because a path is
+  inventoried once, those digests were already stale by cleanup. The inventory now
+  runs after the last consumer. Project scratch lives in its own directory and stays
+  deliberately unknown.
+
 ## [0.18.0](https://github.com/Muratovnik/release-kit/compare/v0.16.0...v0.18.0) - 2026-09-07
 
 ### Added

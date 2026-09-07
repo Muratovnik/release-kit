@@ -46,7 +46,8 @@ class PluginBuildTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(prefix="release set ") as temporary:
             folder = Path(temporary)
             one, two = folder / "one", folder / "two"
-            self.assertEqual(builder(one), builder(two))
+            # Deliberately from the worktree: this checks the builder, not the tree.
+            self.assertEqual(builder(one, allow_divergent=True), builder(two, allow_divergent=True))
             self.assertEqual(__version__, json.loads((one / "release.json").read_text())["version"])
             with zipfile.ZipFile(one / "release-kit-plugin.zip") as archive:
                 self.assertEqual(
@@ -59,7 +60,7 @@ class PluginBuildTests(unittest.TestCase):
                 bundle.alignment(distribution.inspect((one / "relkit.pyz").read_bytes()))["state"],
             )
             with self.assertRaisesRegex(ValueError, "new or empty"):
-                builder(one)
+                builder(one, allow_divergent=True)
             self.assertEqual((one / "relkit.pyz").read_bytes(), (two / "relkit.pyz").read_bytes())
             bundle.path.write_bytes(bundle.path.read_bytes() + b"drift")
             with self.assertRaisesRegex(ValueError, "source changed"):

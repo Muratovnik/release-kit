@@ -98,6 +98,79 @@ class DistributionTests(unittest.TestCase):
 
             self.assertEqual("0.6.0", distribution.inspect(output.read_bytes()).version)
 
+    def test_the_projection_does_not_describe_the_host_that_built_it(self) -> None:
+        # The published 0.18.0 could not be reproduced on Windows: `version made by`
+        # came from sys.platform while external_attr already carried Unix mode bits,
+        # and the digest manifest picked up the platform newline.
+        builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve()
+            source = root / "src/releasekit"
+            source.mkdir(parents=True)
+            (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
+            (source / "cli.py").write_text("def main():\n    return 0\n")
+            (root / "pyproject.toml").write_text(
+                '[project]\nversion = "0.6.0"\nauthors = []\nlicense = "MIT"\n'
+            )
+            (root / "LICENSE").write_text("license text\n")
+            (root / "CHANGELOG.md").write_text("## [0.6.0] - 2026-01-01\n")
+            output = root / "relkit.pyz"
+
+            with patch.dict(builder.__globals__, {"ROOT": root, "SOURCE": source}):
+                builder(output)
+
+            with zipfile.ZipFile(output) as archive:
+                hosts = {item.create_system for item in archive.infolist()}
+                modes = {item.external_attr >> 16 for item in archive.infolist()}
+            self.assertEqual({3}, hosts, "Unix mode bits need the Unix host they mean")
+            self.assertEqual({0o100644}, modes)
+            manifest = output.with_name(output.name + ".sha256").read_bytes()
+            self.assertNotIn(b"\r", manifest)
+            self.assertEqual(f"{sha(output.read_bytes())}  relkit.pyz\n".encode(), manifest)
+
+    def test_release_inputs_must_be_the_exact_committed_bytes(self) -> None:
+        # A CRLF worktree copy of an LF blob builds a different artifact while Git may
+        # report nothing: whether `status` notices depends on its stat cache, and in
+        # this repository four such files were reported clean. The release build
+        # therefore compares raw bytes rather than trusting either status or the clean
+        # filter, both of which call these two contents equal.
+        sys.path.insert(0, str(ROOT / "tools"))
+        try:
+            diverged = runpy.run_path(str(ROOT / "tools/build_release.py"))["diverged"]
+        finally:
+            sys.path.remove(str(ROOT / "tools"))
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary).resolve() / "project"
+            root.mkdir()
+            for arguments in (
+                ["init", "-q"],
+                ["config", "user.name", "Example Maintainer"],
+                ["config", "user.email", "maintainer@example.invalid"],
+            ):
+                subprocess.run(["git", *arguments], cwd=root, check=True)
+            (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
+            (root / "sample.py").write_bytes(b"print(1)\n")
+            subprocess.run(["git", "add", "-A"], cwd=root, check=True)
+            subprocess.run(["git", "commit", "-qm", "chore: sample"], cwd=root, check=True)
+
+            self.assertEqual([], diverged(root))
+
+            (root / "sample.py").write_bytes(b"print(1)\r\n")
+
+            self.assertEqual(["sample.py"], diverged(root))
+            self.assertEqual(
+                "print(1)\n",
+                subprocess.run(
+                    ["git", "show", "HEAD:sample.py"],
+                    cwd=root,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                ).stdout,
+                "the committed bytes are unchanged; only the worktree copy diverged",
+            )
+            self.assertEqual([], diverged(root.parent / "outside-any-repository"))
+
     def test_version_is_inspected_without_executing_source(self) -> None:
         payload = archive_bytes(
             {

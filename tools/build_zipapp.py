@@ -23,6 +23,11 @@ def _write(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
     info = zipfile.ZipInfo(name, date_time=TIMESTAMP)
     info.compress_type = zipfile.ZIP_DEFLATED
     info.external_attr = (stat.S_IFREG | 0o644) << 16
+    # `ZipInfo` takes this from `sys.platform`, so the same content produced a
+    # different archive on Windows than on Linux: `version made by` said FAT while
+    # `external_attr` above already carried Unix permission bits. Declare the host
+    # the mode bits belong to, and the projection stops depending on who built it.
+    info.create_system = 3
     archive.writestr(info, payload)
 
 
@@ -81,6 +86,9 @@ def build(output: Path, *, repository: str = "") -> None:
         output.with_name(output.name + ".sha256").write_text(
             f"{hashlib.sha256(output.read_bytes()).hexdigest()}  {output.name}\n",
             encoding="utf-8",
+            # Without this the newline is translated per platform, so the manifest of
+            # a byte-identical artifact is not itself byte-identical.
+            newline="\n",
         )
     finally:
         temporary.unlink(missing_ok=True)

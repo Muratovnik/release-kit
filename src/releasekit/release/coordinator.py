@@ -1122,7 +1122,6 @@ def _verify(
         repository_id=value["repository_id"],
         provenance=required_provenance(value),
     )
-    workspace.remember(workspace.path / "runtime")
     _stage(path, state, "publication-verification", "passed")
     snapshot = _snapshot(runner, value, workspace)
     print("relkit release: downloaded-application smoke from pinned source", flush=True)
@@ -1144,6 +1143,11 @@ def _verify(
         raise ReleaseError(
             "publication changed during verification (notes remain editable even on immutable releases)"
         )
+    # Last, because `remember` inventories once per path: an earlier call recorded
+    # the digests `gh` then changed on the reconcile above, so cleanup correctly
+    # refused to sweep its own tool's cache and reported it retained on every
+    # successful release. Project scratch lives in `project-temp` and stays unknown.
+    workspace.remember(workspace.path / "runtime")
     state["verification"] = "passed"
     state["verified_at"] = datetime.now(UTC).isoformat()
     state["smoke_platform"] = sys.platform
