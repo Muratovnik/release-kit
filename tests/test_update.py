@@ -177,6 +177,12 @@ class UpdateFixture(unittest.TestCase):
         self.git("config", "core.hooksPath", str(self.root / ".git/hooks"))
         self.git("config", "user.name", "Example Maintainer")
         self.git("config", "user.email", "maintainer@example.invalid")
+        # Git's background maintenance writes and removes its own lock after
+        # ordinary commands, which races a fixture that asserts an exact tree. The
+        # product must never turn this off in a user's repository, so the fixture
+        # turns it off in its own.
+        self.git("config", "maintenance.auto", "false")
+        self.git("config", "gc.auto", "0")
         (self.root / ".github").mkdir()
         self.projection = self.root / update.PROJECTION
         self.old = artifact_bytes("0.5.0")
