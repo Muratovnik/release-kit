@@ -64,6 +64,7 @@ class FakeGitHub:
         self.extra_asset = False
         self.on_wait = None
         self.signatures_checked = 0
+        self.provenance_verified = None
         self.no_release = False
         self.orphan_release = False
         self.attestation = True
@@ -147,8 +148,9 @@ class FakeGitHub:
         data = self.fixture.payloads[asset["name"]]
         destination.write_bytes(data if self.download_valid else b"corrupt")
 
-    def signatures(self, tag, sha, workflow, paths, *, ci, repository_id):
+    def signatures(self, tag, sha, workflow, paths, *, ci, repository_id, provenance=True):
         self.signatures_checked += 1
+        self.provenance_verified = provenance
         self.fixture.assertEqual("v1.0.0", tag)
         self.fixture.assertEqual(self.fixture.sha, sha)
         self.fixture.assertEqual(".github/workflows/release.yml", workflow)
@@ -320,6 +322,39 @@ class ReleaseTests(ReleaseFixture):
         self.assertEqual(1, self.runner.pushes)
         self.assertEqual(2, self.github.signatures_checked)
         self.assertEqual(2, self.invoke()[0])
+
+    def test_provenance_is_required_by_default_and_reported_as_such(self):
+        code, output = self.invoke("plan")
+
+        self.assertEqual(0, code, output)
+        self.assertTrue(self.plan_json(output)["settings"]["require_provenance"])
+        self.assertIn("must produce build-provenance attestations", output)
+
+        code, output = self.invoke()
+
+        self.assertEqual(0, code, output)
+        self.assertIs(True, self.github.provenance_verified)
+
+    def test_declared_undeclared_provenance_publishes_without_verifying_it(self):
+        # Field case: GitHub refuses to persist build provenance for a user-owned
+        # private repository, so requiring it unconditionally made the tool unusable
+        # there. The capability is a platform policy, never a fact about the
+        # artifacts, so the adopter declares it and nothing infers it.
+        path = self.root / "relkit.toml"
+        path.write_text(path.read_text() + "require_provenance = false\n")
+        self.commit()
+
+        code, output = self.invoke("plan")
+
+        self.assertEqual(0, code, output)
+        self.assertFalse(self.plan_json(output)["settings"]["require_provenance"])
+        self.assertIn("build provenance is not verified", output)
+
+        code, output = self.invoke()
+
+        self.assertEqual(0, code, output)
+        self.assertEqual("passed", self.receipt()["verification"])
+        self.assertIs(False, self.github.provenance_verified)
 
     def test_plan_is_read_only_even_when_publish_is_given(self):
         before = set(self.root.rglob("*"))
@@ -960,6 +995,25 @@ class BackendTests(unittest.TestCase):
         self.assertEqual("a" * 40, args[args.index("--source-digest") + 1])
         self.assertEqual("a" * 40, args[args.index("--signer-digest") + 1])
         self.assertIn("example/project/.github/workflows/release.yml", args)
+
+    def test_release_membership_is_verified_without_provenance_when_not_declared(self):
+        # The two native release commands work where build provenance is unavailable,
+        # so an undeclared provenance must skip only the attestation check.
+        runner = Runner(Path("."))
+        with patch.object(runner, "call", return_value="{}") as call:
+            GitHub(runner, "example/project").signatures(
+                "v1.0.0",
+                "a" * 40,
+                ".github/workflows/release.yml",
+                [Path("application.bin")],
+                ci={"id": 15, "attempt": 1},
+                repository_id=123,
+                provenance=False,
+            )
+        commands = [arguments[0][:3] for arguments, _ in call.call_args_list]
+        self.assertIn(["gh", "release", "verify"], commands)
+        self.assertIn(["gh", "release", "verify-asset"], commands)
+        self.assertNotIn(["gh", "attestation", "verify"], commands)
 
     def test_remote_url_cannot_redirect_publication(self):
         runner = Runner(Path("."))

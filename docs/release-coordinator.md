@@ -31,7 +31,8 @@ Before adoption, configure the CI publisher to:
   release is a draft, then publish an **immutable** release;
 - use the selected committed changelog entry as its release body;
 - produce GitHub build-provenance attestations for **every configured asset**, from
-  this same workflow and commit, with the tag as source ref;
+  this same workflow and commit, with the tag as source ref, unless the project
+  declares `require_provenance = false`;
 - expose the configured required job names in the selected workflow run, each
   declared as a job id or literal `name:` in a block-style `jobs:` mapping;
   planning refuses an undeclared `required_jobs` entry before any tag exists and
@@ -84,6 +85,10 @@ timeout = 1800
 command_timeout = 600
 require_guard = false
 owner_audit = false
+# Optional: set false where the platform cannot persist build provenance, for example
+# a user-owned private repository. The published set is then decided by the signed
+# release attestation alone. Never inferred; declaring it is the only way to opt out.
+require_provenance = true
 # Optional: also push this existing branch, which must point to the release SHA.
 # branch = "main"
 ```
@@ -105,6 +110,16 @@ version. Asset templates support only `{version}` and `{tag}` and must expand to
 distinct portable filenames. `checksum_file` is optional: GitHub SHA-256 asset
 digests are always checked; a declared manifest additionally must contain exactly
 one standard `SHA256  filename` or `SHA256 *filename` line for every other asset.
+
+`require_provenance` declares whether this repository's platform can persist build
+provenance for its assets. It defaults to `true`, so the strongest verification stays
+the default and opting out is always explicit and visible in the plan's operator
+block. With `false` the immutable release, its signed release attestation, the exact
+asset names, sizes and SHA-256 digests, the checksum manifest and the downloaded
+application smoke are all still verified; what is not proven is which workflow run
+produced those bytes, because that claim lives only in the provenance certificate.
+The capability is a platform policy rather than a fact about the artifacts, and this
+tool does not infer it from repository visibility, owner type or plan.
 
 `require_guard = true` verifies the existing owned guard and compatible dispatcher
 during planning, before project commands and again afterward to detect drift;
@@ -213,8 +228,9 @@ refused. The REST run's branch-name field alone cannot prove a tag; final verifi
 also uses native `gh attestation verify` with full `refs/tags/...`, source SHA and
 signer workflow/SHA. Its verified **certificate extensions**, not the workflow's
 editable predicate, must identify the repository ID, push trigger and exact CI
-run/attempt URL. Native `gh release verify` and `verify-asset` validate the immutable
-release's signature and asset membership. Every downloaded file is size/hash checked
+run/attempt URL; that whole paragraph applies only where `require_provenance` is
+true. Native `gh release verify` and `verify-asset` validate the immutable release's
+signature and asset membership, and they are performed either way. Every downloaded file is size/hash checked
 before smoke; metadata and file digests are checked again afterward.
 
 The maintained integration is based on the official

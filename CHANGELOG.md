@@ -11,6 +11,17 @@
   gates it runs as `tools/check.py` and a downloaded-application smoke that reads
   only the published assets. Until now both releases were made by hand, so the
   contract the tool asks adopters to accept was the one path it never exercised.
+- `release.require_provenance` declares whether the platform can persist build
+  provenance for this repository's assets. It defaults to `true`, so the strongest
+  verification stays the default and opting out is explicit and visible in the plan's
+  operator block. With `false` the immutable release, its signed release attestation,
+  the exact asset names, sizes and digests, the checksum manifest and the downloaded
+  application smoke are all still verified; what is not proven is which workflow run
+  produced those bytes. GitHub refuses to persist build provenance for a user-owned
+  private repository, and the capability is a platform policy rather than a fact
+  about the artifacts, so the coordinator required something no such repository could
+  supply. Nothing is inferred from visibility, owner type or plan: an adopter that
+  cannot attest says so.
 - A second workflow runs the same gates on Linux, macOS and Windows for every
   branch push and on request, publishing nothing. Without it the only way to run
   CI was to push a tag, which means every platform failure costs a version number.

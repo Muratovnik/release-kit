@@ -42,8 +42,6 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,15 +57,11 @@ jobs:
         run: python -m releasekit.cli notes "$GITHUB_REF_NAME" --output "$RUNNER_TEMP/notes.md"
         env:
           PYTHONPATH: src
-      - name: Attest every published asset
-        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
-        with:
-          subject-path: |
-            dist/relkit.pyz
-            dist/relkit.pyz.sha256
-            dist/release-kit-plugin.zip
-            dist/release-kit-plugin.zip.sha256
-            dist/release.json
+      # No build-provenance step: GitHub refuses to persist attestations for a
+      # user-owned private repository, and relkit.toml declares
+      # require_provenance = false to match. Restoring it means three edits at once,
+      # never one without the others: the attest step here, `id-token: write` and
+      # `attestations: write` above, and that key in relkit.toml.
       - name: Attach the exact asset set to a draft
         run: >
           gh release create "$GITHUB_REF_NAME" --draft --verify-tag

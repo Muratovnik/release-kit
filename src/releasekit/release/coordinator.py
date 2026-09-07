@@ -418,6 +418,18 @@ def caveats(value: dict) -> list[str]:
             + ", ".join(jobs["optional"])
         )
     lines.append(
+        (
+            "CI must produce build-provenance attestations for every planned asset; a "
+            "repository that cannot fails after the tag exists"
+        )
+        if value["settings"]["require_provenance"]
+        else (
+            "build provenance is not verified for this release: the published set and its "
+            "digests still come from GitHub's signed release attestation, but nothing proves "
+            "which workflow run produced those bytes"
+        )
+    )
+    lines.append(
         f"local checks run on {value.get('host', 'this host')} only; a green local run "
         "is not the CI platform matrix"
     )
@@ -1079,6 +1091,7 @@ def _verify(
         [directory / asset["name"] for asset in identity["assets"]],
         ci=state["ci"],
         repository_id=value["repository_id"],
+        provenance=value["settings"]["require_provenance"],
     )
     workspace.remember(workspace.path / "runtime")
     _stage(path, state, "publication-verification", "passed")

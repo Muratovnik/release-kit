@@ -197,8 +197,25 @@ class GitHub:
         )
 
     def signatures(
-        self, tag: str, sha: str, workflow: str, paths: list[Path], *, ci: dict, repository_id: int
+        self,
+        tag: str,
+        sha: str,
+        workflow: str,
+        paths: list[Path],
+        *,
+        ci: dict,
+        repository_id: int,
+        provenance: bool = True,
     ) -> None:
+        """Verify the immutable release, its asset membership and, when declared, the
+        build provenance of every asset.
+
+        Without provenance the published set and its digests still come from the
+        release attestation GitHub signed, checked by the two native commands below.
+        What is not proven is which workflow run produced those bytes: the CI run is
+        then only the one this coordinator selected and observed. That is a weaker
+        claim, so it is never the default and never inferred.
+        """
         repo = f"github.com/{self.repository}"
         self.runner.call(["gh", "release", "verify", tag, "--repo", repo, "--format", "json"])
         for path in paths:
@@ -215,6 +232,8 @@ class GitHub:
                     "json",
                 ]
             )
+            if not provenance:
+                continue
             verified = self.runner.call(
                 [
                     "gh",

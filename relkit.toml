@@ -24,6 +24,12 @@ profile = "strict"
 # together, then verifies what the workflow published against the signed release
 # attestation. No guard is pinned here: this repository vendors no projection of
 # itself, so `require_guard` has no input to verify.
+#
+# Build provenance is off because GitHub refuses to persist it for a user-owned
+# private repository: `Feature not available for user-owned private repositories`.
+# The signed release attestation does work here and still decides the published set.
+# Make this repository public, or move it to an owner whose plan allows private
+# attestations, and this becomes `true`.
 [release]
 repository = "Muratovnik/release-kit"
 workflow = ".github/workflows/release.yml"
@@ -44,3 +50,4 @@ smoke_platforms = ["linux", "darwin", "win32"]
 # The suite alone runs for minutes on a cold checkout; the default 600 leaves no
 # room for a slower host, and a check killed by its own timeout reads as a failure.
 command_timeout = 1800
+require_provenance = false

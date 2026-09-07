@@ -53,6 +53,11 @@ class Settings:
     checksum_file: str = ""
     require_guard: bool = False
     owner_audit: bool = False
+    # Build provenance is not something every repository can produce, and the
+    # capability is a platform policy rather than a fact about the artifacts. The
+    # adopter declares it; nothing here infers it from visibility or plan. True keeps
+    # the strongest verification as the default, so opting out is always explicit.
+    require_provenance: bool = True
     timeout: int = 1800
     command_timeout: int = 600
 
@@ -138,7 +143,7 @@ def parse(raw: object) -> Settings:
                         raise ValueError(
                             "unknown release command placeholder; escape literal braces as {{ }}"
                         )
-    for key in ("require_guard", "owner_audit"):
+    for key in ("require_guard", "owner_audit", "require_provenance"):
         if type(getattr(value, key)) is not bool:
             raise ValueError(f"release.{key} must be true or false")
     if value.owner_audit and not value.require_guard:
