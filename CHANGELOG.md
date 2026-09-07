@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- `relkit update --refresh-guard` adopts a guard template written by an earlier
+  release-kit instead of only reporting one. An older template pinning the current
+  inputs is deliberately not drift, so the run found no change to make, reported
+  itself as already current and left the hook alone, having already printed the exact
+  template transition it did not perform. Only `protect install` could migrate it,
+  while `protect check` sent the operator here.
+- A no-op `relkit update` no longer reports a hook transition it does not perform.
+  The plan promises that a no-op has no changed files; with an older template
+  installed it listed the guard anyway. The transition is now printed only when
+  those bytes are really written, and a run with nothing to update names the command
+  that adopts the older template rather than implying it just did.
+
 ## [0.17.0] - 2026-09-07
 
 ### Added

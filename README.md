@@ -186,6 +186,11 @@ download a release or edit the projection/configuration. A normal `update` refus
 pre-existing drift rather than treating an unrelated update as permission to trust it.
 Custom or modified hook templates still need manual owner review.
 
+The same command adopts a guard written by an earlier release-kit. An older template
+pinning the current inputs is not drift and keeps enforcing them, so nothing fails and
+nothing is urgent; `protect check` reports it, and `update --refresh-guard` rewrites it
+with the current template under the usual backup, validation and rollback.
+
 ### First update and rollback
 
 Older embedded versions have no `update` command. Build or obtain a trusted 0.6.0+
@@ -344,7 +349,8 @@ The repository guard pins SHA-256 for the tracked release-kit projection,
 coordinator is configured, the tag workflow that publishes, before it executes
 repository-controlled code. It resolves `python`, `python3` or `py` rather than
 assuming one of them, and a guard written by an earlier release-kit keeps
-enforcing its pins until `relkit protect install` adopts the current template.
+enforcing its pins until `relkit update --refresh-guard` or `relkit protect install`
+adopts the current template.
 A reviewed change to any of those inputs requires an
 explicit `update --refresh-guard` (with backup and validation) or `protect install`.
 `--require-overlay` adds the exact link/target/tracking oracle.

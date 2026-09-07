@@ -486,7 +486,13 @@ def run(
                         "--refresh-guard requires an existing supported guard and no update source"
                     )
                 changes = protection.digest_changes(root)
-                if not changes:
+                # An older template pinning the current inputs is not drift, so it
+                # reports no change here. Rewriting it is still this action's job:
+                # `protect check` sends the operator to exactly this command.
+                stale_template = protection.outdated_template(root)
+                if stale_template:
+                    print("relkit update: guard uses an older template; adopting the current one")
+                if not changes and not stale_template:
                     print("relkit update: guard already matches the current inputs")
                 for change in changes:
                     print(f"relkit update: {change}")
@@ -518,9 +524,16 @@ def run(
                 # reported, which is the point of that rule.
                 if (state := Path(temporary) / GH_STATE).is_dir():
                     workspace.remember(state)
-            noop = candidate.sha256 == old.sha256 and (not refresh_guard or not changes)
+            noop = candidate.sha256 == old.sha256 and (
+                not refresh_guard or not (changes or stale_template)
+            )
             if noop:
                 print(f"relkit update: already current ({old.version}, sha256:{old.sha256})")
+                if old_hook is not None and protection.outdated_template(root):
+                    print(
+                        "relkit update: the installed guard is an older template pinning the "
+                        "current inputs; adopt it with `relkit update --refresh-guard`"
+                    )
             if (
                 not noop
                 and not refresh_guard
@@ -538,13 +551,20 @@ def run(
             new_hook = None
             new_digests = {}
             if old_hook is not None:
-                print(f"relkit update: owned guard to refresh: {hook}")
                 new_digests = protection._guarded_digests(root)
                 new_digests[PROJECTION] = candidate.sha256
                 new_hook = protection.hook_content(root, digests=new_digests).encode()
-                print(
-                    f"relkit update: guard sha256:{hashlib.sha256(old_hook).hexdigest()} -> sha256:{hashlib.sha256(new_hook).hexdigest()}"
-                )
+                if noop:
+                    # Nothing is written on this path, and the plan promises a no-op has
+                    # no changed files. A reported hook transition that never happens is
+                    # how an operator comes to believe a guard was migrated when it was
+                    # not, which is worse than the inaction it hides.
+                    new_hook = old_hook
+                elif new_hook != old_hook:
+                    print(f"relkit update: owned guard to refresh: {hook}")
+                    print(
+                        f"relkit update: guard sha256:{hashlib.sha256(old_hook).hexdigest()} -> sha256:{hashlib.sha256(new_hook).hexdigest()}"
+                    )
             files = []
             for path, before, after in (
                 (projection, old_payload, payload),

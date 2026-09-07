@@ -75,8 +75,8 @@ update; it must not be interpreted as proof that no side effects occurred.
   mounts. Inspect `errors` before treating checked mounts as valid.
 - `protect`: `guard` (`valid`, `invalid`, `installed`), with `path` on installation.
   A valid guard written by an older release-kit adds a `guard_template_outdated`
-  warning; its pins are still enforced and `protect install` adopts the current
-  template.
+  warning; its pins are still enforced, and `update --refresh-guard` or
+  `protect install` adopts the current template.
   `install --dry-run` returns `data.plan` with exact before/after hook hashes,
   guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
   with `install --plan-hash HASH` to reject drift. Preview does not write a hook.

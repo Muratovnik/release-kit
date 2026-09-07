@@ -546,6 +546,52 @@ class UpdateTests(UpdateFixture):
         self.assertEqual(old_hook, self.hook.read_bytes())
         self.assertEqual(before, {path: path.read_bytes() for path in before})
 
+    def test_refresh_guard_adopts_a_template_it_used_to_only_report(self) -> None:
+        # Field case on 0.16.0: the pins were current and the guard was an older
+        # template, so the run printed that exact template transition, exited 0 and
+        # wrote nothing. Only `protect install` could migrate it.
+        current = self.guard()
+        pins = protection.recorded_digests(self.root)
+        self.hook.write_bytes(protection._hook_v1(repr(pins)).encode())
+        older = self.hook.read_bytes()
+        self.assertNotEqual(current, older)
+        self.assertIsNone(protection.problem(self.root), "an older template is not drift")
+
+        code, output = self.invoke(refresh_guard=True, dry_run=True)
+
+        self.assertEqual(0, code, output)
+        self.assertIn("older template", output)
+        self.assertNotIn("already matches", output)
+        self.assertEqual(older, self.hook.read_bytes())
+
+        code, output = self.invoke(refresh_guard=True)
+
+        self.assertEqual(0, code, output)
+        self.assertEqual(current, self.hook.read_bytes())
+        self.assertFalse(protection.outdated_template(self.root))
+        backup = self.root / ".git" / self.receipt()["backup"]
+        self.assertEqual(older, (backup / "pre-push").read_bytes())
+        self.assertEqual(0, self.invoke(rollback=True)[0])
+        self.assertEqual(older, self.hook.read_bytes())
+
+    def test_a_noop_update_names_the_adopting_command_instead_of_a_hook_change(self) -> None:
+        self.guard()
+        pins = protection.recorded_digests(self.root)
+        self.hook.write_bytes(protection._hook_v1(repr(pins)).encode())
+        older = self.hook.read_bytes()
+        unchanged = self.directory / "same.pyz"
+        unchanged.write_bytes(self.old)
+        result = update.Result()
+
+        code, output = self.invoke(artifact_path=unchanged, sha256=sha(self.old), result=result)
+
+        self.assertEqual(0, code, output)
+        self.assertIn("already current", output)
+        self.assertIn("--refresh-guard", output)
+        self.assertNotIn("guard sha256:", output)
+        self.assertEqual([], result.data["plan"]["files"])
+        self.assertEqual(older, self.hook.read_bytes())
+
     def test_normal_update_does_not_silently_approve_existing_guard_drift(self) -> None:
         self.guard()
         self.policy.write_text(POLICY + "# new policy\n")

@@ -165,7 +165,8 @@ def _protect(arguments: argparse.Namespace) -> int:
         if protection.outdated_template(root):
             message = (
                 "the installed guard is an older release-kit template pinning the current "
-                "inputs; run `relkit protect install` to adopt the current one"
+                "inputs; adopt the current one with `relkit update --refresh-guard` "
+                "(or `relkit protect install`)"
             )
             arguments.result.warnings.append(
                 {"code": "guard_template_outdated", "message": message}
