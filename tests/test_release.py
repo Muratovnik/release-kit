@@ -63,6 +63,11 @@ class FakeGitHub:
         self.signatures_checked = 0
         self.no_release = False
         self.orphan_release = False
+        self.attestation = True
+        self.attestation_digests_differ = False
+        self.attestation_extra_asset = False
+        self.attestation_tag_oid = None
+        self.attestation_predicate = None
 
     def api(self, path="", **_kwargs):
         if not path:
@@ -88,6 +93,38 @@ class FakeGitHub:
             "prerelease": False,
             "immutable": self.immutable,
             "body": self.fixture.notes + self.body_suffix,
+        }
+
+    def release_attestation(self, tag):
+        if not self.attestation:
+            raise ReleaseError(f"attestation for {tag} could not be verified: no attestations")
+        subjects = [
+            {
+                "uri": f"pkg:github/example/project@{tag}",
+                "digest": {
+                    "sha1": self.attestation_tag_oid
+                    or self.fixture.runner.git("rev-parse", f"refs/tags/{tag}")
+                },
+            }
+        ]
+        for name, payload in self.fixture.payloads.items():
+            digest = hashlib.sha256(
+                payload + (b"drift" if self.attestation_digests_differ else b"")
+            ).hexdigest()
+            subjects.append({"name": name, "digest": {"sha256": digest}})
+        if self.attestation_extra_asset:
+            subjects.append({"name": "smuggled.bin", "digest": {"sha256": "0" * 64}})
+        return {
+            "predicateType": self.attestation_predicate
+            or coordinator.RELEASE_ATTESTATION_PREDICATE,
+            "subject": subjects,
+            "predicate": {
+                "repository": "example/project",
+                "repositoryId": "123",
+                "databaseId": "21",
+                "tag": tag,
+                "purl": f"pkg:github/example/project@{tag}",
+            },
         }
 
     def assets(self, _release_id):
@@ -411,6 +448,25 @@ class ReleaseTests(ReleaseFixture):
         self.github.extra_asset = True
         self.assertIn("exact file set", self.invoke("resume")[1])
 
+    def test_the_signed_release_attestation_decides_the_published_asset_set(self):
+        # The REST asset list is unsigned. GitHub signs a statement about an immutable
+        # release and its exact assets, so a rewritten API answer must not be enough.
+        self.github.attestation = False
+        self.assertIn("could not be verified", self.invoke()[1])
+        self.github.attestation = True
+        self.github.attestation_digests_differ = True
+        self.assertIn("does not match the reported assets", self.invoke("resume")[1])
+        self.github.attestation_digests_differ = False
+        self.github.attestation_extra_asset = True
+        self.assertIn("does not match the reported assets", self.invoke("resume")[1])
+
+    def test_an_attestation_for_another_tag_or_predicate_is_refused(self):
+        self.github.attestation_tag_oid = "0" * 40
+        self.assertIn("different tag object", self.invoke()[1])
+        self.github.attestation_tag_oid = None
+        self.github.attestation_predicate = "https://slsa.dev/provenance/v1"
+        self.assertIn("not a GitHub release statement", self.invoke("resume")[1])
+
     def test_changed_artifact_identity_is_not_adopted_on_resume(self):
         self.github.signature_valid = False
         self.invoke()
@@ -649,7 +705,7 @@ class ReleaseTests(ReleaseFixture):
         self.assertIn(
             "exact asset set for v1.0.0 (2 file(s)):\n  application.bin\n  SHA256SUMS\n", notes
         )
-        self.assertIn("verified only after the immutable release exists", notes)
+        self.assertIn("signed release attestation only after the immutable release exists", notes)
         self.assertIn("SHA256SUMS must list every other planned asset", notes)
         self.assertIn(f"local checks run on {sys.platform} only", notes)
         self.assertNotIn("could not be read statically", notes)

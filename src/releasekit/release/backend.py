@@ -124,6 +124,33 @@ class GitHub:
     def release(self, tag: str):
         return self.api(f"/releases/tags/{quote(tag, safe='')}", optional=True)
 
+    def release_attestation(self, tag: str) -> dict:
+        """The statement GitHub signs about an immutable release and its exact assets.
+
+        `gh` performs the Sigstore verification and this returns only what it verified,
+        so the coordinator compares a signed claim against its own plan instead of an
+        unsigned REST response. Needs the documented `gh` floor and an immutable
+        release; both are already required to coordinate a release at all.
+        """
+        try:
+            payload = json.loads(
+                self.runner.call(
+                    ["gh", "release", "verify", tag, "--repo", self.repository, "--format", "json"]
+                )
+            )
+        except CommandError as error:
+            detail = (error.result.stderr or error.result.stdout or "").strip()[-500:]
+            raise ReleaseError(
+                f"GitHub's signed release attestation for {tag} could not be verified: {detail}"
+            ) from error
+        except ValueError as error:
+            raise ReleaseError("gh returned invalid release attestation JSON") from error
+        result = payload.get("verificationResult") if isinstance(payload, dict) else None
+        statement = result.get("statement") if isinstance(result, dict) else None
+        if not isinstance(statement, dict):
+            raise ReleaseError("verified release attestation carries no in-toto statement")
+        return statement
+
     def assets(self, release_id: int) -> list[dict]:
         return [
             asset

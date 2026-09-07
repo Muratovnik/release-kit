@@ -2,6 +2,20 @@
 
 ## [Unreleased]
 
+## [0.16.0] - 2026-09-07
+
+### Added
+
+- Publication verification now reads GitHub's signed release attestation
+  (`in-toto.io/attestation/release/v0.2`) through `gh release verify` and requires
+  it to agree with the REST asset list: the same names, the same SHA-256 digests,
+  no extra or missing asset, the release database id and repository id of this
+  plan, and the annotated tag object this run pushed. The asset set that decides
+  a release is therefore a claim GitHub signed, not an API response that a
+  rewritten answer could choose. Immutable releases were already mandatory and the
+  documented `gh` floor already exceeds the 2.81.0 that introduced the command, so
+  no adopter requirement changed.
+
 ## [0.15.0] - 2026-09-06
 
 ### Fixed

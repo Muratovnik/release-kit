@@ -112,6 +112,9 @@ otherwise GitHub's latest published non-prerelease release is used. This is not 
 update from a branch or from unversioned source. The publisher must first attach
 `relkit.pyz` to a published release; merely pushing commits or a tag is insufficient.
 
+Publication verification compares GitHub's signed release attestation with the
+REST asset list; both must report the same exact asset set and digests.
+
 The GitHub transport uses the optional GitHub CLI (`gh`) and its existing
 authentication, including access to private repositories. **Dependency decision:**
 delegate authenticated release discovery/download to the maintained CLI rather than

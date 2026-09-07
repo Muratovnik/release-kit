@@ -393,7 +393,8 @@ def caveats(value: dict) -> list[str]:
     lines = [
         (
             f"CI must publish exactly the {len(value['assets'])} planned asset(s); the set is "
-            "verified only after the immutable release exists and cannot be corrected afterwards"
+            "checked against GitHub's signed release attestation only after the immutable "
+            "release exists, and cannot be corrected afterwards"
         )
     ]
     if value["checksum_file"]:
@@ -906,6 +907,50 @@ def _ci(
             reconciled = time.monotonic()
 
 
+RELEASE_ATTESTATION_PREDICATE = "https://in-toto.io/attestation/release/v0.2"
+
+
+def attested_assets(statement: dict, value: dict, release: dict, tag_oid: str) -> dict[str, str]:
+    """Asset name to SHA-256, read only from a statement naming this exact release.
+
+    The subject without a name is the release itself, and its SHA-1 is the ref as
+    GitHub resolved it: for an annotated tag that is the tag object, not the commit.
+    """
+    predicate = statement.get("predicate")
+    if statement.get("predicateType") != RELEASE_ATTESTATION_PREDICATE or not isinstance(
+        predicate, dict
+    ):
+        raise ReleaseError("release attestation is not a GitHub release statement")
+    if (
+        str(predicate.get("repository", "")).casefold()
+        != value["settings"]["repository"].casefold()
+        or str(predicate.get("repositoryId")) != str(value["repository_id"])
+        or str(predicate.get("databaseId")) != str(release["id"])
+        or predicate.get("tag") != value["tag"]
+    ):
+        raise ReleaseError("release attestation names another repository, release or tag")
+    assets: dict[str, str] = {}
+    tagged = 0
+    for subject in statement.get("subject") or []:
+        if not isinstance(subject, dict) or not isinstance(subject.get("digest"), dict):
+            raise ReleaseError("release attestation carries a malformed subject")
+        digest = subject["digest"]
+        if subject.get("name") is None:
+            if digest.get("sha1") != tag_oid:
+                raise ReleaseError("release attestation binds a different tag object")
+            tagged += 1
+            continue
+        name = settings.filename(str(subject["name"]))
+        if name in assets:
+            raise ReleaseError("release attestation lists an asset twice")
+        if not re.fullmatch(r"[a-f0-9]{64}", str(digest.get("sha256"))):
+            raise ReleaseError(f"release attestation asset lacks a SHA-256 digest: {name}")
+        assets[name] = str(digest["sha256"])
+    if tagged != 1:
+        raise ReleaseError("release attestation does not bind exactly one tag object")
+    return assets
+
+
 def _asset_identity(asset: dict) -> dict:
     if (
         type(asset.get("id")) is not int
@@ -919,7 +964,7 @@ def _asset_identity(asset: dict) -> dict:
     return {key: asset[key] for key in ("id", "name", "size", "digest")}
 
 
-def _published_identity(github: GitHub, value: dict, release: dict) -> dict:
+def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str) -> dict:
     if release["draft"] or release["prerelease"] or release.get("immutable") is not True:
         raise ReleaseError("release must be published, stable and immutable")
     if release["tag_name"] != value["tag"]:
@@ -931,6 +976,14 @@ def _published_identity(github: GitHub, value: dict, release: dict) -> dict:
     )
     if [asset["name"] for asset in assets] != sorted(value["assets"]):
         raise ReleaseError("published assets differ from the planned exact file set")
+    # Everything above came from an unsigned REST response. GitHub also signs a
+    # statement about an immutable release and its exact asset set; require the two
+    # to agree, so a rewritten API answer cannot decide what was published.
+    attested = attested_assets(github.release_attestation(value["tag"]), value, release, tag_oid)
+    if attested != {asset["name"]: asset["digest"].removeprefix("sha256:") for asset in assets}:
+        raise ReleaseError(
+            "GitHub's signed release attestation does not match the reported assets or digests"
+        )
     return {
         "release_id": release["id"],
         "assets": assets,
@@ -1002,7 +1055,7 @@ def _verify(
     print("relkit release: verifying publication and signatures", flush=True)
     state["verification"] = "running"
     _stage(path, state, "publication-verification")
-    identity = _published_identity(github, value, release)
+    identity = _published_identity(github, value, release, state["tag_oid"])
     if state.get("artifacts") and state["artifacts"] != identity:
         raise ReleaseError("published artifact identity changed across resume")
     state["artifacts"] = identity
@@ -1045,7 +1098,7 @@ def _verify(
         if storage.digest(directory / asset["name"]) != asset["digest"][7:]:
             raise ReleaseError("downloaded artifact changed during smoke")
     _, latest = _reconcile(runner, github, state)
-    if latest is None or _published_identity(github, value, latest) != identity:
+    if latest is None or _published_identity(github, value, latest, state["tag_oid"]) != identity:
         raise ReleaseError(
             "publication changed during verification (notes remain editable even on immutable releases)"
         )

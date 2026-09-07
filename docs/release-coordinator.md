@@ -43,7 +43,12 @@ attestation or incorrect publication can be detected **after publication**; this
 not a server-side transaction or a promise that a bad release can be unpublished.
 The exact asset set, notes, sizes and digests are likewise compared only once CI
 has published the immutable release: a mismatch is detected, cannot be corrected,
-and spends the version number. Keep the workflow's upload steps and `assets` in
+and spends the version number. That comparison is made against GitHub's signed
+release attestation as well as the REST asset list, and the two must agree on the
+names and SHA-256 digests; the attestation must also name this plan's repository
+id, the release id and the annotated tag object this run pushed. `gh` performs the
+Sigstore verification, so an unsigned API answer alone cannot decide what was
+published — but no signature moves the check before publication. Keep the workflow's upload steps and `assets` in
 step; the owner guard pins the workflow for that reason, and `plan` prints the
 declared set as a separate block. Moving the final draft-to-published step into
 the coordinator would close that window but contradicts the CI-alone-publishes
