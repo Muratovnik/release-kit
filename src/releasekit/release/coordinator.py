@@ -253,6 +253,16 @@ def workflow_jobs(text: str) -> dict[str, str | None] | None:
     return jobs or None
 
 
+def job_matches(displayed: str, required: str) -> bool:
+    """Whether a finished job is one the plan required, matrix legs included.
+
+    GitHub displays a matrix job as `name (values)`, and `job_coverage` accepts that
+    prefix before a tag exists. A finished-run check that demanded an exact name
+    refused precisely the jobs it had already approved, and only once a tag existed.
+    """
+    return displayed == required or displayed.startswith(f"{required} (")
+
+
 def job_coverage(required: list[str], jobs: dict[str, str | None] | None) -> dict:
     """Static evidence that each required CI job exists before any tag is pushed.
 
@@ -904,14 +914,23 @@ def _ci(
                     )
                 jobs = github.jobs(run["id"], run["run_attempt"])
                 for name in value["settings"]["required_jobs"]:
-                    selected = [job for job in jobs if job["name"] == name]
-                    if (
-                        len(selected) != 1
-                        or selected[0]["status"] != "completed"
-                        or selected[0]["conclusion"] != "success"
-                        or selected[0]["head_sha"] != value["sha"]
-                    ):
-                        raise ReleaseError(f"required CI job did not pass exactly once: {name}")
+                    selected = [job for job in jobs if job_matches(job["name"], name)]
+                    if not selected:
+                        raise ReleaseError(f"required CI job never ran in this run: {name}")
+                    # Every matched leg, not the first: a matrix gates publication only
+                    # if all of its legs passed on this exact commit.
+                    failed = [
+                        job["name"]
+                        for job in selected
+                        if job["status"] != "completed"
+                        or job["conclusion"] != "success"
+                        or job["head_sha"] != value["sha"]
+                    ]
+                    if failed:
+                        raise ReleaseError(
+                            "required CI job did not pass for this exact commit: "
+                            + ", ".join(sorted(failed))
+                        )
                 if published and not published["draft"]:
                     _stage(path, state, "ci", "passed")
                     return published

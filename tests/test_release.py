@@ -57,6 +57,8 @@ class FakeGitHub:
         self.download_valid = True
         self.body_suffix = ""
         self.missing_job = False
+        self.job_names = ["publish"]
+        self.failed_jobs = ()
         self.extra_run = False
         self.wrong_tag = False
         self.attempt = 1
@@ -180,18 +182,17 @@ class FakeGitHub:
         return [value, {**value, "id": 16}] if self.extra_run else [value]
 
     def jobs(self, _run_id, _attempt):
-        return (
-            []
-            if self.missing_job
-            else [
-                {
-                    "name": "publish",
-                    "status": "completed",
-                    "conclusion": "success",
-                    "head_sha": self.fixture.sha,
-                }
-            ]
-        )
+        if self.missing_job:
+            return []
+        return [
+            {
+                "name": name,
+                "status": "completed",
+                "conclusion": "failure" if name in self.failed_jobs else "success",
+                "head_sha": self.fixture.sha,
+            }
+            for name in self.job_names
+        ]
 
 
 class ReleaseFixture(unittest.TestCase):
@@ -272,6 +273,21 @@ class ReleaseFixture(unittest.TestCase):
                 **kwargs,
             )
         return code, stream.getvalue()
+
+    def require_matrix_check(self):
+        """Declare a second required job that a finished run reports as a matrix."""
+        (self.root / ".github/workflows/release.yml").write_text(
+            "on: {push: {tags: ['v*']}}\njobs:\n"
+            "  publish:\n    runs-on: ubuntu-latest\n"
+            "  check:\n    runs-on: ubuntu-latest\n"
+        )
+        policy = self.root / "relkit.toml"
+        policy.write_text(
+            policy.read_text().replace(
+                'required_jobs = ["publish"]', 'required_jobs = ["publish", "check"]'
+            )
+        )
+        self.commit()
 
     def plan_json(self, output):
         """The plan JSON precedes the operator block that `plan` prints on stderr."""
@@ -471,6 +487,34 @@ class ReleaseTests(ReleaseFixture):
                 self.assertEqual(1, code, output)
                 self.assertNotIn("downloaded-application smoke", output)
                 setattr(self.github, fault, True)
+
+    def test_a_required_matrix_job_gates_publication_on_every_leg(self):
+        # Field case: the first self-hosted release published, then verification
+        # refused `check` because the run displays a matrix as `check (os)`. Planning
+        # had accepted the same name by that prefix, before any tag existed.
+        self.require_matrix_check()
+        self.github.job_names = [
+            "publish",
+            "check (ubuntu-latest)",
+            "check (macos-latest)",
+            "check (windows-latest)",
+        ]
+
+        code, output = self.invoke()
+
+        self.assertEqual(0, code, output)
+        self.assertEqual("passed", self.receipt()["verification"])
+
+    def test_one_failed_matrix_leg_names_itself_and_refuses(self):
+        self.require_matrix_check()
+        self.github.job_names = ["publish", "check (ubuntu-latest)", "check (macos-latest)"]
+        self.github.failed_jobs = ("check (macos-latest)",)
+
+        code, output = self.invoke()
+
+        self.assertEqual(1, code, output)
+        self.assertIn("check (macos-latest)", output)
+        self.assertNotIn("check (ubuntu-latest)", output.split("did not pass", 1)[-1])
 
     def test_no_other_green_run_or_missing_job_is_accepted(self):
         self.github.extra_run = True

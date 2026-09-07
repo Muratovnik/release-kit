@@ -61,6 +61,12 @@
   the release coordinator requires that heading to compare the actual previous tag
   to the released one. No project could satisfy both, which is why this repository
   could not publish itself; the builder now accepts the linked form.
+- A required CI job reported as a matrix no longer fails verification. Planning
+  accepts `required_jobs` by the prefix GitHub displays before ` (`, but the
+  finished-run check demanded an exact name, so it refused precisely the jobs it had
+  already approved, and only once the tag existed and the release was published. One
+  function answers the match for both, every matched leg must have passed on the
+  exact release commit, and a failure names the legs rather than the required entry.
 - A saved release receipt written before `require_provenance` existed no longer
   raises on the missing key. It was recorded when provenance was unconditional, so it
   reads as requiring it: an older attempt must not finish with less verification than
