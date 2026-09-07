@@ -18,6 +18,12 @@ from .result import Result
 
 PROJECTION = protection.PROJECTION_PATH
 RECEIPT = "relkit-update.json"
+BACKUP_PREFIX = "relkit-update-"
+BACKUP_NAME = re.compile(rf"{BACKUP_PREFIX}[A-Za-z0-9_-]+")
+BACKUP_CONTENTS = frozenset({"relkit.pyz", "pre-push"})
+# gh keeps its state under the XDG directories this updater confines to one
+# workspace, so its scratch lands here under a single well-known name.
+GH_STATE = "gh"
 
 
 class UpdateError(Exception):
@@ -97,6 +103,48 @@ def _guard(root: Path, git_dir: Path, *, refresh: bool = False) -> tuple[Path, b
             raise UpdateError(f"existing guard must be valid before updating: {problem}")
         return path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
     return path, None, 0o755
+
+
+def superseded_backups(git_dir: Path, keep: str) -> tuple[list[Path], list[Path]]:
+    """Backup directories no receipt can restore, split into removable and retained.
+
+    One receipt names one backup, so every other directory is already unreachable
+    through `--rollback`. Removable means: this exact naming, inside this
+    repository's own Git directory, not the current receipt's, and holding nothing
+    but the files this updater writes. Anything else is somebody else's file.
+    """
+    removable: list[Path] = []
+    retained: list[Path] = []
+    for path in sorted(git_dir.glob(f"{BACKUP_PREFIX}*")):
+        if path.name == keep:
+            continue
+        if not path.is_dir() or not BACKUP_NAME.fullmatch(path.name):
+            retained.append(path)
+            continue
+        names = {item.name for item in path.iterdir()}
+        target = removable if names and names <= BACKUP_CONTENTS else retained
+        target.append(path)
+    return removable, retained
+
+
+def _prune_backups(root: Path, git_dir: Path, receipt: dict[str, object] | None) -> list[Path]:
+    if receipt is not None and receipt.get("state") == "pending":
+        raise UpdateError(
+            "an interrupted update still needs its backup; run `relkit update --rollback` first"
+        )
+    keep = receipt.get("backup") if isinstance(receipt, dict) else None
+    removable, retained = superseded_backups(git_dir, keep if isinstance(keep, str) else "")
+    for path in retained:
+        print(f"relkit update: not a plain update backup, retained: {path}", file=sys.stderr)
+    removed = []
+    for path in removable:
+        directory = _safe_path(path, root)
+        for item in sorted(directory.iterdir()):
+            _safe_path(item, root).unlink()
+        directory.rmdir()
+        removed.append(path)
+        print(f"relkit update: removed superseded backup {path.name}")
+    return removed
 
 
 def _confirm(yes: bool) -> None:
@@ -328,6 +376,7 @@ def run(
     release: str = "",
     dry_run: bool = False,
     rollback: bool = False,
+    prune_backups: bool = False,
     no_download: bool = False,
     yes: bool = False,
     refresh_guard: bool = False,
@@ -353,6 +402,23 @@ def run(
             raise UpdateError(
                 f"update lock exists: {lock}; check its process before removing a stale lock"
             ) from error
+        if prune_backups:
+            if any((artifact_path, sha256, repository, release, refresh_guard, rollback)):
+                raise UpdateError("--prune-backups does not take a source or another action")
+            receipt = _load_receipt(receipt_path) if receipt_path.exists() else None
+            removable, _ = superseded_backups(
+                git_dir, str((receipt or {}).get("backup") or "") if receipt else ""
+            )
+            result.data.update(action="prune-backups", superseded=[str(p) for p in removable])
+            print(f"relkit update: superseded backups to remove: {len(removable)}")
+            for path in removable:
+                print(f"relkit update: would remove {path}")
+            if dry_run or not removable:
+                return 0
+            _confirm(yes)
+            result.data["removed"] = [str(path) for path in _prune_backups(root, git_dir, receipt)]
+            result.data["state"] = "pruned"
+            return 0
         if rollback:
             if any((artifact_path, sha256, repository, release, refresh_guard)):
                 raise UpdateError("--rollback cannot be combined with source selection")
@@ -445,6 +511,13 @@ def run(
                     )
                 payload, candidate = _github(root, repository, release, Path(temporary))
                 workspace.remember(Path(temporary) / "relkit.pyz")
+                # The workspace confines XDG_* for the child, so gh writes its own
+                # state (a device id) beside the download. Only files inventoried
+                # before a consumer runs may be removed, so adopt the one subtree
+                # the tool just invoked owns; anything else stays retained and
+                # reported, which is the point of that rule.
+                if (state := Path(temporary) / GH_STATE).is_dir():
+                    workspace.remember(state)
             noop = candidate.sha256 == old.sha256 and (not refresh_guard or not changes)
             if noop:
                 print(f"relkit update: already current ({old.version}, sha256:{old.sha256})")
@@ -597,6 +670,11 @@ def run(
                     f"update failed; previous artifact/guard restored: {error}"
                 ) from error
             print(f"relkit update: installed {candidate.version}; backup: {backup}")
+            if extra := superseded_backups(git_dir, backup.name)[0]:
+                print(
+                    f"relkit update: {len(extra)} superseded backup(s) no receipt can restore "
+                    "remain; remove them with `relkit update --prune-backups`"
+                )
             print(
                 "relkit update: review the projection diff, run project tests, then commit; Git index and refs were not changed"
             )

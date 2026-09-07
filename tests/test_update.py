@@ -170,7 +170,10 @@ class UpdateFixture(unittest.TestCase):
 
     def invoke(self, **options: object) -> tuple[int, str]:
         arguments = {"yes": True, **options}
-        if not any(arguments.get(key) for key in ("rollback", "refresh_guard", "repository")):
+        if not any(
+            arguments.get(key)
+            for key in ("rollback", "refresh_guard", "repository", "prune_backups")
+        ):
             arguments = {
                 "artifact_path": self.candidate,
                 "sha256": sha(self.candidate.read_bytes()),
@@ -358,6 +361,83 @@ class UpdateTests(UpdateFixture):
         self.assertEqual(0, code, output)
         self.assertEqual(self.old, self.projection.read_bytes())
         self.assertEqual(old_hook, self.hook.read_bytes())
+
+    def test_gh_scratch_is_adopted_so_no_temporary_directory_survives(self) -> None:
+        # The workspace confines XDG_* for children, so gh writes its device id
+        # beside the download; every update, a dry run included, left that behind.
+        payload = artifact_bytes("0.6.0", repository="example/release-kit")
+        metadata = {
+            "tag_name": "v0.6.0",
+            "draft": False,
+            "prerelease": False,
+            "published_at": "2026-09-01T00:00:00Z",
+            "assets": [
+                {
+                    "name": "relkit.pyz",
+                    "state": "uploaded",
+                    "size": len(payload),
+                    "digest": "sha256:" + sha(payload),
+                }
+            ],
+        }
+        original_run = update._run
+
+        def gh(command, root, **kwargs):
+            if command[0] != "gh":
+                return original_run(command, root, **kwargs)
+            scratch = Path(kwargs["environment"]["TMPDIR"]) / update.GH_STATE
+            scratch.mkdir(exist_ok=True)
+            (scratch / "device-id").write_text("fixture\n", encoding="utf-8")
+            if command[1] == "api":
+                return json.dumps(metadata)
+            Path(command[-1]).write_bytes(payload)
+            return ""
+
+        with patch.object(update, "_run", side_effect=gh):
+            code, output = self.invoke(repository="example/release-kit")
+
+        self.assertEqual(0, code, output)
+        self.assertNotIn("retained unowned or changed", output)
+        self.assertEqual([], list((self.root / ".git/relkit/tmp").glob("download-*")))
+
+    def test_prune_removes_only_backups_no_receipt_can_restore(self) -> None:
+        self.assertEqual(0, self.invoke()[0])
+        current = self.root / ".git" / self.receipt()["backup"]
+        superseded = Path(tempfile.mkdtemp(prefix=update.BACKUP_PREFIX, dir=self.root / ".git"))
+        (superseded / "relkit.pyz").write_bytes(b"an earlier projection")
+        foreign = Path(tempfile.mkdtemp(prefix=update.BACKUP_PREFIX, dir=self.root / ".git"))
+        (foreign / "notes.txt").write_text("somebody else's file", encoding="utf-8")
+
+        code, output = self.invoke(prune_backups=True)
+
+        self.assertEqual(0, code, output)
+        self.assertTrue(current.is_dir(), "the receipt names the one restorable backup")
+        self.assertFalse(superseded.exists())
+        self.assertTrue(foreign.is_dir(), "unknown contents are reported, never swept")
+        self.assertIn("not a plain update backup, retained", output)
+
+    def test_prune_previews_refuses_a_source_and_waits_for_a_live_backup(self) -> None:
+        self.assertEqual(0, self.invoke()[0])
+        superseded = Path(tempfile.mkdtemp(prefix=update.BACKUP_PREFIX, dir=self.root / ".git"))
+        (superseded / "relkit.pyz").write_bytes(b"an earlier projection")
+
+        self.assertIn("would remove", self.invoke(prune_backups=True, dry_run=True)[1])
+        self.assertTrue(superseded.is_dir())
+        self.assertEqual(2, self.invoke(prune_backups=True, rollback=True)[0])
+
+        receipt = self.receipt()
+        receipt["state"] = "pending"
+        update._save_receipt(self.root / ".git" / update.RECEIPT, receipt)
+        code, output = self.invoke(prune_backups=True)
+        self.assertEqual(2, code)
+        self.assertIn("still needs its backup", output)
+        self.assertTrue(superseded.is_dir())
+
+    def test_a_completed_update_reports_backups_no_receipt_can_restore(self) -> None:
+        stale = Path(tempfile.mkdtemp(prefix=update.BACKUP_PREFIX, dir=self.root / ".git"))
+        (stale / "relkit.pyz").write_bytes(b"an earlier projection")
+
+        self.assertIn("superseded backup(s) no receipt can restore", self.invoke()[1])
 
     def test_rollback_refuses_later_edits(self) -> None:
         self.guard()

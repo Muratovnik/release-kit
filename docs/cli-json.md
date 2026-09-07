@@ -106,9 +106,12 @@ update; it must not be interpreted as proof that no side effects occurred.
   reading an older schema-1 receipt neither migrates it nor enables cross-version
   resume. A local receipt is not cryptographic evidence of current remote state.
 - `update`: `data.plan`, `plan_sha256` and `state` (`planned`, `unchanged`,
-  `pending`, `installed`, `rolled-back`). Rollback reports `action: "rollback"`
-  and a receipt path together with the restoration plan. Backup/receipt paths appear
-  after creating a transaction. Failed updates retain whatever progress is known.
+  `pending`, `installed`, `rolled-back`, `pruned`). Rollback reports
+  `action: "rollback"` and a receipt path together with the restoration plan.
+  Backup/receipt paths appear after creating a transaction. Failed updates retain
+  whatever progress is known. `--prune-backups` reports
+  `action: "prune-backups"`, `superseded` (every backup no receipt can restore)
+  and, once confirmed, `removed`; a preview stops after `superseded`.
 
 ## Reviewed update plans
 

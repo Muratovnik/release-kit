@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.17.0] - 2026-09-07
+
+### Added
+
+- `relkit update --prune-backups` removes update backups that no receipt can
+  restore. One receipt names one backup, so every other directory was already
+  unreachable through `--rollback` and simply accumulated. It removes only
+  directories with this updater's exact naming, inside the repository's own Git
+  directory, not the one the current receipt names, and holding nothing but the
+  files this updater writes; anything else is reported and left alone. It takes no
+  update source, refuses while an interrupted update still needs its backup,
+  previews with `--dry-run` and confirms like any other write. A completed update
+  now also reports how many such backups remain.
+
+### Fixed
+
+- `relkit update` no longer leaves a scratch directory behind on every run,
+  including a dry run. The workspace confines the XDG directories for its
+  children, so `gh` wrote its own device id beside the download; because only
+  files inventoried before a consumer runs may be removed, cleanup correctly
+  refused to sweep it and retained the directory. The updater now adopts that one
+  known subtree after the download, and everything else still stays retained and
+  reported.
+
 ## [0.16.0] - 2026-09-07
 
 ### Added

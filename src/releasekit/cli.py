@@ -375,6 +375,11 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Forbid engine downloads during the post-update audit",
     )
+    updater.add_argument(
+        "--prune-backups",
+        action="store_true",
+        help="Remove update backups no receipt can restore; keeps the current one",
+    )
     updater.set_defaults(
         handler=lambda arguments: update.run(
             Path(arguments.root),
@@ -387,6 +392,7 @@ def build_parser() -> argparse.ArgumentParser:
             refresh_guard=arguments.refresh_guard,
             plan_hash=arguments.plan_hash,
             rollback=arguments.rollback,
+            prune_backups=arguments.prune_backups,
             no_download=arguments.no_download,
             result=arguments.result,
         )

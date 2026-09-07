@@ -148,6 +148,11 @@ first. The flag is an acknowledgement, not an override of project authorization.
 `--dry-run` inspects/downloads but never executes the candidate, persists a backup,
 or changes the projection/guard; a temporary repository-local lock serializes runs.
 
+One receipt names one backup, so earlier ones cannot be restored by `--rollback`
+and only accumulate. A completed update reports how many remain, and
+`update --prune-backups` removes exactly those — never the one the current receipt
+names, and never a directory holding anything but the files the updater writes.
+
 After confirmation, the updater checks the candidate's runtime version, saves both
 original files and their modes in
 `.git/relkit-update-<id>/`, records the transaction in `.git/relkit-update.json`,
