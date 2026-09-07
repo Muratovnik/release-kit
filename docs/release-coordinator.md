@@ -1,7 +1,10 @@
 # Managed GitHub tag releases
 
-Status: experimental; covered by isolated Git/API fixtures, not yet accepted by a
-live publication in a user-approved disposable repository.
+Status: accepted by one live publication. release-kit 0.18.0 was planned, pushed,
+published by CI and verified by this coordinator in its own repository on 2026-09-07,
+alongside the isolated Git/API fixtures. That run was not a disposable repository, and
+one live release is not a platform matrix of them: the private-repository path is
+proven, a public repository with build provenance required is still only fixtures.
 
 ## Ownership and prerequisites
 
