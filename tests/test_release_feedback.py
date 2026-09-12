@@ -64,7 +64,7 @@ class ReleaseFeedbackTests(ReleaseFixture):
         code, output = self.invoke("plan", publish=False, human=True, result=result)
         self.assertEqual(0, code, output)
         self.assertTrue(output.startswith("relkit release: plan v1.0.0"))
-        self.assertIn("checks have not run", output)
+        self.assertIn("no commands executed", output)
         self.assertIn(result.data["plan"]["plan_sha256"], output)
         self.assertEqual(0, self.runner.pushes)
 

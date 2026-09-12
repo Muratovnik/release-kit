@@ -294,13 +294,39 @@ def build_parser() -> argparse.ArgumentParser:
     release = subcommands.add_parser(
         "release",
         help="Plan, publish, inspect and verify a GitHub release; CI publishes.",
-        description="Start with plan VERSION, then run VERSION --publish. After interruption, "
+        description="Choose a number with next --bump patch|minor|major. For candidate-enabled projects, "
+        "run prepare VERSION --ci-run ID after the tagless workflow passes. "
+        "Review plan VERSION, then run VERSION --publish. After interruption, "
         "use status VERSION (saved local facts) and resume VERSION --publish. "
         "Use verify VERSION to download and smoke-test an existing publication without pushing. "
         "Abandon closes an unpublished attempt with --reason; it never deletes tags.",
     )
-    release.add_argument("action", choices=("plan", "run", "resume", "status", "verify", "abandon"))
-    release.add_argument("version", help="Stable X.Y.Z or vX.Y.Z")
+    release.add_argument(
+        "action",
+        choices=(
+            "next",
+            "prepare",
+            "bundle",
+            "promote",
+            "draft",
+            "plan",
+            "run",
+            "resume",
+            "status",
+            "verify",
+            "abandon",
+        ),
+    )
+    release.add_argument(
+        "version", nargs="?", default="", help="Stable X.Y.Z or vX.Y.Z; omitted for next"
+    )
+    release.add_argument("--bump", choices=("patch", "minor", "major"), default="")
+    release.add_argument(
+        "--ci-run", type=int, default=0, help="Prepare: exact completed tagless workflow run ID"
+    )
+    release.add_argument(
+        "--assets", default="", help="CI bundle/promote/draft: repository-local asset directory"
+    )
     release.add_argument("--root", default=".", help="Owning repository")
     release.add_argument(
         "--publish",
@@ -321,6 +347,9 @@ def build_parser() -> argparse.ArgumentParser:
             arguments.action,
             arguments.version,
             publish=arguments.publish,
+            bump=arguments.bump,
+            ci_run=arguments.ci_run,
+            assets=arguments.assets,
             plan_hash=arguments.plan_hash,
             no_download=arguments.no_download,
             accept_ci_attempt=arguments.accept_ci_attempt,

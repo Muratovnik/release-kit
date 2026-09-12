@@ -281,6 +281,23 @@ class Bridge:
             self.reviewed(request.plan_hash, plan["plan_sha256"])
             return Prepared([*argv, "--plan-hash=" + request.plan_hash], argv, True, plan)
         if isinstance(request, models.Release):
+            if request.action in ("next", "prepare"):
+                if distribution.version_tuple(self.executor_artifact.version) < (0, 20, 0):
+                    raise ValueError(
+                        "release next/prepare requires release-kit 0.20.0 or newer; sync the project"
+                    )
+                if request.plan_hash:
+                    raise ValueError("next/prepare does not accept a publication plan hash")
+                argv = ["release", request.action]
+                if request.action == "next":
+                    if request.no_download:
+                        raise ValueError("next does not accept no_download")
+                    argv += ["--bump", request.bump]
+                else:
+                    argv += [request.version, "--ci-run", str(request.ci_run)]
+                    if request.no_download:
+                        argv.append("--no-download")
+                return Prepared(argv, argv[:2])
             if request.action == "verify":
                 if distribution.version_tuple(self.executor_artifact.version) < (0, 19, 0):
                     raise ValueError(

@@ -33,7 +33,8 @@ profile = "strict"
 [release]
 repository = "Muratovnik/release-kit"
 workflow = ".github/workflows/release.yml"
-required_jobs = ["check", "publish"]
+required_jobs = ["publish"]
+candidate_jobs = ["check", "candidate", "candidate-smoke (ubuntu-latest)", "candidate-smoke (macos-latest)", "candidate-smoke (windows-latest)"]
 branch = "main"
 version_file = "pyproject.toml"
 version_pattern = '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$'

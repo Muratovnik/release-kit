@@ -126,6 +126,38 @@ class GuardAuthorizationTests(Fixture):
 
 
 class ReleaseAuthorizationTests(Fixture):
+    def test_next_and_prepare_have_no_publication_write_or_approval(self):
+        async def scenario():
+            for request, expected in [
+                (
+                    models.Release(action="next", bump="patch"),
+                    ["release", "next", "--bump", "patch"],
+                ),
+                (
+                    models.Release(action="prepare", version="v1.0.0", ci_run=35),
+                    ["release", "prepare", "v1.0.0", "--ci-run", "35"],
+                ),
+            ]:
+                prepared = await self.bridge.prepare(request)
+                self.assertEqual(expected, prepared.argv)
+                self.assertFalse(prepared.write)
+            for options in [
+                {"action": "next", "version": "v1.0.0", "bump": "patch"},
+                {
+                    "action": "prepare",
+                    "version": "v1.0.0",
+                    "authorization": {
+                        "source": "user_request",
+                        "scope": "release_run",
+                        "review_sha256": "a" * 64,
+                    },
+                },
+            ]:
+                with self.assertRaises(ValueError):
+                    models.Release(**options)
+
+        self.run_async(scenario)
+
     """Real SDK/bridge; the CLI boundary is captured, never a hosted publisher."""
 
     def setUp(self):

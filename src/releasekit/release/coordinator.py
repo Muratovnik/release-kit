@@ -18,7 +18,7 @@ from urllib.parse import quote, unquote, urlsplit
 
 from .. import __version__, canonical, config, owner, protection, publication, storage
 from ..result import Result
-from . import changelog, settings
+from . import changelog, settings, versions
 from .backend import (
     CommandError,
     GitHub,
@@ -289,7 +289,9 @@ def job_coverage(required: list[str], jobs: dict[str, str | None] | None) -> dic
     }
 
 
-def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
+def plan(
+    runner: Runner, value: str, *, github: GitHub | None = None, candidate_receipt: bool = True
+) -> dict:
     repository(runner)
     clean(runner)
     version, tag = version_tag(value)
@@ -319,7 +321,8 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     if observed != [version] and observed != [tag]:
         raise ReleaseError("version_file must contain exactly one matching requested version")
     coverage = job_coverage(
-        release.required_jobs, workflow_jobs(source(runner, sha, release.workflow))
+        list(dict.fromkeys(release.required_jobs + release.candidate_jobs)),
+        workflow_jobs(source(runner, sha, release.workflow)),
     )
     if coverage["missing"]:
         raise ReleaseError(
@@ -338,8 +341,14 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
         raise ReleaseError(
             "target tag already exists; use the recorded release resume, never rewrite it"
         )
-    previous = previous_tag(runner, refs, version, sha, policy.changelog.first_version, tag)
+    github = github or GitHub(runner, release.repository)
+    previous = versions.predecessor(
+        runner, github, refs, version, sha, policy.changelog.first_version
+    )
     notes = notes_for(runner, policy, release, version, tag, sha, previous)
+    versions.check_carried_changes(
+        runner, source(runner, sha, release.changelog), notes, version, previous
+    )
     pushes = []
     if release.branch:
         runner.git("check-ref-format", f"refs/heads/{release.branch}")
@@ -375,7 +384,7 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
     checksum_file = release.checksum_file.format(version=version, tag=tag)
     if checksum_file and checksum_file not in assets:
         raise ReleaseError("checksum_file must be included in the exact asset set")
-    return {
+    value = {
         "schema": 1,
         "tool_version": __version__,
         "root": str(runner.root),
@@ -385,6 +394,7 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
         "version": version,
         "tag": tag,
         "previous": previous,
+        "previous_source": "published-release",
         "workflow_id": workflow["id"],
         "notes": notes,
         "assets": assets,
@@ -396,6 +406,13 @@ def plan(runner: Runner, value: str, *, github: GitHub | None = None) -> dict:
             source(runner, sha, config.CONFIG_NAME).encode()
         ).hexdigest(),
     }
+
+    if candidate_receipt and release.candidate_jobs:
+        from . import candidate
+
+        if proof := candidate.ready(runner, value):
+            value["candidate"] = proof
+    return value
 
 
 def required_provenance(value: dict) -> bool:
@@ -418,6 +435,10 @@ def caveats(value: dict) -> list[str]:
             "release exists, and cannot be corrected afterwards"
         )
     ]
+    if value["settings"].get("candidate_jobs"):
+        lines[0] = (
+            "Candidate files are checked before tagging; the CI draft gate must compare the full uploaded set before publication. GitHub's release signature is verified afterwards."
+        )
     if value["checksum_file"]:
         lines.append(
             f"{value['checksum_file']} must list every other planned asset; a second "
@@ -486,11 +507,20 @@ def show_plan(value: dict, *, human: bool = False) -> None:
         print(f"  Plan SHA-256: {described['plan_sha256']}")
         for number, action in enumerate(described["actions"], 1):
             print(f"  {number}. {action}")
-        print("relkit release: plan only; checks have not run and nothing was published")
+        prepared = bool(value.get("candidate"))
+        print(f"  Candidate: {'prepared and bound to this plan' if prepared else 'not prepared'}")
         print(
-            f"relkit release: next: relkit release run {value['tag']} --publish "
-            f'--plan-hash {described["plan_sha256"]} --root "{value["root"]}"'
+            "relkit release: plan only; no commands executed or publication performed by this command"
         )
+        if value["settings"].get("candidate_jobs") and not prepared:
+            print(
+                f"relkit release: first: relkit release prepare {value['tag']} --ci-run ID, then plan again"
+            )
+        else:
+            print(
+                f"relkit release: next: relkit release run {value['tag']} --publish "
+                f'--plan-hash {described["plan_sha256"]} --root "{value["root"]}"'
+            )
     else:
         print(json.dumps(described, indent=2, sort_keys=True))
     # The JSON is data; this block is what an operator must read before --publish.
@@ -626,7 +656,12 @@ def validate_saved_plan(runner: Runner, value: dict) -> None:
 
 
 def _tag_message(value: dict) -> str:
-    return f"Release {value['version']}\n\nRelease plan SHA-256: {fingerprint(value)}"
+    message = f"Release {value['version']}\n\nRelease plan SHA-256: {fingerprint(value)}"
+    if proof := value.get("candidate"):
+        message += (
+            f"\nRelease candidate: {proof['ci']['id']}/{proof['ci']['attempt']} {proof['sha256']}"
+        )
+    return message
 
 
 def _owned_tag(runner: Runner, state: dict) -> str | None:
@@ -665,6 +700,15 @@ def _reconcile(runner: Runner, github: GitHub, state: dict) -> tuple[bool, dict 
         raise ReleaseError("repository identity changed since planning")
     refs = remote_refs(runner, release.remote)
     if previous := value["previous"]:
+        if "release_id" in previous:
+            observed = github.release(previous["tag"])
+            if (
+                not observed
+                or observed["id"] != previous["release_id"]
+                or observed["draft"]
+                or observed["prerelease"]
+            ):
+                raise ReleaseError("previous published release disappeared or changed identity")
         ref = f"refs/tags/{previous['tag']}"
         if (
             refs.get(ref) != previous["oid"]
@@ -758,15 +802,11 @@ def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_down
         )
 
 
-def _prepare(
-    runner: Runner,
-    github: GitHub,
-    state: dict,
-    path: Path,
-    workspace: storage.Workspace,
-    no_download: bool,
-) -> None:
-    value = state["plan"]
+def _local_checks(runner, value, workspace, no_download, path=None, state=None):
+    def stage(name, status="running"):
+        if path is not None:
+            _stage(path, state, name, status)
+
     release = settings.parse(value["settings"])
     clean(runner, value["sha"])
     if release.require_guard and (problem := protection.problem(runner.root)):
@@ -774,7 +814,7 @@ def _prepare(
     # No reuse of local command success across invocations: ignored dependencies,
     # tools, environment and hooks may have changed even if HEAD did not.
     print("relkit release: local checks", flush=True)
-    _stage(path, state, "local-checks")
+    stage("local-checks")
     _commands(
         runner,
         release.checks,
@@ -786,26 +826,73 @@ def _prepare(
     clean(runner, value["sha"])
     if release.require_guard and (problem := protection.problem(runner.root)):
         raise ReleaseError(f"protect check failed: {problem}")
-    _stage(path, state, "local-checks", "passed")
-    _stage(path, state, "worktree-audit")
+    stage("local-checks", "passed")
+    stage("worktree-audit")
     _audit(runner, release, history=False, no_download=no_download)
     clean(runner, value["sha"])
-    _stage(path, state, "worktree-audit", "passed")
-    _stage(path, state, "history-audit")
+    stage("worktree-audit", "passed")
+    stage("history-audit")
     _audit(runner, release, history=True, no_download=no_download)
     clean(runner, value["sha"])
-    _stage(path, state, "history-audit", "passed")
+    stage("history-audit", "passed")
+
+
+def _prepare(
+    runner: Runner,
+    github: GitHub,
+    state: dict,
+    path: Path,
+    workspace: storage.Workspace,
+    no_download: bool,
+) -> None:
+    value = state["plan"]
+    release = settings.parse(value["settings"])
+    if release.candidate_jobs:
+        from . import candidate
+
+        proof = value.get("candidate")
+        if not proof:
+            raise ReleaseError(
+                "no matching prepared candidate; run release prepare VERSION --ci-run ID, then review plan again"
+            )
+        expected, _ = candidate.inputs(runner, value["version"])
+        _local_checks(runner, value, workspace, no_download, path, state)
+        record = candidate.download(
+            runner,
+            github,
+            expected,
+            release,
+            proof["ci"]["id"],
+            workspace.path / "candidate-assets",
+        )
+        workspace.remember(workspace.path / "candidate-assets")
+        if (
+            fingerprint(record) != proof["sha256"]
+            or record["ci"] != proof["ci"]
+            or record["files"] != proof["files"]
+        ):
+            raise ReleaseError(
+                "prepared candidate changed; prepare and review again before tagging"
+            )
+    else:
+        _local_checks(runner, value, workspace, no_download, path, state)
     refs = remote_refs(runner, release.remote)
     policy = config.load(runner.root)
     if (
         asdict(policy.release) != value["settings"]
-        or previous_tag(
-            runner,
-            refs,
-            value["version"],
-            value["sha"],
-            policy.changelog.first_version,
-            value["tag"],
+        or (
+            versions.predecessor(
+                runner, github, refs, value["version"], value["sha"], policy.changelog.first_version
+            )
+            if value.get("previous_source") == "published-release"
+            else previous_tag(
+                runner,
+                refs,
+                value["version"],
+                value["sha"],
+                policy.changelog.first_version,
+                value["tag"],
+            )
         )
         != value["previous"]
     ):
@@ -1135,6 +1222,12 @@ def _verify(
         ):
             raise ReleaseError(f"downloaded checksum/size mismatch: {asset['name']}")
     _checksums(value, directory, identity["assets"])
+    if proof := value.get("candidate"):
+        files = [
+            {key: asset[key] for key in ("name", "size", "digest")} for asset in identity["assets"]
+        ]
+        if sorted(files, key=lambda item: item["name"]) != proof["files"]:
+            raise ReleaseError("published files differ from the prepared candidate")
     github.signatures(
         value["tag"],
         value["sha"],
@@ -1307,6 +1400,9 @@ def run(
     version: str,
     *,
     publish: bool = False,
+    bump: str = "",
+    ci_run: int = 0,
+    assets: str = "",
     plan_hash: str = "",
     no_download: bool = False,
     accept_ci_attempt: int = 0,
@@ -1330,6 +1426,37 @@ def run(
         if action == "status":
             runner.log = None
         repository(runner)
+        if action == "next":
+            if (
+                version
+                or publish
+                or plan_hash
+                or no_download
+                or accept_ci_attempt
+                or reason
+                or ci_run
+                or assets
+            ):
+                raise ReleaseError("release next accepts only --bump and --root")
+            policy = config.load(root)
+            if policy.release is None:
+                raise ReleaseError("configure the opt-in [release] contract first")
+            remote_identity(runner, policy.release.remote, policy.release.repository)
+            github = github or GitHub(runner, policy.release.repository)
+            value = versions.next_version(
+                runner, github, policy.release, policy.changelog.first_version, bump
+            )
+            result.data["next"] = value
+            print(
+                f"relkit release: next {value['tag']}; previous publication: {value['previous']['tag'] if value['previous'] else 'none'}; tag {value['tag_state']}"
+            )
+            if value["tag_state"] == "occupied":
+                print(
+                    "relkit release: the number is unchanged; inspect status/resume for the occupied tag before proceeding"
+                )
+            return 0
+        if bump:
+            raise ReleaseError("--bump is accepted only by release next")
         _, tag = version_tag(version)
         if accept_ci_attempt and (action != "resume" or accept_ci_attempt < 1):
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")
@@ -1346,6 +1473,36 @@ def run(
                 raise ReleaseError(
                     "abandon records a local outcome; publication flags are not accepted"
                 )
+        if action in {"bundle", "promote", "draft"}:
+            from . import candidate
+
+            if not assets or publish or ci_run or plan_hash or no_download:
+                raise ReleaseError("CI helper requires --assets and accepts no publication flags")
+            directory = storage.inside(root, root / assets)
+            release = config.load(root).release
+            if release is None:
+                raise ReleaseError("configure release first")
+            github = github or GitHub(runner, release.repository)
+            data = (
+                candidate.bundle(runner, version, directory)
+                if action == "bundle"
+                else getattr(candidate, action)(runner, github, version, directory)
+            )
+            result.data[action] = data
+            print(f"relkit release: {action} {tag} passed")
+            return 0
+        if assets or (ci_run and action != "prepare"):
+            raise ReleaseError("--assets is only for CI helpers; --ci-run is only for prepare")
+        if action == "prepare":
+            from . import candidate
+
+            if publish or plan_hash:
+                raise ReleaseError("prepare never publishes; review the resulting plan afterwards")
+            lock = _acquire_lock(root, tag)
+            value = plan(runner, version, github=github, candidate_receipt=False)
+            github = github or GitHub(runner, value["settings"]["repository"])
+            candidate.prepare(runner, github, value, ci_run, no_download, result)
+            return 0
         if action == "plan":
             value = plan(runner, version, github=github)
             result.data["plan"] = described_plan(value)
@@ -1409,6 +1566,10 @@ def run(
                 result.data["archived_receipt"] = str(archived)
                 print(f"relkit release: archived the abandoned attempt receipt: {archived}")
             value = plan(runner, version, github=github)
+            if value["settings"].get("candidate_jobs") and not value.get("candidate"):
+                raise ReleaseError(
+                    "no matching prepared candidate; run release prepare VERSION --ci-run ID, then review plan again"
+                )
             if plan_hash and fingerprint(value) != plan_hash:
                 raise ReleaseError("reviewed plan is stale; plan again before publishing")
             state = {

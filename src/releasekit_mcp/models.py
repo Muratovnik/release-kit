@@ -65,8 +65,10 @@ class Protect(Request):
 
 
 class Release(Request):
-    action: Literal["plan", "status", "resume_plan", "run", "resume", "verify"]
-    version: str = Field(pattern=r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
+    action: Literal["next", "prepare", "plan", "status", "resume_plan", "run", "resume", "verify"]
+    version: str = Field(default="", pattern=r"^(?:v?[0-9]+\.[0-9]+\.[0-9]+)?$")
+    bump: Literal["", "patch", "minor", "major"] = ""
+    ci_run: int = Field(default=0, ge=0)
     plan_hash: str = ""
     no_download: bool = False
     accept_ci_attempt: int = Field(default=0, ge=0)
@@ -74,6 +76,14 @@ class Release(Request):
 
     @model_validator(mode="after")
     def valid_attempt(self):
+        if (self.action == "next" and (self.version or not self.bump)) or (
+            self.action != "next" and (not self.version or self.bump)
+        ):
+            raise ValueError(
+                "next needs bump and no version; other actions need version and no bump"
+            )
+        if self.ci_run and self.action != "prepare":
+            raise ValueError("ci_run is only valid for prepare")
         if self.accept_ci_attempt and self.action not in ("resume", "resume_plan"):
             raise ValueError("accept_ci_attempt is only valid for resume/resume_plan")
         if self.authorization and self.authorization.scope != {

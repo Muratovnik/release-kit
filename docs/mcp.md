@@ -257,3 +257,11 @@ The opt-in test copies and re-verifies those archives in its disposable project,
 enables both scanners and applies/rolls back a bundled update without `PROCESSOR_*`
 environment variables. It requires no downloads during the test and never uses
 a real adopter as its update fixture.
+
+## Candidate release operations
+
+`relkit_release` also accepts `next` with `bump` and no `version`, and `prepare`
+with `version` and `ci_run`. Both require a reviewed project binding and a project
+CLI at least 0.20.0. Preparation executes project checks and downloaded application
+smoke, but does not tag, push, dispatch CI or publish. The resulting candidate is
+included in a fresh `plan`; run/resume retain their existing publication authority.

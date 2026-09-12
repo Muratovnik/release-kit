@@ -30,6 +30,18 @@ Git ownership error against the exact intended repository before any exception.
 
 ## Prepare and publish
 
+Use `relkit_release` action `next` with `bump = patch|minor|major` and no version
+when selecting a new release number. It uses published stable releases; an occupied
+tag is a separate conflict, never permission to skip a number or delete a ref.
+For projects declaring `candidate_jobs`, run the native tagless workflow with an
+explicit version on the reviewed source commit, then call action `prepare` with
+`version` and `ci_run`. This executes the declared checks and downloads/smokes the
+candidate without creating a tag. Workflow dispatch and any needed branch push
+remain separate effects requiring the user's scope. Do not treat ordinary green
+CI as a prepared release. Failed preparation can retry the same version; changed
+source requires a new candidate. After success, request a fresh publication plan.
+
+
 1. Validate the requested changelog entry with `relkit_notes` without an output
    file unless an export is needed. Keep structural validation separate from Git
    boundary checks. Follow project-required pre-commit gates and commit only

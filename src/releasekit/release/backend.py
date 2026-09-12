@@ -362,8 +362,8 @@ def local_tags(runner: Runner) -> dict[str, str]:
 def tag_commits(runner: Runner) -> dict[str, str]:
     """Every tag's commit, peeled in one process instead of one per tag."""
     answer: dict[str, str] = {}
-    for line in runner.git(
-        "for-each-ref", "--format=%(refname)\t%(objectname)\t%(*objectname)", "refs/tags"
+    for line in runner.call(
+        ["git", "for-each-ref", "--format=%(refname)\t%(objectname)\t%(*objectname)", "refs/tags"]
     ).splitlines():
         ref, object_id, peeled = line.split("\t")
         answer[ref] = peeled or object_id

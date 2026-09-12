@@ -50,6 +50,7 @@ class LocalRunner(Runner):
 class FakeGitHub:
     def __init__(self, fixture):
         self.fixture = fixture
+        self.published = []
         self.draft = False
         self.immutable = True
         self.ci_result = "success"
@@ -77,6 +78,8 @@ class FakeGitHub:
         self.attestation_predicate = None
 
     def api(self, path="", **_kwargs):
+        if path == "/releases?per_page=100":
+            return [self.published]
         if not path:
             return {"id": 123, "full_name": "example/project"}
         if path.startswith("/actions/workflows/"):
@@ -93,6 +96,9 @@ class FakeGitHub:
 
     def release(self, tag):
         self._child_state()
+        for release in self.published:
+            if release["tag_name"] == tag:
+                return release
         if self.no_release:
             return None
         refs = self.fixture.runner.git("ls-remote", "--tags", "origin")
@@ -446,9 +452,12 @@ class ReleaseTests(ReleaseFixture):
         self.assertIn("declare changelog.first_version", self.invoke()[1])
 
     def test_local_remote_tag_drift_is_not_repaired(self):
+        self.github.published.append(
+            {"id": 20, "tag_name": "v0.1.0", "draft": False, "prerelease": False}
+        )
         self.runner.git("tag", "v0.1.0")
         output = self.invoke()[1]
-        self.assertIn("tags disagree", output)
+        self.assertIn("differs locally/remotely", output)
         self.assertIn("v0.1.0", output, "the owner has to be told which tag to reconcile")
         self.assertEqual(0, self.runner.pushes)
 
@@ -463,6 +472,9 @@ class ReleaseTests(ReleaseFixture):
         self.assertEqual(0, code, output)
 
     def test_a_stable_tag_outside_the_release_ancestry_still_stops_the_plan(self):
+        self.github.published.append(
+            {"id": 20, "tag_name": "v0.9.0", "draft": False, "prerelease": False}
+        )
         self.runner.git("checkout", "-q", "--detach", "HEAD")
         (self.root / "divergent.txt").write_text("side branch")
         self.commit()
@@ -668,6 +680,9 @@ class ReleaseTests(ReleaseFixture):
         self.assertEqual(0, code, output)
 
     def previous_release(self):
+        self.github.published.append(
+            {"id": 20, "tag_name": "v0.9.0", "draft": False, "prerelease": False}
+        )
         self.runner.git("tag", "--annotate", "v0.9.0", "--message", "Previous release")
         self.runner.git("push", "origin", "refs/tags/v0.9.0:refs/tags/v0.9.0")
         path = self.root / "relkit.toml"

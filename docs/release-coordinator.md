@@ -16,7 +16,7 @@ uploads assets, reruns CI, commits changes or repairs a tag.
 
 The first version supports github.com, stable `vX.Y.Z` tags and a regular checkout
 with its `.git` directory inside the project. It requires complete history, matching
-local/remote tags, ordinary portable source files (no links/submodules), an active
+local/remote published tags, ordinary portable source files (no links/submodules), an active
 workflow and GitHub CLI 2.98.0 or newer. `gh` is an explicitly provisioned native
 integration, not an automatically installed runtime dependency.
 
@@ -45,18 +45,13 @@ The coordinator does not enable repository settings, change CI or grant permissi
 The operator must review this integration before allowing a push. A missing
 attestation or incorrect publication can be detected **after publication**; this is
 not a server-side transaction or a promise that a bad release can be unpublished.
-The exact asset set, notes, sizes and digests are likewise compared only once CI
-has published the immutable release: a mismatch is detected, cannot be corrected,
-and spends the version number. That comparison is made against GitHub's signed
-release attestation as well as the REST asset list, and the two must agree on the
-names and SHA-256 digests; the attestation must also name this plan's repository
-id, the release id and the annotated tag object this run pushed. `gh` performs the
-Sigstore verification, so an unsigned API answer alone cannot decide what was
-published — but no signature moves the check before publication. Keep the workflow's upload steps and `assets` in
-step; the owner guard pins the workflow for that reason, and `plan` prints the
-declared set as a separate block. Moving the final draft-to-published step into
-the coordinator would close that window but contradicts the CI-alone-publishes
-contract; it is a recorded owner decision, not part of this version.
+Candidate-enabled workflows validate the full set before tagging and call the shared
+`release draft` verifier before lifting the draft. The final signed release
+attestation is still checked after publication because GitHub creates it then.
+Network failures, expired CI artifacts, permission changes and delayed signatures
+can still require recovery; preparation is not an atomic transaction with GitHub.
+Projects without `candidate_jobs` retain the earlier tag-first workflow and its
+post-publication detection window. Adopt the candidate workflow and policy together.
 Reusable signer workflows, alternative signature schemes, prereleases, automatic
 build dispatch and multi-platform local execution are not supported by this version.
 Artifacts for every platform are verified; application smoke runs only on the
@@ -129,6 +124,70 @@ during planning, before project commands and again afterward to detect drift;
 it does not install or refresh either. `owner_audit = true` additionally requires
 the existing private owner policy and `require_guard = true`. These options do not
 grant permission to alter project hooks or override its instructions.
+
+## Select a version and prepare a candidate
+
+`relkit release next --bump patch` chooses the next patch from the highest published
+stable version on this ancestry. Use `minor` or `major` explicitly for those bumps.
+Drafts, prereleases and tags without releases do not advance this boundary. An
+occupied target is reported without silently skipping to another number. Review
+its existing receipt and refs; the tool never deletes or rewrites them. The first
+release needs `changelog.first_version`. A published tag outside the current
+ancestry, local/remote published-tag drift, or a deleted/replaced release known to
+local receipts requires explicit reconciliation. A release deleted before this
+checkout ever observed it cannot be distinguished from an unpublished tag.
+
+Curate and commit the requested version and notes before preparation. The heading
+compares against the published predecessor. Commit-linked changes from skipped
+candidate entries must appear in the new entry; editorial summaries still require
+human curation. Old saved plans retain their original predecessor and fingerprint.
+
+For tagless preparation, configure `candidate_jobs` with every build, platform
+smoke and packaging job that must pass; `candidate_artifact` defaults to
+`release-candidate`. Keep `required_jobs` for the tag publication run. The same
+committed workflow must accept `workflow_dispatch` with an explicit `version` input,
+build that version without consulting a nonexistent tag, and upload one complete
+artifact after `relkit release bundle VERSION --assets DIRECTORY` validates it.
+The artifact includes a manifest binding source SHA, workflow digest, version,
+CI run/attempt and every file's size and SHA-256. The CI job itself has not completed
+when it writes the manifest; `prepare` independently requires the completed run and
+all configured jobs to pass. Ordinary push/PR CI cannot qualify.
+
+Use GitHub's native dispatch on a reviewed remote branch containing the exact commit:
+
+```bash
+gh workflow run release.yml --ref BRANCH -f version=v1.0.0
+# After that run finishes:
+relkit release prepare v1.0.0 --ci-run RUN_ID
+relkit release plan v1.0.0
+relkit release run v1.0.0 --publish --plan-hash REVIEWED_SHA256
+```
+
+Dispatch requires the workflow on the default branch. Publishing the source branch
+is a separate owner action; preparation never pushes it or dispatches CI implicitly.
+Preparation downloads the complete candidate, runs the existing local checks and
+audits plus smoke from pinned source, and saves an attempt receipt without making a
+tag. Repeat the same version after failure, even with a new source commit. Successful
+preparation is reused only by an identical plan; changed source, policy, predecessor
+or host requires preparation again. Each attempt remains under the project's
+service directory `candidates/TAG/`; `ready.json` selects the latest successful one.
+
+At publication, local checks run again and the candidate is downloaded/revalidated
+before creating the stable annotation. The annotation records run, attempt and
+manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
+DIRECTORY` to retrieve exactly those bytes into an empty directory, then creates
+the draft. `relkit release draft VERSION --assets DIRECTORY` checks the promoted
+files, committed notes and full remote inventory before CI lifts the draft. These
+helpers never publish. The publisher should not rebuild and silently substitute
+other bytes. Branch build/SBOM provenance keeps its branch identity; a separate tag
+promotion attestation must not claim the original build ran under a tag.
+
+This uses native [workflow dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
+and [run artifact downloads](https://cli.github.com/manual/gh_run_download), with
+project-owned builds. A separate build service or publisher would add lifecycle
+cost and change ownership without solving the exact-source/asset binding by itself.
+The manifest supplies that missing binding; the coordinator continues to compose
+GitHub's existing run, job, release and attestation APIs.
 
 ## Plan, run, inspect, verify and resume
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from string import Formatter
 
 from ..paths import reserved_stem
@@ -60,6 +60,8 @@ class Settings:
     require_provenance: bool = True
     timeout: int = 1800
     command_timeout: int = 600
+    candidate_jobs: list[str] = field(default_factory=list)
+    candidate_artifact: str = "release-candidate"
 
 
 def parse(raw: object) -> Settings:
@@ -81,6 +83,7 @@ def parse(raw: object) -> Settings:
         "branch",
         "changelog",
         "checksum_file",
+        "candidate_artifact",
     ):
         if not isinstance(getattr(value, key), str):
             raise SettingsError(f"release.{key} must be a string")
@@ -92,6 +95,16 @@ def parse(raw: object) -> Settings:
         raise ValueError("release.remote must name a configured Git remote")
     relative(value.version_file)
     relative(value.changelog)
+    filename(value.candidate_artifact)
+    if (
+        not isinstance(value.candidate_jobs, list)
+        or any(
+            not isinstance(item, str) or not item.strip() or item != item.strip()
+            for item in value.candidate_jobs
+        )
+        or len(set(value.candidate_jobs)) != len(value.candidate_jobs)
+    ):
+        raise SettingsError("release.candidate_jobs must be a list of unique job names")
     try:
         if re.compile(value.version_pattern, re.MULTILINE).groups != 1:
             raise ValueError("release.version_pattern needs exactly one capturing group")

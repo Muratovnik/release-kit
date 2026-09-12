@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.20.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.20.0) - 2026-09-12
+
+### Added
+
+- `release next --bump patch|minor|major` derives the number from the last published
+  stable release. Failed tags do not advance it; occupied names are reported separately.
+- `release prepare VERSION --ci-run ID` checks a tagless release workflow, downloads
+  its exact files and runs local checks and application smoke before any stable tag.
+  Failed attempts retain separate receipts and can retry the same version.
+- Candidate-enabled publishers retrieve the bytes identified in the annotated tag;
+  the shared draft verifier checks notes, asset names, sizes and checksums before
+  CI publishes. Workflow source, commit, version and run attempt remain bound together.
+- The unpublished 0.19.0 changes are included: `release verify`, separate publication
+  and CI verdicts, readable command feedback, aligned plugin/CLI versions and
+  reproducible release packaging. Existing receipts retain their original plans.
+
+### Fixed
+
+- Changelog boundaries follow publications, with checks for changes omitted from
+  skipped candidates. Published tag drift and deleted known releases require explicit
+  reconciliation; draft and prerelease records do not become stable predecessors.
+- Lightweight tags no longer fail parsing when the last peeled field is empty.
+
 ## [0.19.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.19.0) - 2026-09-12
 
 ### Added
