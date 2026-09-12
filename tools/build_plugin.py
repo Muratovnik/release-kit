@@ -23,6 +23,27 @@ FILES = (
     "skills/release-kit/references/updates.md",
     "skills/release-kit/references/releases.md",
 )
+DOCUMENTS = (
+    "README.md",
+    "LICENSE",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "docs/plugin.md",
+    "docs/mcp.md",
+    "docs/cli-json.md",
+    "docs/local-releases.md",
+    "docs/release-coordinator.md",
+    "docs/audit.md",
+    "docs/updates.md",
+    "docs/notes.md",
+    "docs/distribution.md",
+    "docs/publication-review.md",
+    "examples/audit/README.md",
+    "examples/audit/relkit.toml",
+    "examples/audit/.betterleaks.toml",
+    "examples/audit/.gitignore",
+    "examples/plugin-marketplace.json",
+)
 
 
 def payloads():
@@ -39,16 +60,10 @@ def payloads():
         for path in sorted((ROOT / "src" / package).rglob("*.py")):
             name = "lib/" + path.relative_to(ROOT / "src").as_posix()
             payload[name] = storage.inside(ROOT, path).read_bytes()
-    payload["README.md"] = b"# Release Kit\n\nSee [installation and use](docs/plugin.md).\n"
-    payload["LICENSE"] = (ROOT / "LICENSE").read_bytes()
-    for name in (
-        "plugin.md",
-        "mcp.md",
-        "cli-json.md",
-        "local-releases.md",
-        "release-coordinator.md",
-    ):
-        payload["docs/" + name] = (ROOT / "docs" / name).read_bytes()
+    # Ship the same reader entry points and starter files the source documents.
+    # Explicit selection avoids copying local runtimes or arbitrary checkout files.
+    for name in DOCUMENTS:
+        payload[name] = storage.inside(ROOT, ROOT / name).read_bytes()
     return version, payload
 
 

@@ -1,0 +1,5 @@
+title = "project secret scanning"
+betterleaksMinVersion = "1.8.1"
+
+[extend]
+useDefault = true

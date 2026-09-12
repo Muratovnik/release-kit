@@ -1,0 +1,17 @@
+{
+  "name": "local-release-kit",
+  "plugins": [
+    {
+      "name": "release-kit",
+      "source": {
+        "source": "local",
+        "path": "./plugins/release-kit"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

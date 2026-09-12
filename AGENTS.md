@@ -2,15 +2,17 @@
 
 This is an independent Git repository for one publishable tool. These instructions
 are complete for a task started at this root; do not rely on a parent directory to
-supply ownership, safety, verification, or commit rules. It sits inside another
-repository's working tree for convenience only, is ignored by it, and must never be
-staged there as a gitlink or a submodule.
+supply ownership, safety, verification, or commit rules. Locate this repository's
+own Git root before staging or running checks. Its placement on a workstation does
+not change ownership; never stage it as an unintended gitlink in another repository.
 
 ## What this repository is for
 
-One publication gate other repositories adopt, plus focused diagnostic commands and a
-release-notes reader. The gate composes maintained engines for secrets and links with
-the policy and overlay facts only an adopting repository can declare.
+One publication gate other repositories adopt, plus focused diagnostics, curated
+release notes, an optional release coordinator and a separately installed MCP adapter.
+The gate composes maintained engines for secrets and links with the policy and
+overlay facts only an adopting repository can declare. Start reader onboarding with
+the standalone CLI; hooks, owner policy, release delivery and MCP are optional paths.
 
 ## The rule that outranks the others
 
@@ -39,12 +41,11 @@ security, and it costs the reader a concrete reference in exchange for nothing.
   hosting publication is an explicit adapter. Hosted CI and paid provenance are
   optional choices, never prerequisites inferred from a failed quota or payment.
   Do not change repository visibility or billing to make the default flow work.
-
-- No Python runtime dependencies. This runs inside other repositories' pre-commit
+- No Python runtime dependencies in the base CLI. This runs inside other repositories'
   hooks and CI, where a dependency tree is a reason not to adopt it. Betterleaks and
   Lychee are pinned external engines provisioned from verified official archives;
-  do not reimplement their parsers or duplicate their pins in adopters. Any other
-  dependency needs a recorded decision.
+  do not reimplement their parsers or duplicate their pins in adopters. The optional
+  MCP SDK decision is documented in docs/mcp.md; other dependencies need a decision.
 - Every rule is an executable check with a test. A rule stated only in prose is not a
   control, which is the failure this repository exists to answer.
 - False positives are the primary risk. A gate that cries wolf is switched off, and a
@@ -58,7 +59,7 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 - Distributed behaviour changes require a new version and dated changelog entry.
   Keep package and runtime versions aligned; the builder checks both and the
   updater refuses changed artifacts under the same version. Never replace an
-  already-published release asset with different bytes.
+  already-published release asset with different bytes, including packaged docs.
 
 ## Service-file ownership
 
@@ -73,28 +74,45 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 
 ## Verification commands
 
-```powershell
+For CLI development use the canonical base runner, not a shortened list of commands:
+
+```text
 python tools/check.py
+```
+
+It runs stdlib unittest discovery, Ruff lint and Ruff format checks with the exact
+source import path and a canonical temporary directory. This matters on hosts
+where the system temporary path contains a link. The base suite deliberately
+excludes optional SDK integration discovery; it cannot qualify the MCP adapter.
+
+Before a joint CLI/plugin distribution, provision uv explicitly and run:
+
+```text
+python tools/check_distribution.py
+```
+
+This is the repository's configured release check. It runs the base gate, explicit
+MCP discovery in the existing locked optional environment, a working-tree test
+build, CLI smoke, real-engine onboarding and extracted-plugin stdio checks. Missing
+requirements or empty/all-skipped MCP discovery fail. Tests never register clients,
+install a real adopter's hook or publish. Retained evidence identifies actual host
+and bytes, not an unexecuted OS matrix. Native-client discovery and hosted exposure
+review remain separate. See CONTRIBUTING.md and docs/publication-review.md.
+
+The publication audit is additional to code checks. From source in PowerShell:
+
+```powershell
 $env:PYTHONPATH = "src"
 python -m releasekit.cli audit
 ```
 
-`tools/check.py` runs the declared gates in order, with an exact import path and a
-canonical temp directory:
-
-```
-python -m unittest discover -s tests -p "test_*.py"
-python -m ruff check src tests tools
-python -m ruff format --check src tests tools
-```
-
-Run it rather than the bare commands. The suite writes service paths into temp
-directories, and `storage.checked` refuses a service path with a link in it, so on a
-host whose temp directory is behind a link the bare command fails for reasons that
-have nothing to do with the change under test.
+Use `PYTHONPATH=src python -m releasekit.cli audit` in Bash. A history verdict needs
+a committed clean tracked tree and all intended refs fetched. Never rewrite history
+or publish merely to make a check pass.
 
 Every change to a rule needs a test that fails without it. A regression that a real
-repository hit gets a test that names what it hit, not a generic one.
+repository hit gets a test that names what it hit, not a generic one. Keep release
+notes user-facing; preserve historical entries and move detail to linked references.
 
 ## Git
 

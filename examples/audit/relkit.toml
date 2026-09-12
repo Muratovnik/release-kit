@@ -1,0 +1,3 @@
+[exposure]
+betterleaks_config = ".betterleaks.toml"
+required_ignores = [".cache"]

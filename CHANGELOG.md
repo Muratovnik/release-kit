@@ -2,6 +2,34 @@
 
 ## [Unreleased]
 
+### Added
+
+- A first-run CLI guide with exact starter policies, checksum verification and
+  actionable failures; hooks, private overlays and MCP remain optional.
+- A ready-to-copy local plugin marketplace example, package installation and
+  first-read instructions, plus contribution and private security-reporting guides.
+- A full local distribution gate covering explicit MCP discovery, real-scanner
+  onboarding and extracted-plugin stdio startup. Joint release checks and manual
+  hosted matrices now use it; missing dependencies or tests cannot become a pass.
+- A provided-assets check that exercises downloaded candidates without rebuilding,
+  with host and artifact evidence kept separately from native-client/publication proof.
+
+### Fixed
+
+- The CLI reference distinguishes saved `release status` from executing
+  `release verify`; the MCP action table includes next, prepare and verify.
+- Package inventories are described as SHA-256 inventories, not digital signatures.
+- Public documentation no longer assumes a particular workstation layout or
+  repository visibility. Detailed audit, update and notes references remain available
+  and are included in the built plugin with the exact onboarding examples.
+
+### Maintainer action
+
+- Use `python tools/check_distribution.py` before the next joint distribution.
+  Review history, hosted logs and existing archives separately before making them
+  public. Advance all component versions before distributing these changed bytes;
+  no existing release, project pin, hook or visibility setting is changed here.
+
 ## [0.21.1](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.1) - 2026-09-12
 
 ### Fixed

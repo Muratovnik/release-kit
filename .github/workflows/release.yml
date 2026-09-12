@@ -1,8 +1,6 @@
 name: release
 
-# Optional hosted platform checks, started explicitly. Local release preparation
-# and publication do not depend on Actions or consume hosted minutes by default.
-
+# Explicit supplementary checks only; this workflow never publishes a release.
 on:
   workflow_dispatch:
     inputs:
@@ -15,19 +13,13 @@ permissions: {}
 
 jobs:
   check:
-    if: github.event_name == 'workflow_dispatch'
     runs-on: ${{ matrix.os }}
     permissions:
       contents: read
     strategy:
-      # Every platform reports. Cancelling the others on the first failure is how a
-      # second, unrelated platform failure stays hidden for another release.
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,11 +27,10 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
-      - run: python tools/check.py
+      - run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt uv
+      - run: python tools/check_distribution.py
 
   candidate:
-    if: github.event_name == 'workflow_dispatch'
     needs: check
     runs-on: ubuntu-latest
     permissions:
@@ -82,8 +73,9 @@ jobs:
         with:
           name: release-candidate
           path: dist
-      - run: python tools/smoke.py --assets dist --version "${VERSION#v}"
+      - run: python -m pip install --disable-pip-version-check uv
+      - name: Check these downloaded bytes without rebuilding
+        run: python tools/check_distribution.py --assets dist --version "${VERSION#v}"
         shell: bash
         env:
           VERSION: ${{ inputs.version }}
-          PYTHONPATH: src

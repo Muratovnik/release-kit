@@ -1,14 +1,10 @@
----
-status: draft
----
-
 # Structured CLI contract
 
-Available since release-kit 0.8.0. This is an opt-in process interface, not an MCP
-server. Use the project's pinned `.github/relkit.pyz`; a global package may be a
-different version. No service registration or Python runtime dependency is needed.
+Available since release-kit 0.8.0. Use the project's pinned
+`.github/relkit.pyz`; a global package may be a different version. This process
+interface needs no MCP server, service registration or Python runtime dependency.
 
-```bash
+```text
 python .github/relkit.pyz --version --json
 python .github/relkit.pyz audit --json
 python .github/relkit.pyz notes v1.2.0 --json
@@ -18,165 +14,195 @@ python .github/relkit.pyz update --dry-run --json
 ```
 
 `--json` may appear before or after the command. Without it, `release plan`
-prints a short human-readable plan and continuation command. Use `--json` for
-the complete plan object. Help (`--help`) displays usage and exits.
+prints a short human-readable plan and continuation command; use JSON for the
+complete object. `--help` displays usage instead of a result envelope.
 
 ## Process boundary
 
-For JSON command invocations, stdout contains exactly one JSON object and a newline.
-It is UTF-8 compatible (non-ASCII text may be escaped). Progress, native engine output
-and unexpected tracebacks go to stderr; release project-command output remains in
-the owned run log. No semantic field is reconstructed by parsing these messages.
-An OS termination, unavailable interpreter or broken output pipe cannot promise a
-final response. Missing/truncated JSON is an unknown result, never success.
-
-Every envelope contains:
+Stdout contains one JSON object and a newline. It is UTF-8 compatible; non-ASCII
+text may be escaped. Progress, native engine output and unexpected tracebacks go
+to stderr; release project-command output remains in the owned run log. Do not
+reconstruct semantic fields by parsing those diagnostics. Termination, an absent
+interpreter or a broken pipe may prevent the final response: missing/truncated
+JSON is an unknown result, never success.
 
 | Field | Meaning |
 | --- | --- |
-| `schema_version` | Integer `1`; independent of package and receipt versions. |
-| `tool_version` | Runtime release-kit version. |
-| `command` | String array, e.g. `["release", "status"]` or `["version"]`; empty on argument errors. |
-| `root` | Absolute project path; `null` for version and argument errors. |
-| `status` | `ok`, `failed`, `refused`, or `pending`, corresponding to exit code. |
-| `exit_code` | Process exit: `0`, `1`, `2`, or `3`. |
-| `data` | Command-specific object; partial results remain available on failure. |
-| `errors` | Objects containing stable `code`, human `message`, optionally `path` and one-based `line`. |
-| `warnings` | Non-fatal objects with `code`, `message`, optionally `path`. |
-| `next_action` | Suggested argument array, or `null`; not a shell string or permission grant. |
+| `schema_version` | Integer `1`, independent of package and receipt versions |
+| `tool_version` | Running release-kit version |
+| `command` | String array, such as `["release", "status"]` or `["version"]`; empty on argument errors |
+| `root` | Absolute project path; `null` for version and argument errors |
+| `status` | `ok`, `failed`, `refused` or `pending`, corresponding to the process exit |
+| `exit_code` | Process exit: `0`, `1`, `2` or `3` |
+| `data` | Command-specific object; may contain partial results after failure |
+| `errors` | Objects with stable `code`, human `message`, optionally `path` and one-based `line` |
+| `warnings` | Non-fatal objects with `code`, `message`, optionally `path` |
+| `next_action` | Suggested argument array or `null`; not a shell string or permission |
 
-Clients must check the process exit code, matching envelope `exit_code`, supported
-`schema_version` and the command-specific verdict. Unknown additional fields and
-error codes should be tolerated; an unknown status/schema must fail closed. Human
-messages, ordering, whitespace and diagnostic wording are not stable identifiers.
+Check the actual process exit, matching envelope `exit_code`, supported schema and
+command-specific verdict. Tolerate additional fields and unknown error codes;
+unknown status/schema must fail closed. Human messages, ordering and whitespace
+are not stable identifiers. Exit `2` can follow a safely rolled-back update and
+must not be read as proof of no side effects.
 
-Codes include `invalid_arguments`, `configuration_error`, `io_error`, `check_error`,
-`check_failed`, `engine_error`, `protection_error`, `invalid_notes`, `missing_notes`,
-`confirmation_required`, `update_error`, `release_error`, `release_pending`,
-`interrupted`, `internal_error` and fallback `command_failed`. `lock_retained` is a
-warning. Exit `2` can mean an operational error, including a safely rolled-back
-update; it must not be interpreted as proof that no side effects occurred.
+Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
+`check_error`, `check_failed`, `engine_error`, `protection_error`, `invalid_notes`,
+`missing_notes`, `confirmation_required`, `update_error`, `release_error`,
+`release_pending`, `interrupted`, `internal_error` and fallback `command_failed`.
+`lock_retained` is a warning.
 
 ## Command payloads
 
-- `--version`: `data.engines` maps engine names to version strings.
-- `exposure`: `data.exposure` carries `new` and `baselined` findings, each with
-  `path`, `kind`, `detail`; plus string arrays `stale`, `unreadable`, `excluded`.
-- `audit`: the same exposure report, `scope` (`worktree`, `staged`, `history`),
-  and `engines` mapping names to native exit codes or `null` when not completed.
-  History scope adds `untracked_present`, the number of untracked entries the
-  verdict ignored; a tracked difference is a failure and names the entries.
-  Native engine diagnostics are not presented as invented structured findings.
-  The top-level exit also includes history, guard and overlay failures.
-- `notes`: validated `notes` including final newline, requested `version`, and
-  `output` (absolute exported path or `null`). Export errors can leave validated
-  notes in `data` but do not return success. Structural validation stays Git-free.
-- `overlay`: `verified_mounts` counts mounts checked, `skipped` names out-of-scope
-  mounts. Inspect `errors` before treating checked mounts as valid.
-- `protect`: `guard` (`valid`, `invalid`, `installed`), with `path` on installation.
-  A valid guard written by an older release-kit adds a `guard_template_outdated`
-  warning; its pins are still enforced, and `update --refresh-guard` or
-  `protect install` adopts the current template.
-  `install --dry-run` returns `data.plan` with exact before/after hook hashes,
-  guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
-  with `install --plan-hash HASH` to reject drift. Preview does not write a hook.
-- `release next`: `data.next` contains the published `previous` identity, selected
-  `version`/`tag`, explicit `bump` and independent `tag_state` (available/occupied).
-- `release prepare`: `data.candidate` records the local attempt, plan fingerprint,
-  CI identity, outcome and receipt/log paths. A passing candidate is included in
-  subsequent `data.plan.candidate`; preparation never creates a stable tag.
-- `release plan`: `data.plan` is the existing described plan, including
-  `plan_sha256`, pinned SHA, previous tag, exact refspecs, assets, future actions,
-  statically read `workflow_jobs` (declared/unverified/optional), the planning
-  `host` and operator `caveats`; the same caveats print on stderr.
-- `release abandon`: `data.release` is the updated local receipt with
-  `outcome.status = "abandoned"`, its reason and time; `next_action` is `null`.
-  Refusals (`--reason` missing, remote tag or release still present, published
-  release, publication flags) return `2` without changing the receipt. A later
-  `run` for the same version reports the moved receipt as `data.archived_receipt`.
-- `release run/resume`: `data.release` appears once a run is recorded. It includes
-  `observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded tool
-  version, complete described `plan`, CI identity, artifacts, stage/stages, publication, verification, cleanup,
-  verification timestamp and platform, local-change flag and retained scratch paths.
-  Not-yet-known fields are `null`. Publication and verification are separate:
-  a published release can fail verification. Retained cleanup is also independent.
-- `release status`: the same release view with `observation: "local-receipt"`.
-  Additional independent fields are `tag_state` (`absent`, `local`, `pushed`),
-  `publication_state` (`absent`, `draft`, `published`), `ci_verdict`
-  (`unknown`, `pending`, `failed`, `passed`) and `acceptance` (`incomplete`,
-  `accepted`). The legacy `publication` field remains unchanged for old readers;
-  its `not-pushed` value means no publication was observed, not that a tag is absent.
-  Unknown CI in an old receipt is not inferred to have passed.
-- `release verify VERSION`: re-observes and verifies an existing publication from
-  the saved receipt. It never prepares/pushes a tag or creates a release; it writes
-  local diagnostics, downloads assets and executes the pinned smoke commands.
-  Compatible old plans retain their original bytes and fingerprint; the current
-  verifier is recorded as `verifier_version`. `verification = passed` with failed
-  CI still returns `1` and `acceptance = incomplete`; inspect `ci_problems`.
-  Missing publication, identity drift and invalid signatures remain failures.
-  `next_action` suggests `verify` for unverified publications, without `--publish`.
-  It reads a bounded schema-1 receipt and checks its plan digest, checkout identity
-  and pinned committed inputs. It does **not** contact GitHub, run project commands,
-  create a lock, append logs, clean files or rerun verification. Exit `0` means
-  the receipt was read, even when its recorded verification failed. Missing, unsafe,
-  malformed or unsupported receipts return `2`. Local edits are untouched; the
-  `local_changes` field and other outcomes are historical, not a fresh inventory.
-  `resume_version_matches` says whether the current tool matches the saved plan;
-  reading an older schema-1 receipt neither migrates it nor enables cross-version
-  resume. A local receipt is not cryptographic evidence of current remote state.
-- `update`: `data.plan`, `plan_sha256` and `state` (`planned`, `unchanged`,
-  `pending`, `installed`, `rolled-back`, `pruned`). Rollback reports
-  `action: "rollback"` and a receipt path together with the restoration plan.
-  Backup/receipt paths appear after creating a transaction. Failed updates retain
-  whatever progress is known. `--prune-backups` reports
-  `action: "prune-backups"`, `superseded` (every backup no receipt can restore)
-  and, once confirmed, `removed`; a preview stops after `superseded`.
+### Version, checks and notes
+
+`--version` returns `data.engines`, mapping engine names to version strings.
+
+`exposure` returns `data.exposure`: `new` and `baselined` findings with `path`,
+`kind`, `detail`, plus `stale`, `unreadable` and `excluded` string arrays.
+
+`audit` adds `scope` (`worktree`, `staged`, `history`) and `engines`, mapping
+engine names to native exit codes or `null` when not completed. History adds
+`untracked_present`: untracked entries do not by themselves violate the clean
+tracked-tree precondition; configured worktree candidate checks still apply.
+Native engine diagnostics are not invented structured findings. The top-level
+exit also includes history, guard and overlay failures.
+
+`notes` returns validated `notes` including its final newline, requested `version`
+and `output` (absolute export path or `null`). An export failure may still return
+validated text, but is not success. Structural notes validation stays Git-free.
+See [notes validation and safe export](notes.md).
+
+`overlay` returns `verified_mounts` (number checked) and `skipped` (out-of-scope
+mounts). Inspect `errors` before concluding that checked mounts are valid.
+
+`protect` returns `guard` (`valid`, `invalid`, `installed`) and the installation
+`path`. A valid old template adds `guard_template_outdated`; its pins remain
+active. `install --dry-run` returns `data.plan` with exact before/after hook
+hashes, guarded inputs, dispatcher identity and `plan_sha256`, without writing a
+hook. Pass `install --plan-hash HASH` to reject drift. Review project-required
+hook permission separately. [Guard updates](updates.md) retain backup/recovery.
+
+### Release planning and execution
+
+`release next` returns `data.next` with published `previous` identity, selected
+`version`/`tag`, explicit `bump` and separate `tag_state` (available/occupied).
+
+`release prepare` returns `data.candidate`: attempt, plan fingerprint, CI identity
+where applicable, outcome and receipt/log paths. Passing preparation appears in
+subsequent `data.plan.candidate`; it never creates a stable tag.
+
+`release plan` returns `data.plan`, including `plan_sha256`, pinned SHA,
+predecessor, exact refspecs, assets, future actions, `workflow_jobs`
+(declared/unverified/optional), planning `host` and operator `caveats`. Caveats
+also print on stderr. Publisher determines whether planning queries a host.
+
+Since 0.21.0, `settings.publisher` distinguishes `directory`, `github` and
+`github-actions`. Local prepare records `candidate.kind = local`, attempt and
+file digests. Directory plans have no remote pushes or workflow ID. Missing
+publisher fields in older receipts retain their original Actions semantics.
+
+`release run/resume` returns `data.release` once a run is recorded. It includes
+`observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded
+tool version, complete plan, CI identity, artifacts, stage/stages, publication,
+verification, cleanup, verification time/platform, local-change flag and retained
+scratch. Unknown fields are `null`. A publication may exist while verification
+fails; retained cleanup is independent of both.
+
+`release abandon` records `outcome.status = "abandoned"`, reason and time in the
+local receipt; `next_action` is `null`. Missing reason, existing remote tag or
+release/draft, published release or publication flags refuse with exit `2`.
+It changes no ref. A subsequent run reports `data.archived_receipt`.
+
+### Release status: read a saved receipt
+
+```text
+python .github/relkit.pyz release status v1.2.0 --json
+```
+
+Returns the release view with `observation: "local-receipt"`. Independent fields
+are `tag_state` (`absent`, `local`, `pushed`), `publication_state` (`absent`,
+`draft`, `published`), `ci_verdict` (`unknown`, `pending`, `failed`, `passed`,
+`not-required`) and `acceptance` (`incomplete`, `accepted`). Unknown CI in old
+receipts is not inferred to have passed. Legacy `publication = not-pushed` means
+no publication was observed, not that a tag is absent.
+
+Status reads a bounded schema-1 receipt and checks its plan digest, checkout
+identity and pinned committed inputs. It does **not** contact GitHub, execute
+project commands, create a lock, append logs, clean files or rerun verification.
+Exit `0` means the receipt was read, even when its recorded verification failed.
+Missing, unsafe, malformed or unsupported receipts return `2`. Local edits are
+untouched; `local_changes` and recorded outcomes are historical, not a fresh scan.
+
+`resume_version_matches` says whether the current tool matches the saved plan.
+Reading an old schema-1 receipt neither migrates it nor enables cross-version
+resume. A local receipt is not cryptographic evidence of current remote state.
+
+### Release verify: perform verification again
+
+```text
+python .github/relkit.pyz release verify v1.2.0 --json
+```
+
+Verify re-observes an existing publication using its saved receipt. It creates
+local verification state/locking and diagnostics, downloads assets for hosted
+publishers, verifies the applicable signatures, and **executes the pinned smoke
+commands**. Directory delivery verifies the saved local destination instead of
+contacting GitHub. This is not a read-only receipt inspection.
+
+It does not prepare/push a tag, create a release or authorize publication.
+Compatible old plans retain their bytes/fingerprint; `verifier_version` records
+the current verifier. `verification = passed` with failed required CI still
+returns `1` and `acceptance = incomplete`; inspect `ci_problems`. Local publishers
+report `ci_verdict = not-required`, not a fabricated passing CI run. Missing
+publication, identity drift and invalid signatures remain failures.
+`next_action` suggests `verify` for an unverified publication, without `--publish`.
+
+### Update and rollback
+
+`update` returns `data.plan`, `plan_sha256` and `state` (`planned`, `unchanged`,
+`pending`, `installed`, `rolled-back`, `pruned`). Rollback reports
+`action: "rollback"` and receipt path with the restoration plan. Backup/receipt
+paths appear after transaction creation; failures retain known progress.
+`--prune-backups` reports `action: "prune-backups"`, `superseded` (backups no
+receipt can restore), and, after confirmation, `removed`. Preview stops after
+`superseded`.
 
 ## Reviewed update plans
 
 `update --dry-run --json` does not execute candidate code, replace the projection,
-refresh the hook or create a rollback backup. It can read GitHub, download a
-candidate and temporarily create a project-local lock/scratch directory. It is not
-a promise of zero filesystem activity.
+refresh a hook or create a rollback backup. It may query GitHub, download a
+candidate and temporarily create a project-local lock/scratch directory. It is
+not a promise of zero filesystem activity.
 
-The schema-1 update plan records its tool version, root, action (`update`,
-`refresh-guard`, `noop`), old/new versions and artifact hashes, candidate publisher,
-exact changed `files` with relative paths and before/after SHA-256, unchanged
-guarded `inputs`, and `guard_inputs_before`/`guard_inputs_after`. A no-op has no
-changed files. The fingerprint is SHA-256 of the plan's UTF-8 JSON with sorted keys
-and compact separators, excluding the fingerprint itself.
+The schema-1 plan records tool version, root, action (`update`, `refresh-guard`,
+`noop`), old/new versions and artifact hashes, publisher, exact changed `files`
+with relative paths and before/after SHA-256, unchanged guarded `inputs`, and
+`guard_inputs_before`/`guard_inputs_after`. No-op has no changed files. Fingerprints
+are SHA-256 of UTF-8 JSON with sorted keys and compact separators, excluding the
+fingerprint itself.
 
-After review, pass its hash to the same command with `--yes --plan-hash HASH`.
-Use the same source selection or `--refresh-guard`. Any changed plan is refused
-before candidate execution or backup creation. The fingerprint is an equality
-check, not a signature, sandbox or human approval.
+After review, repeat the same source selection or `--refresh-guard`, passing
+`--yes --plan-hash HASH`. Changed plans refuse before candidate execution or
+backup creation. A fingerprint is equality evidence, not a signature, sandbox
+or human approval.
 
-`update --rollback --dry-run --json` validates the existing backup without restoring
-files. Its plan binds the receipt hash and exact restored file hashes/modes.
-`update --rollback --yes --plan-hash HASH` rejects a stale restoration plan. Source
-selection and guard-refresh flags cannot be combined with rollback.
+`update --rollback --dry-run --json` validates backups without restoring them;
+its plan binds the receipt hash and restored file hashes/modes.
+`update --rollback --yes --plan-hash HASH` rejects stale restoration plans.
+Source selection/guard refresh cannot be combined with rollback.
 
-JSON update mode never prompts, including on a terminal. A non-dry-run invocation
-requires `--yes`, even if it might be a no-op. Existing project rules may require
-separate permission to change hooks; the flag cannot supply that permission.
-Release `run/resume` still require `--publish` after review of the exact plan and
-repository. Neither `next_action`, a receipt nor a matching hash grants authority
-to perform writes. Keep executable/arguments separate; never evaluate a returned
-command or diagnostic message as shell code.
+JSON update mode never prompts, even on a terminal, and requires `--yes` for
+non-dry-run invocations including possible no-ops. Project hook permissions remain
+separate. Release run/resume need `--publish` after review. Neither `next_action`,
+receipts nor matching hashes grant write authority. Keep executable and arguments
+separate; never evaluate diagnostic text as shell code.
 
 ## Acceptance boundary
 
-The isolated suite exercises real Git against local bare repositories, project
-checks/smokes, success and failure results, interruptions, repeat resume, unsafe
-receipts, paths with spaces, update rollback and native subprocess stream separation.
-It never publishes. Fresh push → hosted CI → immutable publication → resume still
-requires an explicitly agreed disposable repository, visibility, exact refs and
-publication actions. Existing releases must not be rewritten to satisfy that test.
-
-
-In 0.21.0 the release plan records `settings.publisher` (`directory`, `github`, or
-`github-actions`). Local prepare has `candidate.kind = local`, an attempt id and
-file digests. Directory plans have no remote pushes or workflow id. Their manifest
-is portable; the execution receipt remains local. CI is `not-required` for local
-publishers and acceptance still requires verified publication and application smoke.
-Missing publisher fields in old receipts retain the previous Actions semantics.
+The test suite uses isolated Git repositories, checks/smokes and subprocesses;
+it must not publish. A live push, hosted CI and immutable publication test still
+needs an explicitly agreed disposable repository and exact refs/actions. Never
+rewrite existing releases to satisfy a test. Preparation, publication, CI,
+verification, cleanup and platform coverage are separate outcomes; consult the
+[local](local-releases.md) or [Actions](release-coordinator.md) contract for the
+selected publisher.
