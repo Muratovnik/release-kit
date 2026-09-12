@@ -1,8 +1,7 @@
-"""Start a trusted built plugin through its launcher and perform real SDK reads.
+"""Start a trusted built plugin using its shipped MCP launch configuration.
 
-This is a local package qualification, not native desktop-client discovery. It
-requires the locked optional SDK environment. No project binding, hook or release
-is authorized, and all fixtures/runtime outputs are retained in the given new root.
+This checks local SDK stdio startup, not native desktop discovery. It authorizes
+no project binding, hook or publication and retains fixtures in the new work root.
 """
 
 from __future__ import annotations
@@ -10,9 +9,11 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 import subprocess
 import sys
 import zipfile
+from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 from smoke_onboarding import create_project, fixture_environment, git
@@ -29,6 +30,62 @@ REQUIRED_TOOLS = {
     "relkit_project",
     "relkit_sync",
 }
+
+
+@dataclass(frozen=True)
+class Launch:
+    command: str
+    args: list[str]
+    cwd: Path
+    env: dict[str, str]
+    startup_timeout: float
+    tool_timeout: float
+
+
+def load_launch(package: Path, environment: dict[str, str]) -> Launch:
+    """Read this package's stdio contract; do not substitute a working launcher."""
+    document = json.loads((package / ".mcp.json").read_text(encoding="utf-8"))
+    server = document["mcpServers"]["releasekit"]
+    command, args, cwd = server["command"], server["args"], server["cwd"]
+    if not isinstance(command, str) or not command or "\0" in command:
+        raise ValueError("plugin command must be a nonempty executable name")
+    if not isinstance(args, list) or not all(
+        isinstance(arg, str) and "\0" not in arg for arg in args
+    ):
+        raise ValueError("plugin args must be separate string arguments")
+    if not isinstance(cwd, str) or not cwd or Path(cwd).is_absolute():
+        raise ValueError("plugin cwd must be relative to the installed package")
+    working = (package / cwd).resolve()
+    if not working.is_relative_to(package.resolve()) or not working.is_dir():
+        raise ValueError("plugin cwd must be an existing directory inside the package")
+    overrides = server.get("env", {})
+    if not isinstance(overrides, dict) or not all(
+        isinstance(key, str) and isinstance(value, str) for key, value in overrides.items()
+    ):
+        raise ValueError("plugin env must map strings to strings")
+    times = [server["startup_timeout_sec"], server["tool_timeout_sec"]]
+    if any(
+        type(value) not in (int, float) or not math.isfinite(value) or value <= 0
+        for value in times
+    ):
+        raise ValueError("plugin timeouts must be finite positive seconds")
+    return Launch(command, args, working, {**environment, **overrides}, *times)
+
+
+def check_launch(launch: Launch, version: str) -> None:
+    """Use exactly the installed command/args/cwd/env for the launcher's check mode."""
+    checked = subprocess.run(
+        [launch.command, *launch.args, "--check"],
+        cwd=launch.cwd,
+        env=launch.env,
+        capture_output=True,
+        encoding="utf-8",
+        timeout=launch.startup_timeout,
+        check=True,
+    )
+    check = json.loads(checked.stdout)
+    if check.get("valid") is not True or set(check["components"].values()) != {version}:
+        raise RuntimeError("built plugin component check disagrees with the release version")
 
 
 def extract(archive_path: Path, destination: Path) -> Path:
@@ -59,19 +116,8 @@ def smoke(archive_path: Path, directory: Path, version: str) -> None:
     from mcp import Client, StdioServerParameters
 
     package = extract(archive_path, directory)
-    environment = fixture_environment()
-    launcher = package / "scripts/launch.py"
-    checked = subprocess.run(
-        [sys.executable, str(launcher), "--check"],
-        env=environment,
-        capture_output=True,
-        encoding="utf-8",
-        timeout=60,
-        check=True,
-    )
-    check = json.loads(checked.stdout)
-    if check.get("valid") is not True or set(check["components"].values()) != {version}:
-        raise RuntimeError("built plugin component check disagrees with the release version")
+    launch = load_launch(package, fixture_environment())
+    check_launch(launch, version)
     if (package / ".runtime").exists():
         raise RuntimeError("package hash check unexpectedly provisioned the runtime")
 
@@ -86,19 +132,22 @@ def smoke(archive_path: Path, directory: Path, version: str) -> None:
 
     async def scenario():
         parameters = StdioServerParameters(
-            command=sys.executable,
-            args=[str(launcher)],
-            env=environment,
+            command=launch.command, args=launch.args, cwd=launch.cwd, env=launch.env
         )
-        with anyio.fail_after(600):
+        # Keep the startup scope outside the client's own task groups until close.
+        # Popping it immediately after __aenter__ would corrupt AnyIO scope ordering.
+        with anyio.fail_after(launch.startup_timeout) as startup:
             async with Client(parameters, elicitation_callback=reject_prompt) as client:
-                discovered = await client.list_tools()
+                startup.deadline = math.inf
+                with anyio.fail_after(launch.tool_timeout):
+                    discovered = await client.list_tools()
                 missing = REQUIRED_TOOLS - {tool.name for tool in discovered.tools}
                 if missing:
                     raise RuntimeError(f"built plugin is missing tools: {sorted(missing)}")
-                inspected = await client.call_tool(
-                    "relkit_project", {"request": {"action": "inspect", "root": str(project)}}
-                )
+                with anyio.fail_after(launch.tool_timeout):
+                    inspected = await client.call_tool(
+                        "relkit_project", {"request": {"action": "inspect", "root": str(project)}}
+                    )
                 if inspected.is_error:
                     raise RuntimeError(f"built plugin project inspection failed: {inspected}")
                 review = inspected.structured_content["review"]
@@ -108,9 +157,10 @@ def smoke(archive_path: Path, directory: Path, version: str) -> None:
                     or review["projection_sha256"] != expected_digest
                 ):
                     raise RuntimeError("built plugin inspected a different project or projection")
-                aligned = await client.call_tool(
-                    "relkit_sync", {"request": {"action": "status", "root": str(project)}}
-                )
+                with anyio.fail_after(launch.tool_timeout):
+                    aligned = await client.call_tool(
+                        "relkit_sync", {"request": {"action": "status", "root": str(project)}}
+                    )
                 if aligned.is_error or aligned.structured_content["sync"]["state"] != "aligned":
                     raise RuntimeError(f"built plugin failed read-only alignment: {aligned}")
 
@@ -129,18 +179,17 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True, help="Trusted built plugin ZIP")
     parser.add_argument(
-        "--work-dir", type=Path, required=True, help="New directory inside check workspace"
+        "--work-dir", type=Path, required=True, help="New check workspace directory"
     )
     parser.add_argument("--version", required=True)
     arguments = parser.parse_args()
     try:
         smoke(arguments.archive.absolute(), arguments.work_dir.absolute(), arguments.version)
     except Exception as error:
-        # Native SDK/transport failures include exception groups. They are a failed
-        # package check, not a reason to fall back to a --version-only smoke.
+        # Native SDK failures include exception groups; never downgrade to --version.
         print(f"plugin-smoke: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
-    print("plugin-smoke: extracted launcher, native stdio discovery and project reads passed")
+    print("plugin-smoke: shipped MCP configuration, native stdio and project reads passed")
     return 0
 
 

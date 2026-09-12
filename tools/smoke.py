@@ -1,7 +1,8 @@
 """Check the downloaded release assets behave, without trusting this source tree.
 
-The coordinator has already verified names, sizes, digests and signatures by the time
-this runs. What it cannot check is that the published bytes are a working tool, so
+Validate the complete release set before executing any candidate code, including
+when invoked without a coordinator. Signatures remain the caller's responsibility.
+What metadata cannot check is that the published bytes are a working tool, so
 every assertion here reads the downloaded files and runs the downloaded zipapp. The
 source snapshot supplies only input to read, never code to import: importing
 `releasekit` from it would prove the source works, which is not what shipped.
@@ -12,6 +13,8 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
+import stat
 import subprocess
 import sys
 import zipfile
@@ -23,6 +26,8 @@ PLUGIN = "release-kit-plugin.zip"
 RECEIPT = "release.json"
 ENTRY = "release-kit/tools/relkit.pyz"
 INVENTORY = "release-kit/package.json"
+# This distribution's contract, independent of the receipt under inspection.
+ASSETS = frozenset({CLI, MANIFEST, PLUGIN, PLUGIN + ".sha256", RECEIPT})
 
 
 class SmokeError(RuntimeError):
@@ -31,6 +36,57 @@ class SmokeError(RuntimeError):
 
 def digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
+
+
+def _unique_object(pairs):
+    value = {}
+    for key, item in pairs:
+        if key in value:
+            raise SmokeError(f"duplicate release manifest key: {key}")
+        value[key] = item
+    return value
+
+
+def inventory(assets: Path, version: str) -> dict[str, str]:
+    """Require all five ordinary files and complete, consistent hash declarations."""
+    observed = {path.name for path in assets.iterdir()}
+    if observed != ASSETS:
+        raise SmokeError(
+            f"release asset set differs: missing={sorted(ASSETS - observed)}, "
+            f"unexpected={sorted(observed - ASSETS)}"
+        )
+    hashes = {}
+    for name in sorted(ASSETS):
+        path = assets / name
+        if not stat.S_ISREG(path.lstat().st_mode):
+            raise SmokeError(f"release asset must be an ordinary file: {name}")
+        hashes[name] = digest(path.read_bytes())
+    for name in (CLI, PLUGIN):
+        sidecar = name + ".sha256"
+        words = (assets / sidecar).read_text(encoding="utf-8").split()
+        if len(words) != 2 or words[0] != hashes[name] or words[1] not in (name, "*" + name):
+            raise SmokeError(f"{sidecar} must name exactly {name} and its SHA-256")
+    receipt = json.loads(
+        (assets / RECEIPT).read_text(encoding="utf-8"), object_pairs_hook=_unique_object
+    )
+    if (
+        not isinstance(receipt, dict)
+        or type(receipt.get("schema")) is not int
+        or receipt["schema"] != 1
+        or receipt.get("version") != version
+    ):
+        raise SmokeError(f"{RECEIPT} must declare schema 1 and version {version}")
+    files = receipt.get("files")
+    if not isinstance(files, dict) or set(files) != ASSETS - {RECEIPT}:
+        raise SmokeError(f"{RECEIPT} must cover every other release asset exactly once")
+    for name, expected in files.items():
+        if (
+            not isinstance(expected, str)
+            or re.fullmatch(r"[0-9a-f]{64}", expected) is None
+            or hashes[name] != expected
+        ):
+            raise SmokeError(f"{RECEIPT} digest does not match {name}")
+    return hashes
 
 
 def _run(assets: Path, arguments: list[str]) -> str:
@@ -53,33 +109,22 @@ def _run(assets: Path, arguments: list[str]) -> str:
 def smoke(assets: Path, source: Path, version: str) -> list[str]:
     """Every check, so one failure does not hide the next; the caller reports them."""
     problems = []
+    before = inventory(assets, version)
     payload = (assets / CLI).read_bytes()
-    exact = digest(payload)
-
-    recorded = (assets / MANIFEST).read_text(encoding="utf-8").split()
-    if recorded[:1] != [exact] or [name.lstrip("*") for name in recorded[1:]] != [CLI]:
-        problems.append(f"{MANIFEST} does not record exactly the published {CLI} digest")
-
-    receipt = json.loads((assets / RECEIPT).read_text(encoding="utf-8"))
-    if receipt.get("schema") != 1 or receipt.get("version") != version:
-        problems.append(f"{RECEIPT} does not declare schema 1 and version {version}")
-    for name, expected in sorted((receipt.get("files") or {}).items()):
-        path = assets / name
-        if not path.is_file():
-            problems.append(f"{RECEIPT} names an asset that was not published: {name}")
-        elif digest(path.read_bytes()) != expected:
-            problems.append(f"{RECEIPT} digest does not match the published {name}")
 
     with zipfile.ZipFile(assets / PLUGIN) as archive:
         bundled = archive.read(ENTRY)
-        inventory = json.loads(archive.read(INVENTORY))
+        package_inventory = json.loads(archive.read(INVENTORY))
     if bundled != payload:
         problems.append(f"{PLUGIN} bundles a different {CLI} than the one published beside it")
-    if inventory.get("version") != version or inventory.get("files", {}).get(
+    if package_inventory.get("version") != version or package_inventory.get("files", {}).get(
         "tools/relkit.pyz"
     ) != digest(bundled):
         problems.append(f"{PLUGIN} inventory disagrees with its own bundled tool or the version")
 
+    # Metadata problems must not be followed by candidate execution.
+    if problems:
+        return problems
     reported = _run(assets, ["--version"]).strip()
     if not reported.startswith(f"release-kit {version} "):
         problems.append(f"published tool reports {reported!r}, not release-kit {version}")
@@ -90,6 +135,8 @@ def smoke(assets: Path, source: Path, version: str) -> list[str]:
     heading = _run(assets, ["notes", version, "--root", str(source)]).splitlines()
     if not heading or version not in heading[0]:
         problems.append(f"published tool did not read the {version} changelog entry from source")
+    if inventory(assets, version) != before:
+        problems.append("release assets changed while being smoke-tested")
     return problems
 
 

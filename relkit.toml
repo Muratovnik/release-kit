@@ -25,9 +25,10 @@ assets = [
     "release-kit-plugin.zip.sha256",
     "release.json",
 ]
-# Shipping both components requires explicit SDK and built-plugin checks.
-checks = [["{python}", "tools/check_distribution.py"]]
-smoke = [["{python}", "tools/smoke.py", "--assets", "{assets}", "--version", "{version}"]]
+# Source checks do not qualify a throwaway build as the release candidate.
+checks = [["{python}", "tools/check_distribution.py", "--source-only"]]
+# Runs from the committed Git-free snapshot against these exact candidate files.
+smoke = [["{python}", "tools/check_distribution.py", "--assets", "{assets}", "--version", "{version}", "--work-dir", "{temp}"]]
 smoke_platforms = ["linux", "darwin", "win32"]
 # Allow the declared suite and first-start dependency/scanner provisioning.
 command_timeout = 1800

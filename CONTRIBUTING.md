@@ -62,10 +62,10 @@ then run:
 python tools/check_distribution.py
 ```
 
-The full check runs the base gate, explicitly discovers `tests/mcp` in an isolated
-SDK environment using the plugin's existing `uv.lock`, builds a temporary release
-set, runs the CLI smoke and checks the built plugin through its actual launcher
-and a native SDK stdio client. It also exercises the shipped onboarding policy.
+The full development check runs the base gate, explicitly discovers `tests/mcp` in
+an isolated SDK environment using the existing plugin `uv.lock`, builds a test
+release set, validates exact membership and hashes, exercises CLI onboarding, and
+starts the extracted plugin through its own `.mcp.json` with a native SDK client.
 Missing SDK/uv, empty MCP collection, failed subprocesses or failed package checks
 are failures, not skips or a fallback to the base gate.
 
@@ -76,11 +76,14 @@ plugin's own `.runtime/` is intentionally retained with the check's diagnostics,
 not silently swept as unknown files. The report identifies the host and artifact
 digests. It is evidence for that host, not a claim that other platforms ran.
 
-Both hosted workflows remain **manual**. They run the same full gate on their
-selected platforms; ordinary pushes/PRs do not consume hosted minutes. Successful
-local checks do not imply a successful hosted matrix. The release coordinator's
-configured check is the full gate, so shipping the plugin does not depend on
-someone remembering a separate MCP command.
+Both hosted workflows remain **manual**. Ordinary pushes/PRs do not consume hosted
+minutes. Successful local checks do not imply a successful hosted matrix.
+The local release coordinator separates source checks from candidate qualification:
+`check_distribution.py --source-only` runs base/MCP tests, then the configured smoke
+checks the actual committed-source candidate with `--assets`, `--version` and an
+explicit `--work-dir`. It does not substitute a passing development build for the
+files that will be published. Git-free snapshots and separate asset directories
+are supported by that package mode; see [distribution](docs/distribution.md).
 
 For targeted MCP work, use the locked environment created by the full check to
 run `tools/check_mcp.py`, or invoke it through `uv run --locked` with the same

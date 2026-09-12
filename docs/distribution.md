@@ -49,6 +49,14 @@ The launcher compares packaged files with it and checks component versions.
 An initially malicious package can contain a matching inventory: review/trust of
 the distribution source remains necessary.
 
+Package checks require exactly the five distribution files before executing any
+candidate code. Both sidecars must name and hash their corresponding payloads.
+`release.json` must name every other file exactly once with the correct digest;
+an empty, partial or duplicate-key manifest cannot select its own coverage.
+Missing files, extra entries and non-file members are failures. The same inventory
+is compared before and after all package checks; reports retain the checked hashes.
+This establishes consistency and absence of observed drift, not publisher identity.
+
 GitHub immutable-release verification is a separate native mechanism. For a
 reviewed published version and downloaded assets, use `gh release verify TAG`
 and `gh release verify-asset TAG FILE --repo OWNER/REPO` with the intended repository
@@ -96,11 +104,25 @@ built by its candidate job. The source snapshot and requested version must match
 python tools/check_distribution.py --assets dist --version X.Y.Z
 ```
 
-This runs CLI smoke, real-scanner onboarding and built-plugin stdio against those
-files, retaining their hashes and results. It does not rebuild or rerun the base
-and source MCP suite; the workflow requires its full matrix first. Used on its own,
-this mode is package evidence, not a replacement for the full source check.
-The asset directory must be inside the reviewed source checkout.
+This checks the complete set, CLI smoke, real-scanner onboarding and plugin stdio
+against those files. It neither rebuilds nor reruns source tests. The plugin starts
+with the command, arguments, cwd, environment and timeouts in its own `.mcp.json`,
+not a manually repaired launcher invocation. Native desktop discovery is separate.
+
+The coordinator's snapshot has no `.git`, and its assets are outside that snapshot.
+It therefore invokes the same mode with absolute asset and existing scratch paths:
+
+```text
+python tools/check_distribution.py --assets ABSOLUTE_ASSETS --version X.Y.Z --work-dir ABSOLUTE_SCRATCH
+```
+
+The runner creates a new owned child of the explicit scratch parent, never a
+working directory inside the candidate. With a normal checkout, omitting
+`--work-dir` uses its usual project-local storage. A Git-free snapshot requires the
+explicit scratch path and never borrows an ancestor's Git identity. Its report
+records no invented source commit; the coordinator's receipt binds the committed
+snapshot and candidate. Package hashes alone do not prove the origin of a standalone
+input. Used by itself, this mode is package evidence, not source qualification.
 
 ## Releasing this repository
 
@@ -115,13 +137,20 @@ python -m releasekit.cli release run vX.Y.Z --publish --plan-hash REVIEWED
 ```
 
 Commit the new version and curated notes before preparation. The configured check
-runs the full CLI/plugin qualification, not only the base unit suite. The prepared
-candidate binds exact source and files; run publishes those bytes, not a rebuild.
+uses `check_distribution.py --source-only` for base and MCP source tests. After
+building the actual candidate from committed bytes, the configured smoke invokes
+`check_distribution.py --assets {assets} --version {version} --work-dir {temp}`.
+All package checks therefore cover the exact files whose hashes enter the candidate
+receipt before tagging; a throwaway working-tree build cannot qualify those files.
+The coordinator also compares its candidate inventory before/after smoke. A failure
+prevents preparation from passing. Run publishes the prepared bytes, not a rebuild.
 GitHub write/admin-read permissions and immutability prerequisites are documented
 in [local releases](local-releases.md#optional-github-delivery).
 
+For development, the runner without flags still runs source tests, builds a
+working-tree test distribution and checks it. That is not the publication candidate.
 Hosted workflows are manual supplementary platform checks. They publish no release
-and do not run on branch/tag pushes. Record the actual host, Python version,
-artifact digests and outcome of each local/native run. A declared platform list
-is not execution evidence. Complete the separate [publication review](publication-review.md)
-before changing visibility or sharing a previously private distribution.
+and do not run on branch/tag pushes. Record actual host, Python version, artifact
+digests and outcomes. A declared platform list is not execution evidence. Complete
+the separate [publication review](publication-review.md) before changing visibility
+or sharing a previously private distribution.

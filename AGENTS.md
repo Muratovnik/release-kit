@@ -91,13 +91,17 @@ Before a joint CLI/plugin distribution, provision uv explicitly and run:
 python tools/check_distribution.py
 ```
 
-This is the repository's configured release check. It runs the base gate, explicit
-MCP discovery in the existing locked optional environment, a working-tree test
-build, CLI smoke, real-engine onboarding and extracted-plugin stdio checks. Missing
-requirements or empty/all-skipped MCP discovery fail. Tests never register clients,
-install a real adopter's hook or publish. Retained evidence identifies actual host
-and bytes, not an unexecuted OS matrix. Native-client discovery and hosted exposure
-review remain separate. See CONTRIBUTING.md and docs/publication-review.md.
+This development check runs the base gate, explicit MCP discovery in the existing
+locked environment, a working-tree test build, complete asset validation, CLI smoke,
+real-engine onboarding and plugin stdio through the packaged `.mcp.json`.
+The coordinator uses `--source-only` for source checks, then runs `--assets` with
+`--version` and explicit `--work-dir` on its actual Git-free candidate snapshot.
+Only checks of the candidate's exact bytes qualify those files for publication;
+a passing throwaway build is not transferable evidence. Missing requirements or
+empty/all-skipped MCP discovery fail. Tests never register clients, install a real
+adopter's hook or publish. Retained evidence identifies the actual host and bytes,
+not an unexecuted OS matrix. Native-client discovery and hosted exposure review
+remain separate. See CONTRIBUTING.md and docs/publication-review.md.
 
 The publication audit is additional to code checks. From source in PowerShell:
 
