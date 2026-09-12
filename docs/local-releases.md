@@ -80,6 +80,9 @@ Use `publisher = "github"` and `repository = "example/project"` instead of
 directory delivery. Keep the same build/check/smoke commands. An optional `branch`
 can be pushed along with the tag. This adapter uses native `gh` release commands
 and the Releases API, not Actions, Actions artifact storage or hosted minutes.
+Use release-kit 0.21.1 or newer for GitHub delivery: unpublished drafts must be
+resolved through the authenticated releases list, because the tag endpoint only
+returns published releases.
 It requires GitHub CLI >= 2.98.0, repository write access and admin read access
 for the immutable-release preflight. Enable release immutability before planning.
 Visibility and billing settings are never changed by release-kit.

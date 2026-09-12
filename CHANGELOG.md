@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.21.1](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.1) - 2026-09-12
+
+### Fixed
+
+- GitHub draft lookup uses the authenticated releases list when the published-tag
+  endpoint returns 404. Owned drafts can now be validated and resumed after creation;
+  duplicate matches are refused before an existing draft can be overwritten.
+- Local preparation records its initially empty scratch directory, so successful
+  cleanup does not report a retained directory when no project output remains.
+
+### Added
+
+- Includes the unpublished 0.21.0 changes: portable local preparation and directory
+  delivery, optional GitHub publication without Actions or paid prerequisites,
+  published-version selection, tagless candidates, release verification, clear
+  publication/CI feedback and synchronized CLI/plugin components.
+
 ## [0.21.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.0) - 2026-09-12
 
 ### Added

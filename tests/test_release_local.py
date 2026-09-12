@@ -7,7 +7,7 @@ from test_release import FakeGitHub, ReleaseFixture
 
 from releasekit import config
 from releasekit.release import coordinator
-from releasekit.release.backend import Pending
+from releasekit.release.backend import GitHub, Pending
 
 
 class LocalGitHub(FakeGitHub):
@@ -26,10 +26,17 @@ class LocalGitHub(FakeGitHub):
             raise AssertionError("local publication contacted GitHub Actions")
         if path == "/immutable-releases":
             return {"enabled": self.immutable}
+        releases = self.published + ([self.remote_release] if self.remote_release else [])
+        if path.startswith("/releases/tags/"):
+            return next(
+                (r for r in releases if not r["draft"] and r["tag_name"] == path.rsplit("/", 1)[1]),
+                None,
+            )
+        if path == "/releases?per_page=100":
+            return [releases]
         return super().api(path, **kwargs)
 
-    def release(self, tag):
-        return self.remote_release
+    release = GitHub.release
 
     def create_draft(self, tag, sha, title, notes):
         self.create_calls += 1
@@ -101,6 +108,7 @@ class LocalFixture(ReleaseFixture):
         with patch.object(coordinator, "_audit"):
             code, output = self.invoke("prepare", publish=False)
         self.assertEqual(0, code, output)
+        self.assertNotIn("retained unowned", output)
         return coordinator.plan(self.runner, "1.0.0", github=self.github)
 
     def publish(self, **kwargs):

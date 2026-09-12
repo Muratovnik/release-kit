@@ -122,7 +122,17 @@ class GitHub:
             raise
 
     def release(self, tag: str):
-        return self.api(f"/releases/tags/{quote(tag, safe='')}", optional=True)
+        published = self.api(f"/releases/tags/{quote(tag, safe='')}", optional=True)
+        if published is not None:
+            return published
+        # The tag endpoint only returns published releases. Drafts are visible
+        # through the authenticated releases list to callers with push access.
+        matching = [item for item in self.releases() if item["tag_name"] == tag]
+        if len(matching) > 1:
+            raise ReleaseError(
+                "multiple releases or drafts claim the same tag; reconcile explicitly"
+            )
+        return matching[0] if matching else None
 
     def identity(self):
         return self.api()

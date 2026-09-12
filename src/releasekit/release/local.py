@@ -95,6 +95,7 @@ def prepare(runner, store, value, no_download, result):
             runner.temporary.mkdir()
             temporary = workspace.path / "project-temp"
             temporary.mkdir()
+            workspace.remember(temporary)
             try:
                 coordinator._local_checks(runner, value, workspace, no_download)
                 snapshot = coordinator._snapshot(runner, value, workspace)

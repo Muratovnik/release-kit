@@ -1035,6 +1035,19 @@ class ReleaseTests(ReleaseFixture):
 
 
 class BackendTests(unittest.TestCase):
+    def test_unpublished_draft_is_found_through_authenticated_listing(self):
+        github = GitHub(Runner(Path(".")), "example/project")
+        draft = {"id": 21, "tag_name": "v1.0.0", "draft": True}
+        with patch.object(github, "api", side_effect=[None, [[], [draft]]]) as call:
+            self.assertEqual(draft, github.release("v1.0.0"))
+        self.assertEqual("/releases?per_page=100", call.call_args.args[0])
+        self.assertTrue(call.call_args.kwargs["pages"])
+        with (
+            patch.object(github, "api", side_effect=[None, [[draft, {**draft, "id": 22}]]]),
+            self.assertRaisesRegex(ReleaseError, "multiple"),
+        ):
+            github.release("v1.0.0")
+
     def test_local_delivery_commands_require_existing_tag_and_never_clobber(self):
         runner = Runner(Path("."))
         github = GitHub(runner, "example/project")
