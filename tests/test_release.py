@@ -1200,6 +1200,10 @@ class SelfHostingTests(unittest.TestCase):
             )
             self.assertEqual(0, completed.returncode, completed.stderr)
             produced = sorted(path.name for path in output.iterdir())
+            with zipfile.ZipFile(output / "release-kit-plugin.zip") as archive:
+                files = set(archive.namelist())
+                for name in ("local-releases.md", "release-coordinator.md"):
+                    self.assertIn("release-kit/docs/" + name, files)
 
         self.assertEqual(sorted(self.release.assets), produced)
 

@@ -260,15 +260,14 @@ a real adopter as its update fixture.
 
 ## Candidate release operations
 
-`relkit_release` also accepts `next` with `bump` and no `version`, and `prepare`
-with `version` and `ci_run`. Both require a reviewed project binding and a project
-CLI at least 0.20.0. Preparation executes project checks and downloaded application
-smoke, but does not tag, push, dispatch CI or publish. The resulting candidate is
-included in a fresh `plan`; run/resume retain their existing publication authority.
+`relkit_release` accepts `next` with `bump` and no `version`, and `prepare`
+with `version`. Both require a reviewed project binding. Next and preparation
+through an Actions workflow require a project CLI at least 0.20.0; local
+preparation requires 0.21.0 and omits `ci_run`. Only the Actions adapter uses
+`ci_run` to select an existing workflow run.
 
-
-Local preparation in 0.21.0 uses `relkit_release` action `prepare` with version
-and no ci_run. It uses the committed publisher/build configuration. Directory
-publication needs no host; GitHub delivery needs no Actions. Only the explicit
-Actions adapter uses ci_run. Run/resume authorizations bind the reviewed adapter,
-destination and effects. See [local releases](local-releases.md).
+Preparation executes the declared checks and application smoke, but does not
+tag, push, dispatch CI or publish. Local preparation also builds from committed
+source. The candidate appears in a fresh `plan`; run/resume authorizations bind
+the reviewed adapter, destination and effects. Directory delivery needs no host;
+GitHub delivery needs no Actions. See [local releases](local-releases.md).

@@ -59,7 +59,8 @@ release prerequisite. Existing receipts retain their original publisher rules.
    product. In ordinary sections, keep a matching commit link on the same Markdown
    source line as the opening bullet; do not hard-wrap it onto an indented line.
 2. Request `relkit_release` action `plan` with the exact version. Review commit
-   SHA, previous tag, local checks, intended refs, CI workflow and artifact policy.
+   SHA, previous publication, local checks, publisher, destination, intended refs,
+   optional CI workflow and artifact policy.
    Planning does not authorize server-side changes. Let `run` perform the
    configured release checks; do not manually repeat the entire sequence before
    it just to obtain another green report. Separately required commit gates and
