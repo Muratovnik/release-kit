@@ -14,13 +14,13 @@ STABLE = re.compile(r"v(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)")
 def published(runner, github, refs, sha):
     releases = [
         release
-        for page in github.api("/releases?per_page=100", pages=True)
-        for release in page
+        for release in github.releases()
         if not release["draft"] and not release["prerelease"]
     ]
     candidates = []
     observed = {(release["tag_name"], release["id"]) for release in releases}
     receipts = storage.service_root(runner.root) / "releases"
+    current = github.identity()
     if receipts.exists():
         for path in storage.checked(receipts).glob("*/state.json"):
             path = storage.inside(runner.root, path)
@@ -32,6 +32,9 @@ def published(runner, github, refs, sha):
                 "plan_sha256"
             ) != canonical.fingerprint(plan):
                 raise ReleaseError("invalid local publication receipt; reconcile it explicitly")
+            # Receipts from another destination are not that store's history.
+            if "repository_id" in plan and plan["repository_id"] != current["id"]:
+                continue
             known = []
             if state.get("publication") == "published":
                 known.append((plan["tag"], state["release_id"]))
@@ -91,7 +94,11 @@ def predecessor(runner, github, refs, version, sha, first):
 def next_version(runner, github, release, first, bump):
     if bump not in {"patch", "minor", "major"}:
         raise ReleaseError("release next requires --bump patch|minor|major")
-    refs = remote_refs(runner, release.remote)
+    refs = (
+        local_tags(runner)
+        if release.publisher == "directory"
+        else remote_refs(runner, release.remote)
+    )
     previous = published(runner, github, refs, runner.git("rev-parse", "HEAD"))
     if previous:
         number = list(map(int, previous["tag"][1:].split(".")))

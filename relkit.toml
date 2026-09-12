@@ -20,21 +20,13 @@ profile = "strict"
 # the hardcoding the rule above forbids: it is this repository's own identity, like
 # the author in its package metadata. Nothing here names a project it guards.
 #
-# CI alone publishes. `relkit release` runs these checks, pushes main and the tag
-# together, then verifies what the workflow published against the signed release
-# attestation. No guard is pinned here: this repository vendors no projection of
-# itself, so `require_guard` has no input to verify.
-#
-# Build provenance is off because GitHub refuses to persist it for a user-owned
-# private repository: `Feature not available for user-owned private repositories`.
-# The signed release attestation does work here and still decides the published set.
-# Make this repository public, or move it to an owner whose plan allows private
-# attestations, and this becomes `true`.
+# Build and check on the maintainer's machine; GitHub is only the selected
+# delivery adapter. No hosted runner, paid quota or Actions artifact is required.
+# The generic directory adapter can deliver the same files without any hosting.
 [release]
 repository = "Muratovnik/release-kit"
-workflow = ".github/workflows/release.yml"
-required_jobs = ["publish"]
-candidate_jobs = ["check", "candidate", "candidate-smoke (ubuntu-latest)", "candidate-smoke (macos-latest)", "candidate-smoke (windows-latest)"]
+publisher = "github"
+build = [["{python}", "tools/build_release.py", "{assets}"]]
 branch = "main"
 version_file = "pyproject.toml"
 version_pattern = '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$'

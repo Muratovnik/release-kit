@@ -2,6 +2,30 @@
 
 ## [Unreleased]
 
+## [0.21.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.0) - 2026-09-12
+
+### Added
+
+- Local release preparation builds, checks and smoke-tests exact committed source
+  before a tag. Directory delivery works without a hosting account, Git remote,
+  hosting CLI or paid service, and writes a portable manifest beside the files.
+- Optional GitHub delivery uploads the prepared bytes, verifies the complete draft
+  before publishing and reconciles interrupted create/upload/publish operations.
+  Hosted Actions and build provenance require an explicit mode; no billing or
+  visibility changes are needed for the local path.
+- The unpublished 0.19.0 and 0.20.0 changes are included: published-version selection,
+  tagless candidates, release verify and clear independent publication/CI verdicts,
+  synchronized plugin components, reproducible packaging and reviewed guard migration.
+
+### Fixed
+
+- GitHub is no longer a prerequisite for the release lifecycle. Directory releases
+  accept links to other Git hosts and verify referenced commits through local Git.
+  Existing Actions configurations and saved receipts retain their original rules.
+- This repository builds locally and uses GitHub only for delivery. Hosted checks
+  run solely on manual request and cannot race the local publisher on a tag.
+
+
 ## [0.20.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.20.0) - 2026-09-12
 
 ### Added

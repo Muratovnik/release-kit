@@ -1,4 +1,9 @@
-# Managed GitHub tag releases
+# GitHub Actions release adapter
+
+This page describes the optional `publisher = "github-actions"` mode and its
+legacy receipts. For the default hosting-independent path and optional GitHub
+delivery without Actions, see [local releases](local-releases.md).
+The guarantees below apply to the selected Actions mode, not to every release.
 
 Status: accepted by one live publication. release-kit 0.18.0 was planned, pushed,
 published by CI and verified by this coordinator in its own repository on 2026-09-07,

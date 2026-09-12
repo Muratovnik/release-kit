@@ -460,7 +460,7 @@ def create_server(bridge=None, *, projects=None, bundle=None):
     register(
         "relkit_release",
         models.Release,
-        "Next selects from published releases with bump. Prepare validates tagless CI with ci_run and runs project checks without creating a tag. Plan/status/resume_plan/run/resume/verify a release. Verify downloads and smoke-tests an existing publication without pushing; failed CI still prevents acceptance. Run uses plan; resume uses resume_plan with the same options. Writes need plan_hash and either direct user authorization with release_run/release_resume scope and preview's review_sha256, or native confirmation. Status and resume_plan read local receipts, not fresh remote evidence; resume reconciles remotely before writes.",
+        "Next selects from published releases with bump. Prepare runs local build/check/smoke without a tag; ci_run is only for the optional Actions adapter. Plan/status/resume_plan/run/resume/verify a release. Verify downloads and smoke-tests an existing publication without pushing; failed CI still prevents acceptance. Run uses plan; resume uses resume_plan with the same options. Writes need plan_hash and either direct user authorization with release_run/release_resume scope and preview's review_sha256, or native confirmation. Status and resume_plan read local receipts, not fresh remote evidence; resume reconciles remotely before writes.",
         destructive=True,
     )
     register(

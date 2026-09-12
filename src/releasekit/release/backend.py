@@ -124,6 +124,59 @@ class GitHub:
     def release(self, tag: str):
         return self.api(f"/releases/tags/{quote(tag, safe='')}", optional=True)
 
+    def identity(self):
+        return self.api()
+
+    def releases(self):
+        return [item for page in self.api("/releases?per_page=100", pages=True) for item in page]
+
+    def preflight(self):
+        if not (self.api("/immutable-releases", optional=True) or {}).get("enabled"):
+            raise ReleaseError(
+                "enable immutable releases before publishing; no tag was created (this check needs repository administration read access)"
+            )
+
+    def create_draft(self, tag, sha, title, notes):
+        self.runner.call(
+            [
+                "gh",
+                "release",
+                "create",
+                tag,
+                "--repo",
+                self.repository,
+                "--draft",
+                "--verify-tag",
+                "--target",
+                sha,
+                "--title",
+                title,
+                "--notes-file",
+                str(notes),
+            ]
+        )
+
+    def upload(self, tag, path):
+        # Never clobber: a resumed upload must reconcile the existing asset first.
+        self.runner.call(
+            ["gh", "release", "upload", tag, str(path), "--repo", self.repository], timeout=600
+        )
+
+    def publish(self, tag):
+        self.runner.call(
+            [
+                "gh",
+                "release",
+                "edit",
+                tag,
+                "--repo",
+                self.repository,
+                "--draft=false",
+                "--title",
+                tag,
+            ]
+        )
+
     def release_attestation(self, tag: str) -> dict:
         """The statement GitHub signs about an immutable release and its exact assets.
 

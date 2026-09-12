@@ -1,4 +1,4 @@
-"""The opt-in GitHub/tag coordinator contract; build logic belongs to the project."""
+"""Portable release contract and explicit delivery adapters; projects own build logic."""
 
 from __future__ import annotations
 
@@ -38,15 +38,18 @@ def filename(value: str) -> str:
 
 @dataclass(frozen=True)
 class Settings:
-    repository: str
-    workflow: str
-    required_jobs: list[str]
     version_file: str
     version_pattern: str
     assets: list[str]
     checks: list[list[str]]
     smoke: list[list[str]]
     smoke_platforms: list[str]
+    repository: str = ""
+    workflow: str = ""
+    required_jobs: list[str] = field(default_factory=list)
+    publisher: str = "directory"
+    build: list[list[str]] = field(default_factory=list)
+    directory: str = ".cache/releases"
     remote: str = "origin"
     branch: str = ""
     changelog: str = "CHANGELOG.md"
@@ -55,8 +58,8 @@ class Settings:
     owner_audit: bool = False
     # Build provenance is not something every repository can produce, and the
     # capability is a platform policy rather than a fact about the artifacts. The
-    # adopter declares it; nothing here infers it from visibility or plan. True keeps
-    # the strongest verification as the default, so opting out is always explicit.
+    # adopter declares it; nothing here infers it from visibility or billing. Parse
+    # preserves the legacy Actions default and selects false for local preparation.
     require_provenance: bool = True
     timeout: int = 1800
     command_timeout: int = 600
@@ -71,6 +74,11 @@ def parse(raw: object) -> Settings:
     if unknown:
         raise ValueError(f"unknown [release] keys: {', '.join(sorted(unknown))}")
     try:
+        # Existing configurations explicitly selected a workflow. Preserve their
+        # publisher and signature policy; new configurations need no hosted CI.
+        raw = dict(raw)
+        raw.setdefault("publisher", "github-actions" if raw.get("workflow") else "directory")
+        raw.setdefault("require_provenance", raw["publisher"] == "github-actions")
         value = Settings(**raw)
     except TypeError as error:
         raise ValueError(f"incomplete [release] settings: {error}") from error
@@ -84,13 +92,29 @@ def parse(raw: object) -> Settings:
         "changelog",
         "checksum_file",
         "candidate_artifact",
+        "publisher",
+        "directory",
     ):
         if not isinstance(getattr(value, key), str):
             raise SettingsError(f"release.{key} must be a string")
-    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", value.repository):
+    if value.publisher not in {"directory", "github", "github-actions"}:
+        raise SettingsError("release.publisher must be directory, github or github-actions")
+    hosted = value.publisher == "github-actions"
+    if value.publisher != "directory" and not re.fullmatch(
+        r"[A-Za-z0-9][A-Za-z0-9_.-]*/[A-Za-z0-9][A-Za-z0-9_.-]*", value.repository
+    ):
         raise ValueError("release.repository must be a GitHub OWNER/REPO")
-    if not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", value.workflow):
+    if hosted and not re.fullmatch(r"\.github/workflows/[A-Za-z0-9_.-]+\.ya?ml", value.workflow):
         raise ValueError("release.workflow must name an exact .github/workflows YAML file")
+    if not hosted and (
+        value.workflow or value.required_jobs or value.candidate_jobs or value.require_provenance
+    ):
+        raise SettingsError(
+            "local preparation requires no workflow, CI jobs or hosted build provenance; use publisher=github-actions explicitly for those capabilities"
+        )
+    if value.publisher == "directory" and (value.repository or value.branch):
+        raise SettingsError("directory publication has no hosting repository or branch push")
+    relative(value.directory)
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", value.remote):
         raise ValueError("release.remote must name a configured Git remote")
     relative(value.version_file)
@@ -110,7 +134,7 @@ def parse(raw: object) -> Settings:
             raise ValueError("release.version_pattern needs exactly one capturing group")
     except re.error as error:
         raise ValueError(f"invalid release.version_pattern: {error}") from error
-    for key in ("required_jobs", "assets", "smoke_platforms"):
+    for key in (("required_jobs",) if hosted else ()) + ("assets", "smoke_platforms"):
         items = getattr(value, key)
         if (
             not isinstance(items, list)
@@ -129,7 +153,7 @@ def parse(raw: object) -> Settings:
             filename(template.format(version="1.2.3", tag="v1.2.3"))
         except (KeyError, IndexError) as error:
             raise ValueError("invalid release asset template") from error
-    for key in ("checks", "smoke"):
+    for key in ("checks", "smoke") + (() if hosted else ("build",)):
         commands = getattr(value, key)
         if (
             not isinstance(commands, list)
@@ -165,3 +189,10 @@ def parse(raw: object) -> Settings:
         if type(getattr(value, key)) is not int or not 1 <= getattr(value, key) <= 86400:
             raise ValueError(f"release.{key} must be 1..86400 seconds")
     return value
+
+
+def local(value: dict | Settings) -> bool:
+    """Old receipts predate publisher selection and retain Actions semantics."""
+    return (
+        value.get("publisher", "github-actions") if isinstance(value, dict) else value.publisher
+    ) != "github-actions"

@@ -38,6 +38,20 @@ class PublishedVersionsTests(ReleaseFixture):
             self.runner, old, old.replace("0.9.1", "1.0.0"), "1.0.0", previous
         )
 
+    def test_other_destination_receipt_does_not_redefine_current_history(self):
+        self.publish_previous()
+        value = {"root": str(self.root), "tag": "v0.8.0", "repository_id": "directory:elsewhere"}
+        storage.atomic_json(
+            coordinator._state_path(self.root, "v0.8.0"),
+            {
+                "plan": value,
+                "plan_sha256": canonical.fingerprint(value),
+                "publication": "published",
+                "release_id": "elsewhere",
+            },
+        )
+        self.assertEqual("v0.9.1", self.next()["tag"])
+
     def publish_previous(self, tag="v0.9.0"):
         self.runner.git("tag", tag)
         self.runner.git("push", "origin", f"refs/tags/{tag}")

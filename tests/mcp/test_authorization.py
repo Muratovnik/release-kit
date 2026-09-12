@@ -134,6 +134,10 @@ class ReleaseAuthorizationTests(Fixture):
                     ["release", "next", "--bump", "patch"],
                 ),
                 (
+                    models.Release(action="prepare", version="v1.0.0"),
+                    ["release", "prepare", "v1.0.0"],
+                ),
+                (
                     models.Release(action="prepare", version="v1.0.0", ci_run=35),
                     ["release", "prepare", "v1.0.0", "--ci-run", "35"],
                 ),

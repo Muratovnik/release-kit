@@ -172,3 +172,11 @@ receipts, paths with spaces, update rollback and native subprocess stream separa
 It never publishes. Fresh push → hosted CI → immutable publication → resume still
 requires an explicitly agreed disposable repository, visibility, exact refs and
 publication actions. Existing releases must not be rewritten to satisfy that test.
+
+
+In 0.21.0 the release plan records `settings.publisher` (`directory`, `github`, or
+`github-actions`). Local prepare has `candidate.kind = local`, an attempt id and
+file digests. Directory plans have no remote pushes or workflow id. Their manifest
+is portable; the execution receipt remains local. CI is `not-required` for local
+publishers and acceptance still requires verified publication and application smoke.
+Missing publisher fields in old receipts retain the previous Actions semantics.

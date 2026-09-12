@@ -294,7 +294,9 @@ class Bridge:
                         raise ValueError("next does not accept no_download")
                     argv += ["--bump", request.bump]
                 else:
-                    argv += [request.version, "--ci-run", str(request.ci_run)]
+                    argv += [request.version]
+                    if request.ci_run:
+                        argv += ["--ci-run", str(request.ci_run)]
                     if request.no_download:
                         argv.append("--no-download")
                 return Prepared(argv, argv[:2])

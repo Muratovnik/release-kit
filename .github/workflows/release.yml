@@ -1,7 +1,7 @@
 name: release
 
-# Tagless dispatch prepares and tests the complete set. A stable tag carries the
-# reviewed candidate identity; only its publish job can lift the verified draft.
+# Optional hosted platform checks, started explicitly. Local release preparation
+# and publication do not depend on Actions or consume hosted minutes by default.
 
 on:
   workflow_dispatch:
@@ -10,9 +10,6 @@ on:
         description: Stable version to prepare (vX.Y.Z)
         required: true
         type: string
-  push:
-    tags:
-      - "v[0-9]+.[0-9]+.[0-9]+"
 
 permissions: {}
 
@@ -58,11 +55,6 @@ jobs:
         run: python tools/build_release.py dist
         env:
           PYTHONPATH: src
-      - name: Validate the exact candidate set
-        run: python -m releasekit.cli release bundle "$VERSION" --assets dist
-        env:
-          VERSION: ${{ inputs.version }}
-          PYTHONPATH: src
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: release-candidate
@@ -95,49 +87,3 @@ jobs:
         env:
           VERSION: ${{ inputs.version }}
           PYTHONPATH: src
-
-  publish:
-    if: github.event_name == 'push'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-      actions: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: "3.11"
-      - name: Retrieve the exact prepared candidate
-        run: python -m releasekit.cli release promote "$GITHUB_REF_NAME" --assets dist
-        env:
-          PYTHONPATH: src
-          GH_TOKEN: ${{ github.token }}
-      - name: Read the committed changelog entry
-        run: python -m releasekit.cli notes "$GITHUB_REF_NAME" --output "$RUNNER_TEMP/notes.md"
-        env:
-          PYTHONPATH: src
-      # No build-provenance step: GitHub refuses to persist attestations for a
-      # user-owned private repository, and relkit.toml declares
-      # require_provenance = false to match. Restoring it means three edits at once,
-      # never one without the others: the attest step here, `id-token: write` and
-      # `attestations: write` above, and that key in relkit.toml.
-      - name: Attach the exact asset set to a draft
-        run: >
-          gh release create "$GITHUB_REF_NAME" --draft --verify-tag
-          --title "$GITHUB_REF_NAME" --notes-file "$RUNNER_TEMP/notes.md"
-          dist/relkit.pyz dist/relkit.pyz.sha256
-          dist/release-kit-plugin.zip dist/release-kit-plugin.zip.sha256 dist/release.json
-        env:
-          GH_TOKEN: ${{ github.token }}
-      - name: Verify the complete draft before publication
-        run: python -m releasekit.cli release draft "$GITHUB_REF_NAME" --assets dist
-        env:
-          PYTHONPATH: src
-          GH_TOKEN: ${{ github.token }}
-      - name: Publish it, which makes the release immutable
-        run: gh release edit "$GITHUB_REF_NAME" --draft=false
-        env:
-          GH_TOKEN: ${{ github.token }}

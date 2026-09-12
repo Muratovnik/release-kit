@@ -28,10 +28,12 @@ owns their versions, official release URLs, SHA-256 digests, platform selection 
 invocation. An adopting repository owns only `relkit.toml` and, where needed, a narrow
 `.betterleaks.toml`. It does not carry download snippets or another secret/link parser.
 
-An optional `relkit release next/prepare/plan/run/resume/status/verify` coordinator connects a
-prepared commit, annotated tag, existing tag CI and verified publication. CI remains
-the sole publisher; project commands own build/test/application details. See the
-[managed-release contract and adoption prerequisites](docs/release-coordinator.md).
+An optional `relkit release next/prepare/plan/run/resume/status/verify` coordinator
+prepares exact release files locally and delivers them through an explicit adapter.
+Directory delivery needs no hosting account, remote, Actions or paid service.
+GitHub delivery is optional; existing Actions configurations retain their behavior.
+See [portable local releases](docs/local-releases.md) and the
+[Actions adapter contract](docs/release-coordinator.md).
 
 Automation can opt into `--json` on every command. `release status` reads an
 existing run without contacting GitHub; `update --dry-run --json` exposes exact
@@ -545,13 +547,13 @@ repository's configured check, and what CI runs on Linux, macOS and Windows.
 
 ### Releasing this repository
 
-release-kit publishes itself with its own coordinator, so the contract it asks
-adopters to accept is the one it uses. `relkit.toml` declares the `[release]`
-section, `.github/workflows/release.yml` is the sole publisher, and the coordinator
-only plans, runs the declared checks, pushes `main` and the tag together, then
-verifies what CI published against GitHub's signed release attestation.
+release-kit uses local build/check/smoke and the optional GitHub delivery adapter.
+The coordinator prepares files before a tag, then uploads and verifies a complete
+draft and publishes it. Hosted Actions and build provenance are not prerequisites.
+The repository stays private; no paid quota or visibility change is needed.
 
 ```bash
+PYTHONPATH=src python -m releasekit.cli release prepare vX.Y.Z
 PYTHONPATH=src python -m releasekit.cli release plan vX.Y.Z
 PYTHONPATH=src python -m releasekit.cli release run vX.Y.Z --publish --plan-hash REVIEWED
 ```
@@ -561,8 +563,7 @@ three plugin files to agree, and a changelog heading whose compare link names th
 actual previous tag. `tests/test_release.py` checks those agreements statically, so a
 renamed CI job or a forgotten asset fails before a tag exists rather than after.
 
-`.github/workflows/check.yml` runs the same gates on all three platforms for every
-branch push and on request, and publishes nothing. Use it to find a platform failure
-before a tag exists: a failure inside a release run costs the version number, because
-the tag cannot move to a fixed commit.
-See [docs/release-coordinator.md](docs/release-coordinator.md) for the full contract.
+The hosted workflows run only on explicit manual dispatch. They can provide an
+additional platform matrix, but branch/tag pushes do not start paid runners and
+no workflow publishes competing release files. Local checks establish behavior on
+the current host; they do not claim that another operating system was tested.

@@ -1,4 +1,4 @@
-"""Resumable GitHub/tag publication: CI publishes; this command plans and verifies."""
+"""Release lifecycle with portable preparation and explicitly selected delivery."""
 
 from __future__ import annotations
 
@@ -34,6 +34,23 @@ from .backend import (
     repository,
     tag_commits,
 )
+
+
+def publisher(runner, release, supplied=None):
+    if release.publisher == "directory":
+        from .directory import Directory
+
+        return Directory(runner, release)
+    return supplied or GitHub(runner, release.repository)
+
+
+def publication_refs(runner, release):
+    return (
+        local_tags(runner)
+        if release.publisher == "directory"
+        else remote_refs(runner, release.remote)
+    )
+
 
 STABLE_TAG = re.compile(r"refs/tags/v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)")
 
@@ -147,9 +164,17 @@ def notes_for(
         f"{base}/compare/{previous['tag']}...{tag}" if previous else f"{base}/releases/tag/{tag}"
     )
     urls = re.findall(r"\]\((https?://[^\s)]+)\)", lines[0])
-    if previous and urls != [expected]:
+    portable = release.publisher == "directory"
+    if (
+        portable
+        and previous
+        and urls
+        and not all(url.endswith(f"/{previous['tag']}...{tag}") for url in urls)
+    ):
+        raise ReleaseError("changelog comparison must use the published version boundary")
+    if not portable and previous and urls != [expected]:
         raise ReleaseError(f"changelog heading must compare the actual Git boundary: {expected}")
-    if not previous and urls and urls != [expected]:
+    if not portable and not previous and urls and urls != [expected]:
         raise ReleaseError("first release heading points to the wrong tag/repository")
     section = ""
     included: set[str] | None = None
@@ -161,12 +186,16 @@ def notes_for(
         for match in changelog._COMMIT_LINK.finditer(line):
             parts = urlsplit(match[2])
             path = unquote(parts.path)
-            target = re.fullmatch(
-                rf"/{re.escape(release.repository)}/commit/([a-fA-F0-9]{{7,64}})", path
+            target = (
+                re.search(r"/commit/([a-fA-F0-9]{7,64})$", path)
+                if portable
+                else re.fullmatch(
+                    rf"/{re.escape(release.repository)}/commit/([a-fA-F0-9]{{7,64}})", path
+                )
             )
             if (
                 parts.scheme != "https"
-                or parts.netloc != "github.com"
+                or (not portable and parts.netloc != "github.com")
                 or parts.query
                 or parts.fragment
                 or not target
@@ -305,7 +334,8 @@ def plan(
         raise ReleaseError(
             f"no declared downloaded-application smoke for this host ({sys.platform})"
         )
-    remote_identity(runner, release.remote, release.repository)
+    if release.publisher != "directory":
+        remote_identity(runner, release.remote, release.repository)
     sha = runner.git("rev-parse", "HEAD")
     if (
         config.CONFIG_NAME
@@ -322,7 +352,7 @@ def plan(
         raise ReleaseError("version_file must contain exactly one matching requested version")
     coverage = job_coverage(
         list(dict.fromkeys(release.required_jobs + release.candidate_jobs)),
-        workflow_jobs(source(runner, sha, release.workflow)),
+        workflow_jobs(source(runner, sha, release.workflow)) if release.workflow else {},
     )
     if coverage["missing"]:
         raise ReleaseError(
@@ -330,7 +360,7 @@ def plan(
             + ", ".join(coverage["missing"])
             + "; fix the name or the workflow before a tag exists"
         )
-    refs = remote_refs(runner, release.remote)
+    refs = publication_refs(runner, release)
     if f"refs/heads/{tag}" in refs or runner.git(
         "for-each-ref", "--format=%(refname)", f"refs/heads/{tag}"
     ):
@@ -341,7 +371,7 @@ def plan(
         raise ReleaseError(
             "target tag already exists; use the recorded release resume, never rewrite it"
         )
-    github = github or GitHub(runner, release.repository)
+    github = publisher(runner, release, github)
     previous = versions.predecessor(
         runner, github, refs, version, sha, policy.changelog.first_version
     )
@@ -360,24 +390,31 @@ def plan(
                 "publication branch is not a proven fast-forward; fetch/reconcile explicitly"
             )
         pushes.append(f"{sha}:refs/heads/{release.branch}")
-    pushes.append(f"refs/tags/{tag}:refs/tags/{tag}")
-    github = github or GitHub(runner, release.repository)
-    identity = github.api()
+    if release.publisher != "directory":
+        pushes.append(f"refs/tags/{tag}:refs/tags/{tag}")
+    identity = github.identity()
     if identity["full_name"].casefold() != release.repository.casefold():
         raise ReleaseError("GitHub redirected the repository; review its current identity")
     if github.release(tag) is not None:
         raise ReleaseError("target release/draft already exists without an owned run")
-    workflow = github.api(
-        f"/actions/workflows/{quote(release.workflow.rsplit('/', 1)[-1], safe='')}"
+    workflow = (
+        github.api(f"/actions/workflows/{quote(release.workflow.rsplit('/', 1)[-1], safe='')}")
+        if not settings.local(release)
+        else {"id": None}
     )
-    if workflow["path"] != release.workflow or workflow["state"] != "active":
+    if not settings.local(release) and (
+        workflow["path"] != release.workflow or workflow["state"] != "active"
+    ):
         raise ReleaseError("configured release workflow is not active at the expected path")
-    gh_version = runner.call(["gh", "--version"])
-    match = re.search(r"gh version (\d+)\.(\d+)\.(\d+)", gh_version)
-    if not match or tuple(map(int, match.groups())) < (2, 98, 0):
-        raise ReleaseError(
-            "release verification requires GitHub CLI >= 2.98.0; update it explicitly"
-        )
+    if settings.local(release):
+        github.preflight()
+    if release.publisher != "directory":
+        gh_version = runner.call(["gh", "--version"])
+        match = re.search(r"gh version (\d+)\.(\d+)\.(\d+)", gh_version)
+        if not match or tuple(map(int, match.groups())) < (2, 98, 0):
+            raise ReleaseError(
+                "GitHub delivery requires GitHub CLI >= 2.98.0; directory delivery needs no hosting CLI"
+            )
     assets = [settings.filename(item.format(version=version, tag=tag)) for item in release.assets]
     if len({name.casefold() for name in assets}) != len(assets):
         raise ReleaseError("release assets collide after template expansion or case folding")
@@ -412,6 +449,11 @@ def plan(
 
         if proof := candidate.ready(runner, value):
             value["candidate"] = proof
+    elif candidate_receipt and settings.local(release):
+        from . import local
+
+        if proof := local.ready(runner, value):
+            value["candidate"] = proof
     return value
 
 
@@ -427,6 +469,12 @@ def required_provenance(value: dict) -> bool:
 
 def caveats(value: dict) -> list[str]:
     """Operator-facing limits of this plan that the JSON alone does not spell out."""
+    if settings.local(value["settings"]):
+        return [
+            "Build, checks and smoke run locally; no hosted CI or paid build-provenance service is required.",
+            "The exact prepared files are verified before publication; local checks cover only this host.",
+            "Directory delivery is portable and needs no hosting account. GitHub delivery is an optional adapter with immutable-release signature verification.",
+        ]
     jobs = value.get("workflow_jobs") or {}
     lines = [
         (
@@ -487,9 +535,21 @@ def described_plan(value: dict) -> dict:
             "audit worktree + history",
             "protect check if configured",
             "annotated tag + tag metadata audit",
-            "atomic exact-ref push (needs --publish)",
-            "observe tag CI; CI alone publishes",
-            "verify immutable release, notes, assets, signatures",
+            (
+                "export to the configured directory (needs --publish)"
+                if value["settings"].get("publisher") == "directory"
+                else "atomic exact-ref push (needs --publish)"
+            ),
+            (
+                "publish the prepared files with the selected adapter"
+                if settings.local(value["settings"])
+                else "observe tag CI; CI alone publishes"
+            ),
+            (
+                "verify exported manifest, notes and exact assets"
+                if value["settings"].get("publisher") == "directory"
+                else "verify immutable release, notes, assets, signatures"
+            ),
             "smoke downloaded files from pinned source",
             "cleanup inventoried temporary files",
         ],
@@ -501,7 +561,10 @@ def show_plan(value: dict, *, human: bool = False) -> None:
     described = described_plan(value)
     if human:
         print(f"relkit release: plan {value['tag']} @ {value['sha']}")
-        print(f"  Repository: {value['settings']['repository']}")
+        print(f"  Publisher: {value['settings'].get('publisher', 'github-actions')}")
+        print(
+            f"  Destination: {value['settings']['repository'] or value['settings'].get('directory', '')}"
+        )
         previous = value.get("previous")
         print(f"  Previous tag: {previous['tag'] if previous else 'first release'}")
         print(f"  Plan SHA-256: {described['plan_sha256']}")
@@ -512,9 +575,13 @@ def show_plan(value: dict, *, human: bool = False) -> None:
         print(
             "relkit release: plan only; no commands executed or publication performed by this command"
         )
-        if value["settings"].get("candidate_jobs") and not prepared:
+        if (
+            value["settings"].get("candidate_jobs") or settings.local(value["settings"])
+        ) and not prepared:
             print(
-                f"relkit release: first: relkit release prepare {value['tag']} --ci-run ID, then plan again"
+                f"relkit release: first: relkit release prepare {value['tag']}"
+                + ("" if settings.local(value["settings"]) else " --ci-run ID")
+                + ", then plan again"
             )
         else:
             print(
@@ -635,6 +702,8 @@ def validate_saved_plan(runner: Runner, value: dict) -> None:
     ):
         raise ReleaseError("saved release settings differ from the pinned committed configuration")
     expected = [f"refs/tags/{value['tag']}:refs/tags/{value['tag']}"]
+    if release.publisher == "directory":
+        expected = []
     if release.branch:
         runner.git("check-ref-format", f"refs/heads/{release.branch}")
         expected.insert(0, f"{value['sha']}:refs/heads/{release.branch}")
@@ -659,7 +728,11 @@ def _tag_message(value: dict) -> str:
     message = f"Release {value['version']}\n\nRelease plan SHA-256: {fingerprint(value)}"
     if proof := value.get("candidate"):
         message += (
-            f"\nRelease candidate: {proof['ci']['id']}/{proof['ci']['attempt']} {proof['sha256']}"
+            f"\nRelease candidate: local/{proof['attempt']} {proof['sha256']}"
+            if proof.get("kind") == "local"
+            else (
+                f"\nRelease candidate: {proof['ci']['id']}/{proof['ci']['attempt']} {proof['sha256']}"
+            )
         )
     return message
 
@@ -691,14 +764,15 @@ def _owned_tag(runner: Runner, state: dict) -> str | None:
 def _reconcile(runner: Runner, github: GitHub, state: dict) -> tuple[bool, dict | None]:
     value = state["plan"]
     release = settings.parse(value["settings"])
-    remote_identity(runner, release.remote, release.repository)
-    identity = github.api()
+    if release.publisher != "directory":
+        remote_identity(runner, release.remote, release.repository)
+    identity = github.identity()
     if (
         identity["id"] != value["repository_id"]
         or identity["full_name"].casefold() != release.repository.casefold()
     ):
         raise ReleaseError("repository identity changed since planning")
-    refs = remote_refs(runner, release.remote)
+    refs = publication_refs(runner, release)
     if previous := value["previous"]:
         if "release_id" in previous:
             observed = github.release(previous["tag"])
@@ -719,11 +793,11 @@ def _reconcile(runner: Runner, github: GitHub, state: dict) -> tuple[bool, dict 
         raise ReleaseError("remote branch now collides with the release tag")
     ref = f"refs/tags/{value['tag']}"
     tag_oid = _owned_tag(runner, state)
-    pushed = ref in refs
+    pushed = bool(state.get("export_started")) if release.publisher == "directory" else ref in refs
     if pushed and (
         not state.get("push_started")
         or refs[ref] != tag_oid
-        or refs.get(ref + "^{}") != value["sha"]
+        or (release.publisher != "directory" and refs.get(ref + "^{}") != value["sha"])
     ):
         raise ReleaseError("remote tag differs from this run's annotated tag and commit")
     if not pushed and state.get("pushed"):
@@ -874,9 +948,16 @@ def _prepare(
             raise ReleaseError(
                 "prepared candidate changed; prepare and review again before tagging"
             )
+    elif settings.local(release):
+        from . import local
+
+        local.load(runner, value)
+        _local_checks(runner, value, workspace, no_download, path, state)
+        local.load(runner, value)
+        github.preflight()
     else:
         _local_checks(runner, value, workspace, no_download, path, state)
-    refs = remote_refs(runner, release.remote)
+    refs = publication_refs(runner, release)
     policy = config.load(runner.root)
     if (
         asdict(policy.release) != value["settings"]
@@ -932,6 +1013,11 @@ def _prepare(
     if pushed or existing:
         raise ReleaseError("remote release state changed during preparation; resume to reconcile")
     state["push_started"] = datetime.now(UTC).isoformat()
+    if release.publisher == "directory":
+        state["export_started"] = True
+        state["pushed"] = True
+        _save(path, state)
+        return
     _save(path, state)
     print("relkit release: push planned refs", flush=True)
     _stage(path, state, "push")
@@ -1125,13 +1211,26 @@ def asset_set(assets: list[dict], names: list[str]) -> list[dict]:
 
 
 def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str) -> dict:
-    if release["draft"] or release["prerelease"] or release.get("immutable") is not True:
+    directory = value["settings"].get("publisher") == "directory"
+    if (
+        release["draft"]
+        or release["prerelease"]
+        or (not directory and release.get("immutable") is not True)
+    ):
         raise ReleaseError("release must be published, stable and immutable")
     if release["tag_name"] != value["tag"]:
         raise ReleaseError("published release names another tag")
     if (release.get("body") or "").replace("\r\n", "\n").rstrip("\n") != value["notes"]:
         raise ReleaseError("published notes differ from the committed changelog entry")
     assets = asset_set(github.assets(release["id"]), value["assets"])
+    if directory:
+        github.verify(value, release, tag_oid)
+        github.selected_tag = value["tag"]
+        return {
+            "release_id": release["id"],
+            "assets": assets,
+            "notes_sha256": fingerprint(value["notes"]),
+        }
     # Everything above came from an unsigned REST response. GitHub also signs a
     # statement about an immutable release and its exact asset set; require the two
     # to agree, so a rewritten API answer cannot decide what was published.
@@ -1208,7 +1307,12 @@ def _verify(
     workspace: storage.Workspace,
 ) -> None:
     value = state["plan"]
-    print("relkit release: verifying publication and signatures", flush=True)
+    print(
+        "relkit release: verifying exported files"
+        if value["settings"].get("publisher") == "directory"
+        else "relkit release: verifying publication and signatures",
+        flush=True,
+    )
     state["verification"] = "running"
     _stage(path, state, "publication-verification")
     identity = _published_identity(github, value, release, state["tag_oid"])
@@ -1234,15 +1338,16 @@ def _verify(
         ]
         if sorted(files, key=lambda item: item["name"]) != proof["files"]:
             raise ReleaseError("published files differ from the prepared candidate")
-    github.signatures(
-        value["tag"],
-        value["sha"],
-        value["settings"]["workflow"],
-        [directory / asset["name"] for asset in identity["assets"]],
-        ci=state["ci"],
-        repository_id=value["repository_id"],
-        provenance=required_provenance(value),
-    )
+    if value["settings"].get("publisher") != "directory":
+        github.signatures(
+            value["tag"],
+            value["sha"],
+            value["settings"]["workflow"],
+            [directory / asset["name"] for asset in identity["assets"]],
+            ci=state.get("ci", {}),
+            repository_id=value["repository_id"],
+            provenance=required_provenance(value),
+        )
     _stage(path, state, "publication-verification", "passed")
     snapshot = _snapshot(runner, value, workspace)
     print("relkit release: downloaded-application smoke from pinned source", flush=True)
@@ -1346,17 +1451,18 @@ def _abandon(runner: Runner, github: GitHub | None, state: dict, path: Path, rea
     if state["publication"] == "published" or state["verification"] == "passed":
         raise ReleaseError("a published release cannot be abandoned; its version is taken")
     release = settings.parse(value["settings"])
-    remote_identity(runner, release.remote, release.repository)
-    github = github or GitHub(runner, release.repository)
+    if release.publisher != "directory":
+        remote_identity(runner, release.remote, release.repository)
+    github = publisher(runner, release, github)
     ref = f"refs/tags/{tag}"
-    if ref in remote_refs(runner, release.remote):
+    if release.publisher != "directory" and ref in remote_refs(runner, release.remote):
         raise ReleaseError(
             f"{tag} still exists on {release.remote}; abandon records only an attempt whose "
             "remote tag is gone, and release-kit never deletes refs"
         )
     if github.release(tag) is not None:
         raise ReleaseError(
-            f"a release or draft exists for {tag}; the CI owner must resolve it before the "
+            f"a release or draft exists for {tag}; its owner must resolve it before the "
             "attempt can be abandoned"
         )
     state["outcome"] = {
@@ -1447,8 +1553,9 @@ def run(
             policy = config.load(root)
             if policy.release is None:
                 raise ReleaseError("configure the opt-in [release] contract first")
-            remote_identity(runner, policy.release.remote, policy.release.repository)
-            github = github or GitHub(runner, policy.release.repository)
+            if policy.release.publisher != "directory":
+                remote_identity(runner, policy.release.remote, policy.release.repository)
+            github = publisher(runner, policy.release, github)
             value = versions.next_version(
                 runner, github, policy.release, policy.changelog.first_version, bump
             )
@@ -1488,6 +1595,8 @@ def run(
             release = config.load(root).release
             if release is None:
                 raise ReleaseError("configure release first")
+            if settings.local(release):
+                raise ReleaseError("CI helpers require publisher = github-actions")
             github = github or GitHub(runner, release.repository)
             data = (
                 candidate.bundle(runner, version, directory)
@@ -1506,8 +1615,15 @@ def run(
                 raise ReleaseError("prepare never publishes; review the resulting plan afterwards")
             lock = _acquire_lock(root, tag)
             value = plan(runner, version, github=github, candidate_receipt=False)
-            github = github or GitHub(runner, value["settings"]["repository"])
-            candidate.prepare(runner, github, value, ci_run, no_download, result)
+            github = publisher(runner, settings.parse(value["settings"]), github)
+            if settings.local(value["settings"]):
+                from . import local
+
+                if ci_run:
+                    raise ReleaseError("local preparation needs no --ci-run")
+                local.prepare(runner, github, value, no_download, result)
+            else:
+                candidate.prepare(runner, github, value, ci_run, no_download, result)
             return 0
         if action == "plan":
             value = plan(runner, version, github=github)
@@ -1572,9 +1688,13 @@ def run(
                 result.data["archived_receipt"] = str(archived)
                 print(f"relkit release: archived the abandoned attempt receipt: {archived}")
             value = plan(runner, version, github=github)
-            if value["settings"].get("candidate_jobs") and not value.get("candidate"):
+            if (
+                value["settings"].get("candidate_jobs") or settings.local(value["settings"])
+            ) and not value.get("candidate"):
                 raise ReleaseError(
-                    "no matching prepared candidate; run release prepare VERSION --ci-run ID, then review plan again"
+                    "no matching prepared candidate; run release prepare VERSION"
+                    + ("" if settings.local(value["settings"]) else " --ci-run ID")
+                    + ", then review plan again"
                 )
             if plan_hash and fingerprint(value) != plan_hash:
                 raise ReleaseError("reviewed plan is stale; plan again before publishing")
@@ -1589,12 +1709,14 @@ def run(
             _save(state_path, state)
         if action in {"resume", "verify"} and plan_hash and plan_hash != fingerprint(value):
             raise ReleaseError("supplied plan hash differs from the saved plan")
+        if accept_ci_attempt and settings.local(value["settings"]):
+            raise ReleaseError("local publication has no CI attempt to accept")
         if sys.platform not in value["settings"]["smoke_platforms"]:
             raise ReleaseError("resume host is not declared for the downloaded-application smoke")
         runner.log = state_path.parent / "run.log"
         storage.checked(runner.log).touch(exist_ok=True)
         runner.log.chmod(0o600)
-        github = github or GitHub(runner, value["settings"]["repository"])
+        github = publisher(runner, settings.parse(value["settings"]), github)
         state["verification"] = "not-run"
         # Reconciliation precedes project commands, downloads, retries and cleanup.
         pushed, existing = _reconcile(runner, github, state)
@@ -1618,18 +1740,25 @@ def run(
         if not pushed and action != "verify":
             _prepare(runner, github, state, state_path, workspace, no_download)
         deadline = time.monotonic() + value["settings"]["timeout"]
-        published = _ci(
-            runner,
-            github,
-            state,
-            state_path,
-            deadline,
-            accept_ci_attempt,
-            verify_only=action == "verify",
-        )
+        if settings.local(value["settings"]):
+            from . import local
+
+            published = local.publish(
+                runner, github, state, state_path, workspace, verify_only=action == "verify"
+            )
+        else:
+            published = _ci(
+                runner,
+                github,
+                state,
+                state_path,
+                deadline,
+                accept_ci_attempt,
+                verify_only=action == "verify",
+            )
         state["verifier_version"] = __version__
         _verify(runner, github, state, state_path, published, workspace)
-        if state.get("ci_verdict") != "passed":
+        if state.get("ci_verdict") not in {"passed", "not-required"}:
             raise ReleaseError(
                 "artifacts verified; release acceptance incomplete: "
                 + "; ".join(state["ci_problems"])
@@ -1646,6 +1775,7 @@ def run(
         print(
             f"relkit release: published and verified {tag} @ {value['sha']}; receipt: {state_path}"
         )
+        print(f"relkit release: {feedback.summary(state)}")
         if state["local_changes"]:
             print(
                 "relkit release: new local changes are separate from the published result; left untouched"

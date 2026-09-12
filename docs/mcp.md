@@ -265,3 +265,10 @@ with `version` and `ci_run`. Both require a reviewed project binding and a proje
 CLI at least 0.20.0. Preparation executes project checks and downloaded application
 smoke, but does not tag, push, dispatch CI or publish. The resulting candidate is
 included in a fresh `plan`; run/resume retain their existing publication authority.
+
+
+Local preparation in 0.21.0 uses `relkit_release` action `prepare` with version
+and no ci_run. It uses the committed publisher/build configuration. Directory
+publication needs no host; GitHub delivery needs no Actions. Only the explicit
+Actions adapter uses ci_run. Run/resume authorizations bind the reviewed adapter,
+destination and effects. See [local releases](local-releases.md).

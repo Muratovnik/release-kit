@@ -293,9 +293,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     release = subcommands.add_parser(
         "release",
-        help="Plan, publish, inspect and verify a GitHub release; CI publishes.",
+        help="Prepare and deliver a release locally or through an explicit hosting adapter.",
         description="Choose a number with next --bump patch|minor|major. For candidate-enabled projects, "
-        "run prepare VERSION --ci-run ID after the tagless workflow passes. "
+        "run prepare VERSION locally; only the Actions adapter needs --ci-run ID. "
         "Review plan VERSION, then run VERSION --publish. After interruption, "
         "use status VERSION (saved local facts) and resume VERSION --publish. "
         "Use verify VERSION to download and smoke-test an existing publication without pushing. "
@@ -331,7 +331,7 @@ def build_parser() -> argparse.ArgumentParser:
     release.add_argument(
         "--publish",
         action="store_true",
-        help="Authorize only the planned tag/branch push and CI publication",
+        help="Authorize the reviewed tag, destination and publication effects",
     )
     release.add_argument(
         "--plan-hash", default="", help="Require the exact reviewed plan fingerprint"

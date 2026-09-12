@@ -7,7 +7,10 @@ def facts(state: dict) -> dict:
     if ci is None:
         ci = "passed" if state.get("stages", {}).get("ci") == "passed" else "unknown"
     return {
-        "tag_state": "pushed"
+        "tag_state": "local"
+        if state.get("plan", {}).get("settings", {}).get("publisher") == "directory"
+        and state.get("tag_oid")
+        else "pushed"
         if state.get("pushed")
         else "local"
         if state.get("tag_oid")
@@ -15,7 +18,15 @@ def facts(state: dict) -> dict:
         "publication_state": "absent" if publication == "not-pushed" else publication,
         "ci_verdict": ci,
         "acceptance": "accepted"
-        if publication == "published" and state["verification"] == "passed" and ci == "passed"
+        if publication == "published"
+        and state["verification"] == "passed"
+        and (
+            ci == "passed"
+            or (
+                ci == "not-required"
+                and state["plan"]["settings"].get("publisher") in {"directory", "github"}
+            )
+        )
         else "incomplete",
     }
 

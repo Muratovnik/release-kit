@@ -48,6 +48,10 @@ class LocalRunner(Runner):
 
 
 class FakeGitHub:
+    identity = GitHub.identity
+    releases = GitHub.releases
+    preflight = GitHub.preflight
+
     def __init__(self, fixture):
         self.fixture = fixture
         self.published = []
@@ -1031,6 +1035,20 @@ class ReleaseTests(ReleaseFixture):
 
 
 class BackendTests(unittest.TestCase):
+    def test_local_delivery_commands_require_existing_tag_and_never_clobber(self):
+        runner = Runner(Path("."))
+        github = GitHub(runner, "example/project")
+        with patch.object(runner, "call", return_value="") as call:
+            github.create_draft("v1.0.0", "a" * 40, "owned draft", Path("notes.md"))
+            github.upload("v1.0.0", Path("application.bin"))
+            github.publish("v1.0.0")
+        create, upload, publish = [item.args[0] for item in call.call_args_list]
+        self.assertIn("--verify-tag", create)
+        self.assertIn("--draft", create)
+        self.assertEqual("a" * 40, create[create.index("--target") + 1])
+        self.assertNotIn("--clobber", upload)
+        self.assertIn("--draft=false", publish)
+
     def test_verified_signature_from_other_ci_attempt_is_rejected(self):
         runner = Runner(Path("."))
         proof = json.dumps(
@@ -1147,22 +1165,21 @@ class SelfHostingTests(unittest.TestCase):
         self.assertIsNotNone(policy.release, "this repository declares its own [release]")
         self.policy = policy
         self.release = policy.release
-        self.workflow = (ROOT / self.release.workflow).read_text(encoding="utf-8")
+        self.workflow = (ROOT / ".github/workflows/release.yml").read_text(encoding="utf-8")
 
-    def test_required_jobs_are_declared_by_its_own_publishing_workflow(self) -> None:
-        coverage = coordinator.job_coverage(
-            self.release.required_jobs, coordinator.workflow_jobs(self.workflow)
-        )
-        self.assertEqual([], coverage["missing"])
-        self.assertEqual([], coverage["unverified"], "a static answer beats a tag-time surprise")
+    def test_own_release_needs_no_hosted_runner_or_paid_provenance(self) -> None:
+        self.assertEqual("github", self.release.publisher)
+        self.assertFalse(self.release.workflow)
+        self.assertFalse(self.release.required_jobs)
+        self.assertFalse(self.release.require_provenance)
+        self.assertEqual([["{python}", "tools/build_release.py", "{assets}"]], self.release.build)
 
-    def test_the_workflow_publishes_exactly_the_declared_asset_set(self) -> None:
-        # The coordinator compares the published set against the signed release
-        # attestation only after the immutable release exists.
-        self.assertEqual(
-            sorted(self.release.assets),
-            sorted(set(re.findall(r"dist/([A-Za-z0-9._-]+)", self.workflow))),
-        )
+    def test_hosted_checks_are_manual_and_cannot_publish_on_a_tag(self) -> None:
+        for name in ("check.yml", "release.yml"):
+            workflow = (ROOT / ".github/workflows" / name).read_text(encoding="utf-8")
+            self.assertIn("workflow_dispatch:", workflow)
+            self.assertNotRegex(workflow, r"(?m)^  push:")
+            self.assertNotIn("gh release", workflow)
 
     def test_the_declared_asset_set_is_exactly_what_the_builder_produces(self) -> None:
         # The one disagreement the contract cannot answer statically. The published set
@@ -1175,7 +1192,7 @@ class SelfHostingTests(unittest.TestCase):
                 # what the builder produces, on whatever tree is being developed.
                 [sys.executable, "tools/build_release.py", "--allow-divergent", str(output)],
                 cwd=ROOT,
-                env={**os.environ, "PYTHONPATH": str(ROOT / "src")},
+                env={key: value for key, value in os.environ.items() if key != "PYTHONPATH"},
                 capture_output=True,
                 encoding="utf-8",
                 errors="replace",

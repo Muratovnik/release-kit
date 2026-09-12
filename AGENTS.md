@@ -34,6 +34,12 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 
 ## Design constraints
 
+- Every required release capability must have a path without paid services or a
+  mandatory hosting account. Preparation, checks and release files are portable;
+  hosting publication is an explicit adapter. Hosted CI and paid provenance are
+  optional choices, never prerequisites inferred from a failed quota or payment.
+  Do not change repository visibility or billing to make the default flow work.
+
 - No Python runtime dependencies. This runs inside other repositories' pre-commit
   hooks and CI, where a dependency tree is a reason not to adopt it. Betterleaks and
   Lychee are pinned external engines provisioned from verified official archives;
