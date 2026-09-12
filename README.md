@@ -98,7 +98,15 @@ useDefault = true
 ```
 
 Add `.cache/` to the project's `.gitignore` **before running the audit**. Keep any
-existing ignore rules. The downloads and verified scanner cache belong there.
+existing ignore rules. Create the directory explicitly, even when the download
+was saved somewhere else (the same command works in PowerShell and Bash):
+
+```text
+python -c "from pathlib import Path; Path('.cache').mkdir(exist_ok=True)"
+```
+
+This lets the first audit validate the directory-only ignore before any scanner
+creates a cache. Downloads and verified scanners belong there, never in Git.
 These exact starter files also live in [examples/audit](examples/audit/README.md).
 No scanner is disabled in this example.
 

@@ -104,20 +104,22 @@ class DiscoveryTests(unittest.TestCase):
 
 class GateTests(unittest.TestCase):
     def test_joint_distribution_explicitly_requires_all_components(self):
-        commands = check_distribution.stages(Path("source"), Path("scratch"), "uv", "1.2.3")
-        self.assertEqual(
-            ["base", "mcp", "build", "cli-smoke", "onboarding", "plugin-stdio"],
-            [name for name, _ in commands],
+        root, scratch = Path("source"), Path("scratch")
+        source = dict(check_distribution.source_checks(root, "uv"))
+        packages = dict(
+            check_distribution.package_checks(root, scratch, "uv", "1.2.3", scratch / "assets")
         )
-        mcp = dict(commands)["mcp"]
+        self.assertEqual({"base", "mcp"}, set(source))
+        self.assertEqual({"cli-smoke", "onboarding", "plugin-stdio"}, set(packages))
+        mcp = source["mcp"]
         self.assertIn("--locked", mcp)
         self.assertIn("--no-python-downloads", mcp)
-        self.assertIn(str(Path("source/tools/check_mcp.py")), mcp)
-        self.assertIn(str(Path("scratch/assets/release-kit-plugin.zip")), commands[-1][1])
+        self.assertIn(str(root / "tools/check_mcp.py"), mcp)
+        self.assertIn(str(scratch / "assets/release-kit-plugin.zip"), packages["plugin-stdio"])
 
     def test_provided_candidate_bytes_are_checked_without_a_rebuild(self):
         assets = Path("source/downloaded")
-        commands = check_distribution.stages(
+        commands = check_distribution.package_checks(
             Path("source"), Path("scratch"), "uv", "1.2.3", assets
         )
         self.assertEqual(["cli-smoke", "onboarding", "plugin-stdio"], [n for n, _ in commands])
@@ -187,6 +189,24 @@ class StarterTests(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 smoke_onboarding.create_project(root, artifact)
             self.assertEqual(artifact.read_bytes(), (root / ".github/relkit.pyz").read_bytes())
+
+    def test_cold_fixture_satisfies_required_ignore_before_any_scanner_runs(self):
+        with tempfile.TemporaryDirectory(prefix="cold install ") as directory:
+            parent = Path(directory).resolve()
+            artifact = parent / "fixture.pyz"
+            artifact.write_bytes(b"setup only")
+            root = parent / "adopter"
+            environment = smoke_onboarding.create_project(root, artifact)
+            smoke_onboarding.git(
+                root, environment, "check-ignore", "--quiet", "--no-index", "--", ".cache"
+            )
+            self.assertEqual([], list((root / ".cache").iterdir()))
+            # Negative control: reproduce the old failure, without repairing the policy.
+            (root / ".cache").rmdir()
+            with self.assertRaises(subprocess.CalledProcessError):
+                smoke_onboarding.git(
+                    root, environment, "check-ignore", "--quiet", "--no-index", "--", ".cache"
+                )
 
     def test_fixture_does_not_inherit_credentials_or_git_location(self):
         with patch.dict(

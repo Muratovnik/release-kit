@@ -54,6 +54,8 @@ def create_project(root: Path, artifact: Path, *, examples: Path | None = None):
     source = examples or ROOT / "examples/audit"
     for name in ("relkit.toml", ".betterleaks.toml", ".gitignore"):
         shutil.copyfile(source / name, root / name)
+    # Match the documented cold install before the first audit/engine download.
+    (root / ".cache").mkdir()
     (root / ".github").mkdir()
     shutil.copyfile(artifact, root / ".github/relkit.pyz")
     (root / "README.md").write_text(

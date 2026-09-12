@@ -1,14 +1,15 @@
-"""Check source or exact CLI/plugin assets, without publishing or registering them.
+"""Check source and exact CLI/plugin packages without publishing or registering them.
 
-Default mode checks source and a development build. The release coordinator uses
---source-only before building, then --assets with its Git-free source snapshot and
-explicit --work-dir to qualify the actual candidate. Reports bind the checked bytes.
+Source checks and package checks are separate phases. The coordinator supplies a
+Git-free snapshot and the actual candidate; development mode builds a test package.
+The selected parent owns one reusable SDK/cache, compact reports and fresh fixtures.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -31,6 +32,7 @@ def locked_command(uv: str, root: Path, script: str, *arguments: str) -> list[st
         uv,
         "run",
         "--locked",
+        "--exact",
         "--no-config",
         "--no-dev",
         "--no-editable",
@@ -39,42 +41,23 @@ def locked_command(uv: str, root: Path, script: str, *arguments: str) -> list[st
         "--project",
         str(root / "plugins/release-kit"),
         "--python",
-        sys.executable,
+        # uv compares the base interpreter, not the development venv's launcher.
+        str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
         "python",
         str(root / script),
         *arguments,
     ]
 
 
-def stages(
-    root: Path,
-    workspace: Path,
-    uv: str,
-    version: str,
-    assets: Path | None = None,
-    *,
-    source_only: bool = False,
-):
-    prepare = (
+def source_checks(root: Path, uv: str):
+    return (
         ("base", [sys.executable, str(root / "tools/check.py")]),
         ("mcp", locked_command(uv, root, "tools/check_mcp.py")),
     )
-    if source_only:
-        return prepare
-    provided = assets is not None
-    assets = assets or workspace / "assets"
-    build = (
-        (
-            "build",
-            [
-                sys.executable,
-                str(root / "tools/build_release.py"),
-                "--allow-divergent",
-                str(assets),
-            ],
-        ),
-    )
-    checks = (
+
+
+def package_checks(root: Path, workspace: Path, uv: str, version: str, assets: Path):
+    return (
         (
             "cli-smoke",
             [
@@ -114,7 +97,6 @@ def stages(
             ),
         ),
     )
-    return checks if provided else prepare + build + checks
 
 
 def run_stages(commands, *, root: Path, environment: dict[str, str], report: dict) -> None:
@@ -136,7 +118,7 @@ def run_stages(commands, *, root: Path, environment: dict[str, str], report: dic
 
 
 def source_identity(root: Path) -> dict:
-    """A coordinator snapshot has no Git metadata; never discover an ancestor's Git."""
+    """A snapshot has no Git metadata; never discover an ancestor's checkout."""
     if not (root / ".git").exists():
         return {"source_kind": "git-free-snapshot", "source_head": None, "source_dirty": None}
     found = subprocess.run(
@@ -155,14 +137,59 @@ def source_identity(root: Path) -> dict:
 
 
 def check_packages(commands, *, assets, version, root, environment, report):
-    """All package checks must apply to one unchanged, complete set of bytes."""
+    """Bind all package checks to one complete, unchanged set of bytes."""
     before = inventory(assets, version)
     report["artifacts"] = before
     run_stages(commands, root=root, environment=environment, report=report)
-    after = inventory(assets, version)
-    if after != before:
+    if inventory(assets, version) != before:
         raise CheckFailure("candidate assets changed during qualification")
     report["artifacts_unchanged"] = True
+
+
+def check_environment(root: Path, state: Path, workspace: Path):
+    from releasekit import storage
+
+    environment = {
+        key: value
+        for key, value in storage.environment(workspace / "tmp").items()
+        if not key.startswith("UV_") and key not in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH")
+    }
+    environment.update(
+        PYTHONPATH=str(root / "src"),
+        UV_CACHE_DIR=str(storage.inside(state, state / "uv-cache")),
+        UV_PROJECT_ENVIRONMENT=str(
+            storage.inside(state, state / f"sdk-{sys.implementation.cache_tag}")
+        ),
+        UV_PYTHON_DOWNLOADS="never",
+        UV_LINK_MODE="copy",
+    )
+    return environment
+
+
+def clean_success(workspace: Path, identity) -> bool:
+    """Delete only this run's newly allocated fixtures, never caches or input assets.
+
+    Phase outputs have fixed, task-owned roots. Unexpected top-level data or leftover
+    process scratch retains the run for inspection. Tests use disposable projects;
+    this is not protection against hostile concurrent writers inside those projects.
+    """
+    from releasekit import storage
+
+    if storage.identity(workspace) != identity:
+        return False
+    owned = {"assets", "onboarding space", "plugin space", "tmp"}
+    if {p.name for p in workspace.iterdir()} - owned:
+        return False
+    if any((workspace / "tmp").iterdir()):
+        return False
+    # Check the roots, not venv internals: rmtree unlinks internal symlinks without
+    # following them. An aliased fixture root must never be recursively removed.
+    for child in workspace.iterdir():
+        storage.checked(child)
+        if not child.is_dir():
+            return False
+    shutil.rmtree(workspace)
+    return True
 
 
 def main(argv=None) -> int:
@@ -171,14 +198,14 @@ def main(argv=None) -> int:
     parser.add_argument("--version", help="Required version of the existing assets")
     parser.add_argument("--source-only", action="store_true", help="Base and MCP source tests only")
     parser.add_argument(
-        "--work-dir", type=Path, help="Explicit existing scratch parent, required for a snapshot"
+        "--work-dir", type=Path, help="Explicit existing parent, required for a snapshot"
     )
     arguments = parser.parse_args(argv)
     if (arguments.assets is None) != (arguments.version is None):
         parser.error("--assets and --version must be supplied together")
     if arguments.source_only and arguments.assets is not None:
         parser.error("--source-only cannot be combined with --assets")
-    workspace = None
+    workspace = state = lock = lock_identity = None
     report = {
         "schema": 1,
         "kind": (
@@ -208,63 +235,101 @@ def main(argv=None) -> int:
         report.update(source_identity(ROOT))
         if arguments.assets is None and report["source_kind"] != "checkout":
             raise CheckFailure("source checks require this project's checkout")
-        assets = None
-        if arguments.assets is not None:
-            # The coordinator places assets beside its source snapshot, not inside it.
-            assets = storage.checked(ROOT / arguments.assets)
-            if not assets.is_dir():
-                raise CheckFailure("--assets must name an existing asset directory")
+        assets = (
+            storage.checked(ROOT / arguments.assets) if arguments.assets is not None else None
+        )
+        if assets is not None and not assets.is_dir():
+            raise CheckFailure("--assets must name an existing asset directory")
         if arguments.work_dir is not None:
             parent = storage.checked(ROOT / arguments.work_dir)
             if not parent.is_dir():
                 raise CheckFailure("--work-dir must be an existing, explicitly owned directory")
-            if assets is not None and parent.is_relative_to(assets):
-                raise CheckFailure("scratch cannot be inside the candidate assets")
-            workspace = Path(tempfile.mkdtemp(prefix="distribution-check-", dir=parent))
         else:
             if report["source_kind"] != "checkout":
                 raise CheckFailure("a Git-free snapshot requires an explicit --work-dir")
-            workspace = storage.Workspace(ROOT, "distribution-check-").path
+            parent = storage.inside(ROOT, ROOT / ".cache")
+            ignored = subprocess.run(
+                [
+                    "git",
+                    "check-ignore",
+                    "--quiet",
+                    "--no-index",
+                    "--",
+                    ".cache/release-kit-checks/",
+                ],
+                cwd=ROOT,
+                check=False,
+                capture_output=True,
+            )
+            if ignored.returncode:
+                raise CheckFailure(
+                    "ignore .cache/release-kit-checks/ before provisioning check tools"
+                )
+        state = storage.checked(parent / "release-kit-checks")
+        if assets is not None and (state.is_relative_to(assets) or assets.is_relative_to(state)):
+            raise CheckFailure("candidate assets must be separate from check state")
+        marker = {"schema": 1, "tool": "check_distribution"}
+        if state.exists():
+            if json.loads(storage.inside(state, state / "owner.json").read_text()) != marker:
+                raise CheckFailure("check state ownership differs; choose another owned parent")
+        else:
+            state.mkdir(parents=True)
+            storage.atomic_json(state / "owner.json", marker)
+        lock = storage.inside(state, state / "check.lock")
+        try:
+            with lock.open("x", encoding="utf-8") as handle:
+                lock_identity = storage.identity(lock)
+                handle.write(str(os.getpid()) + "\n")
+        except FileExistsError as error:
+            raise CheckFailure(
+                f"check state is busy: {lock}; inspect its PID before removing a stale lock"
+            ) from error
+        workspace = Path(tempfile.mkdtemp(prefix="run-", dir=state))
+        identity = storage.identity(workspace)
+        (workspace / "tmp").mkdir()
         report["workspace"] = str(workspace)
-        storage.atomic_json(workspace / "owner.json", {"schema": 1, "tool": "check_distribution"})
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
         version = project["version"]
         report["version"] = version
         if arguments.version is not None and arguments.version != version:
             raise CheckFailure("requested asset version differs from this source snapshot")
-        environment = {
-            key: value
-            for key, value in storage.environment(workspace).items()
-            if not key.startswith("UV_") and key not in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH")
-        }
-        environment.update(
-            PYTHONPATH=str(ROOT / "src"),
-            UV_CACHE_DIR=str(workspace / "uv-cache"),
-            UV_PROJECT_ENVIRONMENT=str(workspace / "sdk-venv"),
-            UV_PYTHON_DOWNLOADS="never",
-            UV_LINK_MODE="copy",
-        )
-        commands = stages(ROOT, workspace, uv, version, assets, source_only=arguments.source_only)
-        report["required_checks"] = [name for name, _ in commands]
-        print(f"distribution-check: {report['kind']}; retained workspace {workspace}", flush=True)
-        source_commands = [
-            (name, cmd) for name, cmd in commands if name in {"base", "mcp", "build"}
-        ]
-        package_commands = [
-            (name, cmd) for name, cmd in commands if name not in {"base", "mcp", "build"}
-        ]
-        run_stages(source_commands, root=ROOT, environment=environment, report=report)
+        environment = check_environment(ROOT, state, workspace)
+        print(f"distribution-check: {report['kind']}; workspace {workspace}", flush=True)
+        if assets is None:
+            run_stages(source_checks(ROOT, uv), root=ROOT, environment=environment, report=report)
+            if not arguments.source_only:
+                assets = workspace / "assets"
+                run_stages(
+                    (
+                        (
+                            "build",
+                            [
+                                sys.executable,
+                                str(ROOT / "tools/build_release.py"),
+                                "--allow-divergent",
+                                str(assets),
+                            ],
+                        ),
+                    ),
+                    root=ROOT,
+                    environment=environment,
+                    report=report,
+                )
         if not arguments.source_only:
             check_packages(
-                package_commands,
-                assets=assets or workspace / "assets",
+                package_checks(ROOT, workspace, uv, version, assets),
+                assets=assets,
                 version=version,
                 root=ROOT,
                 environment=environment,
                 report=report,
             )
         report["status"] = "passed"
-        print("distribution-check: all selected checks passed on this host")
+        try:
+            report["cleanup"] = "removed" if clean_success(workspace, identity) else "retained"
+        except (OSError, RuntimeError) as error:
+            report["cleanup"] = "retained"
+            report["cleanup_error"] = str(error)
         return 0
     except KeyboardInterrupt:
         report["status"] = "interrupted"
@@ -274,13 +339,23 @@ def main(argv=None) -> int:
         print(f"distribution-check: {error}", file=sys.stderr)
         return 1
     finally:
-        if workspace is not None:
-            from releasekit import storage
-
-            storage.atomic_json(workspace / "result.json", report)
-            print(f"distribution-check: evidence retained at {workspace / 'result.json'}")
-        else:
-            print(json.dumps(report, sort_keys=True), file=sys.stderr)
+        try:
+            if workspace is not None:
+                report.setdefault("cleanup", "retained")
+                output = storage.inside(state, state / "reports" / (workspace.name + ".json"))
+                storage.atomic_json(output, report)
+                print(f"distribution-check: report {output}")
+        finally:
+            if lock_identity is not None and storage.identity(lock) == lock_identity:
+                lock.unlink()
+            # Hosted runners are ephemeral. Keep the compact result in the job log
+            # as well; no upload of runtime directories or unredacted command output.
+            summary = {
+                key: value
+                for key, value in report.items()
+                if key not in {"workspace", "error", "cleanup_error"}
+            }
+            print("distribution-check: result " + json.dumps(summary, sort_keys=True), flush=True)
 
 
 if __name__ == "__main__":

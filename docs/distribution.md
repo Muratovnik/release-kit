@@ -30,105 +30,130 @@ python tools/build_zipapp.py dist/relkit.pyz
 python tools/build_zipapp.py dist/relkit.pyz --repository example/release-kit
 ```
 
-`--repository` records the maintainer's actual trusted OWNER/REPO for future
-project updates. `tools/build_plugin.py` also remains a plugin-only development
-builder. Working-tree test builds do not qualify a release source commit.
+`--repository` records the maintainer's actual trusted OWNER/REPO for project
+updates. `tools/build_plugin.py` remains a plugin-only development builder.
+Working-tree test builds do not qualify a release source commit.
 
-The deterministic ZIP layout fixes file order, timestamps and ZIP host attributes.
-Source/package versions and the dated changelog must agree. The full MIT license
-and maintainer metadata are included in `releasekit/build.json` inside the CLI;
-the plugin and source also carry `LICENSE`. The existing metadata entry preserves
-compatibility with old project updaters.
+The ZIP layout fixes file order, timestamps and host attributes. Source/package
+versions and the dated changelog must agree. The CLI carries the full MIT license
+and maintainer metadata in its existing `releasekit/build.json` entry; the plugin
+and source also carry `LICENSE`.
+
+The plugin packages user instructions, CLI/MCP references, license and starter
+examples. CONTRIBUTING, this distribution guide and the disclosure procedure stay
+in source; their links in packaged Markdown point to the matching `vVERSION` tag,
+including section anchors. Do not distribute a test package under an existing tag.
 
 ## Integrity and trust
 
 A SHA-256 sidecar detects changed bytes relative to that digest; it is not an
-independent identity check when obtained from the same publisher as the file.
-The plugin's `package.json` is a **hash inventory, not a digital signature**.
-The launcher compares packaged files with it and checks component versions.
-An initially malicious package can contain a matching inventory: review/trust of
-the distribution source remains necessary.
+independent identity check when downloaded beside the file. The plugin's
+`package.json` is a **hash inventory, not a digital signature**. Review/trust of
+the original distribution remains necessary; malicious code can carry matching hashes.
 
-Package checks require exactly the five distribution files before executing any
-candidate code. Both sidecars must name and hash their corresponding payloads.
-`release.json` must name every other file exactly once with the correct digest;
-an empty, partial or duplicate-key manifest cannot select its own coverage.
-Missing files, extra entries and non-file members are failures. The same inventory
-is compared before and after all package checks; reports retain the checked hashes.
-This establishes consistency and absence of observed drift, not publisher identity.
+Before candidate code runs, package checks require exactly five ordinary files,
+both correct sidecars, and a `release.json` naming every other file once. Missing
+or extra entries, partial/empty manifests, duplicate keys and bad hashes fail.
+The inventory is compared before and after all package checks; reports retain the
+checked hashes. This proves consistency and observed absence of drift, not origin.
 
-GitHub immutable-release verification is a separate native mechanism. For a
-reviewed published version and downloaded assets, use `gh release verify TAG`
-and `gh release verify-asset TAG FILE --repo OWNER/REPO` with the intended repository
-(the first command also accepts `--repo`). See the official
-[release verification](https://cli.github.com/manual/gh_release_verify) and
-[asset verification](https://cli.github.com/manual/gh_release_verify-asset) manuals.
-The coordinator compares signed publication membership with the REST asset set;
-a verified release is still not proof of code quality or absence of secrets.
+GitHub's native `gh release verify TAG --repo OWNER/REPO` and
+`gh release verify-asset TAG FILE --repo OWNER/REPO` provide separate
+[release](https://cli.github.com/manual/gh_release_verify) and
+[asset](https://cli.github.com/manual/gh_release_verify-asset) verification.
+The coordinator compares signed membership with the REST asset set. Neither that
+nor a scanner pass proves code quality or absence of all private information.
 
 ## Scanner platform and cache behavior
 
-The base CLI requires Python 3.11+. Full audit additionally selects pinned scanner
-archives for the actual OS/architecture. Both engines have Linux GNU x64/arm64,
-macOS x64/arm64 and Windows x64 assets in the current pin set. Betterleaks alone
-has a Windows arm64 pin; native Windows arm64 full audit is therefore unavailable.
-GNU Linux pins do not promise musl/Alpine compatibility. Unsupported keys refuse.
+The CLI requires Python 3.11+. Full audit also needs pinned native scanner archives.
+Both engines have Linux GNU x64/arm64, macOS x64/arm64 and Windows x64 pins.
+Only Betterleaks has a Windows arm64 pin; native Windows arm64 full audit is
+unavailable. GNU pins do not promise musl/Alpine compatibility. Unsupported keys refuse.
 
-If Python reports an empty Windows machine type, release-kit queries
+An empty Windows machine type is resolved with
 [GetNativeSystemInfo](https://learn.microsoft.com/en-us/windows/win32/api/sysinfoapi/nf-sysinfoapi-getnativesysteminfo),
-not inherited `PROCESSOR_*` variables. Under emulation the API may report a
-compatible architecture. There is no assumed x64 fallback for unknown platforms.
+not inherited `PROCESSOR_*` variables. Emulation may report a compatible architecture;
+there is no assumed x64 fallback.
 
-Default scanner archives/executables live under the target's ignored
-`.cache/release-kit/`. The managed-cache path verifies the pinned archive SHA-256,
-compares the executable with the archive, and checks its reported version before
-execution. Old pre-0.4.1 caches need an online audit to retain verified archives.
+Scanner archives/executables default to the target's ignored `.cache/release-kit/`.
+Managed-cache use verifies the archive digest, compares the executable with it,
+then checks its version. Pre-0.4.1 caches need an online audit to retain archives.
+`RELKIT_CACHE_DIR` can select a verified shared cache; external writes also require
+that exact approved absolute path in `RELKIT_APPROVED_EXTERNAL_CACHE`.
+`RELKIT_BETTERLEAKS` / `RELKIT_LYCHEE` instead select operator-provisioned executables:
+only their version is checked, so their independent verification belongs to the operator.
 
-`RELKIT_CACHE_DIR` selects a shared cache. Reading a complete verified external
-cache is supported; writes also require approval of that exact absolute path in
-`RELKIT_APPROVED_EXTERNAL_CACHE`. `RELKIT_BETTERLEAKS` and `RELKIT_LYCHEE` select
-operator-provisioned executables: this explicit override checks their reported
-version, not the managed-archive digest chain. The operator owns their independent
-verification. Do not mistake a version string for executable authenticity.
+`--no-download` refuses missing verified scanner archives. Release/update asset
+downloads are separate; the flag is not a general offline promise. See
+[updates](updates.md) and [local releases](local-releases.md).
 
-`--no-download` fails when required verified archives are missing. It does not
-mean all release/update operations are offline; their own asset downloads are
-separate. See [updates](updates.md) and [local releases](local-releases.md).
+## Source and candidate checks
 
-## Check a downloaded candidate without rebuilding
-
-The manual candidate workflow uses this mode after downloading the exact artifact
-built by its candidate job. The source snapshot and requested version must match:
+Development mode runs source checks, one test build and checks that package:
 
 ```text
+python tools/check_distribution.py
+```
+
+For a release, source qualification and actual package qualification are separate:
+
+```text
+python tools/check_distribution.py --source-only
 python tools/check_distribution.py --assets dist --version X.Y.Z
 ```
 
-This checks the complete set, CLI smoke, real-scanner onboarding and plugin stdio
-against those files. It neither rebuilds nor reruns source tests. The plugin starts
-with the command, arguments, cwd, environment and timeouts in its own `.mcp.json`,
-not a manually repaired launcher invocation. Native desktop discovery is separate.
+Package mode never rebuilds or runs source tests. It validates the complete set,
+runs CLI and real-scanner onboarding checks, and launches the extracted plugin
+through its own `.mcp.json`, including cwd, env and timeouts. Launcher failure
+reports the exit code and a bounded stderr tail (stdout when stderr is empty).
+An SDK test does not establish desktop discovery.
 
-The coordinator's snapshot has no `.git`, and its assets are outside that snapshot.
-It therefore invokes the same mode with absolute asset and existing scratch paths:
+The coordinator supplies a Git-free committed snapshot with separate assets:
 
 ```text
 python tools/check_distribution.py --assets ABSOLUTE_ASSETS --version X.Y.Z --work-dir ABSOLUTE_SCRATCH
 ```
 
-The runner creates a new owned child of the explicit scratch parent, never a
-working directory inside the candidate. With a normal checkout, omitting
-`--work-dir` uses its usual project-local storage. A Git-free snapshot requires the
-explicit scratch path and never borrows an ancestor's Git identity. Its report
-records no invented source commit; the coordinator's receipt binds the committed
-snapshot and candidate. Package hashes alone do not prove the origin of a standalone
-input. Used by itself, this mode is package evidence, not source qualification.
+The explicit parent must already exist and belong to this operation. A snapshot
+never discovers an ancestor's checkout or invents a source SHA: the coordinator
+receipt binds its source and candidate. A standalone package check proves the
+behavior of the supplied bytes, not their source origin.
+
+## Check state and reports
+
+A checkout defaults to ignored `.cache/release-kit-checks/`. With `--work-dir`,
+state lives under `REVIEWED_PARENT/release-kit-checks/`. Reuse is scoped to that
+selected parent; independent coordinator scratch parents do not share an implicit
+external cache. No ancestor path or user-wide environment is adopted automatically.
+
+That state holds one uv cache, one SDK environment per interpreter cache tag, and
+compact `reports/run-ID.json` files. `uv run --locked --exact` owns synchronization
+against the existing plugin lock; see [uv synchronization](https://docs.astral.sh/uv/concepts/projects/sync/).
+Changing the lock does not require a bespoke environment migration. Runs sharing
+state serialize through `check.lock`; a busy lock refuses without modifying it.
+After a crash inspect its recorded PID and remove only that lock after confirming
+that its process stopped. A directory owned by another tool is not adopted.
+
+Every run has fresh disposable fixtures. A package test still provisions a new
+installed-plugin runtime; the reusable SDK is the test client's environment, not
+a substitute for testing first startup. On success the newly allocated fixture
+roots are removed, while reusable state and the compact report remain. Unknown
+run-root entries, leftover process scratch, aliases or a failed check retain the
+run for inspection. Cleanup does not touch input candidate files, previous runs,
+other tools' directories or user installations. Trusted fixture code runs normally;
+this is not a sandbox against hostile concurrent writers inside a fixture.
+
+The report distinguishes check outcome from cleanup and identifies the host and
+artifact hashes. Its compact summary also appears as `distribution-check: result`
+in the job log, so it is available after an ephemeral runner disappears. Whole
+runtime directories and captured private command output are not uploaded as evidence.
+Review retained failure directories before removing them.
 
 ## Releasing this repository
 
-The source uses local build/check/smoke with an explicit GitHub delivery adapter.
-No paid runner, mandatory hosted build or repository visibility change is needed.
-From an environment with `PYTHONPATH` set to this checkout's `src`:
+After committing synchronized versions and curated notes, with `PYTHONPATH` set to
+this checkout's `src`:
 
 ```text
 python -m releasekit.cli release prepare vX.Y.Z
@@ -136,21 +161,13 @@ python -m releasekit.cli release plan vX.Y.Z
 python -m releasekit.cli release run vX.Y.Z --publish --plan-hash REVIEWED
 ```
 
-Commit the new version and curated notes before preparation. The configured check
-uses `check_distribution.py --source-only` for base and MCP source tests. After
-building the actual candidate from committed bytes, the configured smoke invokes
-`check_distribution.py --assets {assets} --version {version} --work-dir {temp}`.
-All package checks therefore cover the exact files whose hashes enter the candidate
-receipt before tagging; a throwaway working-tree build cannot qualify those files.
-The coordinator also compares its candidate inventory before/after smoke. A failure
-prevents preparation from passing. Run publishes the prepared bytes, not a rebuild.
-GitHub write/admin-read permissions and immutability prerequisites are documented
-in [local releases](local-releases.md#optional-github-delivery).
+The configured check is source-only. The coordinator builds from the committed
+snapshot, then runs package checks on the actual candidate before creating a tag.
+It compares candidate hashes before/after smoke and publishes those prepared bytes,
+not a rebuild. GitHub delivery permissions are in [local releases](local-releases.md#optional-github-delivery).
 
-For development, the runner without flags still runs source tests, builds a
-working-tree test distribution and checks it. That is not the publication candidate.
-Hosted workflows are manual supplementary platform checks. They publish no release
-and do not run on branch/tag pushes. Record actual host, Python version, artifact
-digests and outcomes. A declared platform list is not execution evidence. Complete
-the separate [publication review](publication-review.md) before changing visibility
-or sharing a previously private distribution.
+The manual release workflow runs a source matrix, one candidate build and one
+package matrix. The separate check workflow retains development-mode checking.
+Neither runs on pushes/PRs/tags nor publishes. No hosted runner or visibility change
+is required for local preparation. A declared OS matrix is not execution evidence;
+record actual runs and complete [publication review](publication-review.md) separately.

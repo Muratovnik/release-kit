@@ -1,19 +1,19 @@
 # Contributing
 
-Use this repository as an independent Git root. Read [AGENTS.md](https://github.com/Muratovnik/release-kit/blob/main/AGENTS.md) for
-ownership and change rules. Report ordinary bugs with a synthetic reproducer;
+Use this repository as an independent Git root. Read [AGENTS.md](https://github.com/Muratovnik/release-kit/blob/main/AGENTS.md)
+for ownership and change rules. Report ordinary bugs with a synthetic reproducer;
 use [SECURITY.md](SECURITY.md) for sensitive reports.
 
 ## Isolated setup
 
-Install Python 3.11+ and Git. From a reviewed source checkout, ignore `.cache/`
-(the repository already does), then create a local virtual environment:
+Install Python 3.11+ and Git. From a reviewed source checkout, create a local
+virtual environment; this repository already ignores `.cache/`:
 
 ```text
 python -m venv .cache/dev-venv
 ```
 
-Activate it in **PowerShell**:
+In **PowerShell**:
 
 ```powershell
 .cache/dev-venv/Scripts/Activate.ps1
@@ -23,7 +23,7 @@ $env:TEMP = "$PWD/.cache/install-tmp"
 $env:TMP = $env:TEMP
 ```
 
-Or in **Bash**:
+In **Bash**:
 
 ```bash
 . .cache/dev-venv/bin/activate
@@ -32,79 +32,65 @@ export PIP_CACHE_DIR="$PWD/.cache/pip"
 export TMPDIR="$PWD/.cache/install-tmp"
 ```
 
-Then install the declared development tools in that environment:
+Then install the declared development tools:
 
 ```text
 python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
 ```
 
-No editable application install is needed: the check runners set the source path
-explicitly. Keep cache/temp overrides local to this shell, not global settings.
+No editable application install is needed: the runners set the source path.
+Keep cache/temp overrides local to this shell, not global settings.
 
 ## Checks
 
-For ordinary CLI development, run:
+For CLI development, run `python tools/check.py`. It runs stdlib tests, Ruff lint
+and format checks with a canonical temporary path, important on macOS. The base
+suite intentionally does not import the optional MCP SDK.
 
-```text
-python tools/check.py
-```
-
-This executes stdlib tests, Ruff lint and Ruff format checks. It also canonicalizes
-the temporary directory (important on macOS). Bare `unittest` plus `ruff check`
-is not equivalent: it omits formatting and runner setup. The base check deliberately
-does not install/import the optional MCP SDK.
-
-Before a **joint CLI/plugin distribution**, install `uv` on PATH using its
-[official installation instructions](https://docs.astral.sh/uv/getting-started/installation/),
-then run:
+For the full development check, install `uv` on PATH using its
+[official instructions](https://docs.astral.sh/uv/getting-started/installation/), then run:
 
 ```text
 python tools/check_distribution.py
 ```
 
-The full development check runs the base gate, explicitly discovers `tests/mcp` in
-an isolated SDK environment using the existing plugin `uv.lock`, builds a test
-release set, validates exact membership and hashes, exercises CLI onboarding, and
-starts the extracted plugin through its own `.mcp.json` with a native SDK client.
-Missing SDK/uv, empty MCP collection, failed subprocesses or failed package checks
-are failures, not skips or a fallback to the base gate.
+This checks source, builds a test distribution, validates exact membership/hashes,
+exercises real-scanner onboarding and starts the extracted plugin according to
+its `.mcp.json` with a native SDK client. Missing dependencies, empty/all-skipped
+MCP discovery and failed subprocesses are failures, not a base-only fallback.
 
-The first locked SDK/plugin startup and full audit may need downloads. All check
-outputs and caches stay in managed project-local locations; no global packages,
-client registrations, Git hooks or hosted publications are created. The built
-plugin's own `.runtime/` is intentionally retained with the check's diagnostics,
-not silently swept as unknown files. The report identifies the host and artifact
-digests. It is evidence for that host, not a claim that other platforms ran.
+The SDK client environment and uv cache are reused below `.cache/release-kit-checks/`.
+`uv run --locked --exact` synchronizes the environment with the existing plugin lock;
+the SDK version is not duplicated in another requirements file. Each package test
+still starts from a fresh plugin installation/runtime. Successful run fixtures are
+removed; failed checks, unknown run-root entries and leftover process scratch are
+retained for inspection. Compact JSON reports remain in `reports/`, and their
+summary is printed to the job log. See [distribution](docs/distribution.md) for
+storage, locking and explicit snapshot-parent behavior.
 
-Both hosted workflows remain **manual**. Ordinary pushes/PRs do not consume hosted
-minutes. Successful local checks do not imply a successful hosted matrix.
-The local release coordinator separates source checks from candidate qualification:
-`check_distribution.py --source-only` runs base/MCP tests, then the configured smoke
-checks the actual committed-source candidate with `--assets`, `--version` and an
-explicit `--work-dir`. It does not substitute a passing development build for the
-files that will be published. Git-free snapshots and separate asset directories
-are supported by that package mode; see [distribution](docs/distribution.md).
+For targeted MCP work use the same locked project/environment to run
+`tools/check_mcp.py`. Do not add `tests/mcp/__init__.py` merely to pull the optional
+SDK into base discovery. A successful SDK test is not native desktop discovery.
 
-For targeted MCP work, use the locked environment created by the full check to
-run `tools/check_mcp.py`, or invoke it through `uv run --locked` with the same
-plugin project and local environment/cache settings. Do not add `tests/mcp/__init__.py`
-just to make the base suite import optional dependencies.
+The local release coordinator checks source with `--source-only`, then checks its
+actual committed-source candidate with `--assets`, `--version` and `--work-dir`.
+The manual release workflow follows the same order: source matrix, one candidate
+build, one package matrix. It does not also qualify throwaway builds on each OS.
+The separate manual check workflow retains the full development check. Neither
+workflow runs automatically on pushes/PRs/tags or publishes a release.
 
 ## Change and release discipline
 
-Keep patches focused and add a regression test that exercises the affected user
-boundary. Test discovery, startup and real dependency integration are different
-claims; a mocked process returning zero proves none of the latter two.
-Do not make an optional platform test silently satisfy a required release check.
+Keep patches focused. Add regression tests at the affected boundary; a mocked
+process returning zero does not establish startup or real dependency integration.
+Report actual commands, outcomes and missing verification, including platform gaps.
 
-Add a user-facing entry under `Unreleased`: state what changed, whether action is
-needed and any compatibility limits first. Link detailed engineering rationale
-rather than replacing historical release notes. Before distributing new bytes,
-advance all release-kit component versions together and add the dated entry as
-specified in [distribution](docs/distribution.md). Never replace existing published
-assets under the old version, including documentation-only package rebuilds.
+Add user-facing changes under `Unreleased`, with required action and compatibility
+first. Link engineering detail instead of rewriting history. Before distributing
+new bytes, advance all component versions and add the dated entry as described in
+[distribution](docs/distribution.md). Never replace published assets under an old
+version, including documentation-only rebuilds.
 
-A pull request should state the source revision, changes, executed commands and
-results, and remaining checks. Do not describe proposed checks as completed ones.
-Publishing tags/assets, changing visibility and rewriting history are separate
-maintainer actions; opening or merging a PR does not authorize them.
+Publishing, changing visibility and rewriting history are separate maintainer
+actions. Opening or merging a PR does not authorize them. Tests use disposable
+local fixtures, not real adopter hooks or live hosted publications.

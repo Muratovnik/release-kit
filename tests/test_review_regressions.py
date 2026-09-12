@@ -196,7 +196,7 @@ class ReleaseSetTests(unittest.TestCase):
         commands = [("controlled-package-check", [sys.executable, "-c", "pass"])]
         with (
             patch.object(check_distribution, "ROOT", snapshot),
-            patch.object(check_distribution, "stages", return_value=commands),
+            patch.object(check_distribution, "package_checks", return_value=commands),
             patch.object(check_distribution.shutil, "which", return_value="uv"),
             patch.object(sys, "path", list(sys.path)),
             patch.dict(os.environ, fixture_environment(), clear=True),
@@ -206,7 +206,7 @@ class ReleaseSetTests(unittest.TestCase):
                 ["--assets", str(self.assets), "--version", VERSION, "--work-dir", str(scratch)]
             )
         self.assertEqual(0, code)
-        results = list(scratch.glob("distribution-check-*/result.json"))
+        results = list(scratch.glob("release-kit-checks/reports/run-*.json"))
         self.assertEqual(1, len(results))
         report = json.loads(results[0].read_text(encoding="utf-8"))
         self.assertEqual("git-free-snapshot", report["source_kind"])
@@ -214,6 +214,7 @@ class ReleaseSetTests(unittest.TestCase):
         self.assertTrue(report["artifacts_unchanged"])
         self.assertEqual(smoke.inventory(self.assets, VERSION), report["artifacts"])
         self.assertFalse((snapshot / ".git").exists())
+        self.assertFalse(Path(report["workspace"]).exists())
 
     def test_snapshot_runner_requires_explicit_scratch_without_creating_it(self):
         snapshot = self.root / "snapshot"
@@ -252,12 +253,12 @@ class CandidateWiringTests(unittest.TestCase):
         )
 
     def test_source_only_does_not_build_a_substitute_candidate(self):
-        commands = check_distribution.stages(ROOT, Path("scratch"), "uv", VERSION, source_only=True)
+        commands = check_distribution.source_checks(ROOT, "uv")
         self.assertEqual(["base", "mcp"], [name for name, _ in commands])
 
     def test_candidate_mode_neither_builds_nor_runs_source_gates(self):
         assets = Path("separate candidate/assets")
-        commands = check_distribution.stages(ROOT, Path("scratch"), "uv", VERSION, assets)
+        commands = check_distribution.package_checks(ROOT, Path("scratch"), "uv", VERSION, assets)
         self.assertEqual(
             ["cli-smoke", "onboarding", "plugin-stdio"], [name for name, _ in commands]
         )
@@ -357,6 +358,43 @@ class PackagedLaunchTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     self.launch()
                 self.server[field] = original
+
+    def test_cli_keeps_bounded_stderr_or_stdout_from_a_failed_launcher(self):
+        for stream in ("stderr", "stdout"):
+            with self.subTest(stream=stream):
+                (self.root / "scripts/launch.py").write_text(
+                    "import sys\n"
+                    f"sys.{stream}.write('PREFIX' + 'x' * 10000 + 'payload checksum mismatch')\n"
+                    "raise SystemExit(7)\n",
+                    encoding="utf-8",
+                )
+                launch = self.launch()
+                with (
+                    patch.object(
+                        smoke_plugin,
+                        "smoke",
+                        side_effect=lambda *args: smoke_plugin.check_launch(launch, VERSION),
+                    ),
+                    patch.object(
+                        sys,
+                        "argv",
+                        [
+                            "smoke_plugin.py",
+                            "--archive",
+                            "unused.zip",
+                            "--work-dir",
+                            "unused",
+                            "--version",
+                            VERSION,
+                        ],
+                    ),
+                    contextlib.redirect_stderr(io.StringIO()) as output,
+                ):
+                    self.assertEqual(1, smoke_plugin.main())
+                self.assertIn("launcher exited 7", output.getvalue())
+                self.assertIn("payload checksum mismatch", output.getvalue())
+                self.assertNotIn("PREFIX", output.getvalue())
+                self.assertLess(len(output.getvalue()), 8300)
 
 
 if __name__ == "__main__":

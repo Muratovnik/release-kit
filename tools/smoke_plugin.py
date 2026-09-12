@@ -1,7 +1,7 @@
 """Start a trusted built plugin using its shipped MCP launch configuration.
 
 This checks local SDK stdio startup, not native desktop discovery. It authorizes
-no project binding, hook or publication and retains fixtures in the new work root.
+no project binding, hook or publication. The caller owns cleanup of the fresh fixtures.
 """
 
 from __future__ import annotations
@@ -185,6 +185,14 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         smoke(arguments.archive.absolute(), arguments.work_dir.absolute(), arguments.version)
+    except subprocess.CalledProcessError as error:
+        detail = error.stderr or error.stdout or "no launcher diagnostics"
+        if isinstance(detail, bytes):
+            detail = detail.decode("utf-8", errors="replace")
+        print(
+            f"plugin-smoke: launcher exited {error.returncode}\n{detail[-8192:]}", file=sys.stderr
+        )
+        return 1
     except Exception as error:
         # Native SDK failures include exception groups; never downgrade to --version.
         print(f"plugin-smoke: {type(error).__name__}: {error}", file=sys.stderr)
