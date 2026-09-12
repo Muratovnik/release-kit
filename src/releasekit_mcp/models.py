@@ -65,7 +65,7 @@ class Protect(Request):
 
 
 class Release(Request):
-    action: Literal["plan", "status", "resume_plan", "run", "resume"]
+    action: Literal["plan", "status", "resume_plan", "run", "resume", "verify"]
     version: str = Field(pattern=r"^v?[0-9]+\.[0-9]+\.[0-9]+$")
     plan_hash: str = ""
     no_download: bool = False

@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import subprocess
 import sys
 import time
 import tomllib
@@ -475,9 +476,23 @@ def described_plan(value: dict) -> dict:
     }
 
 
-def show_plan(value: dict) -> None:
+def show_plan(value: dict, *, human: bool = False) -> None:
     described = described_plan(value)
-    print(json.dumps(described, indent=2, sort_keys=True))
+    if human:
+        print(f"relkit release: plan {value['tag']} @ {value['sha']}")
+        print(f"  Repository: {value['settings']['repository']}")
+        previous = value.get("previous")
+        print(f"  Previous tag: {previous['tag'] if previous else 'first release'}")
+        print(f"  Plan SHA-256: {described['plan_sha256']}")
+        for number, action in enumerate(described["actions"], 1):
+            print(f"  {number}. {action}")
+        print("relkit release: plan only; checks have not run and nothing was published")
+        print(
+            f"relkit release: next: relkit release run {value['tag']} --publish "
+            f'--plan-hash {described["plan_sha256"]} --root "{value["root"]}"'
+        )
+    else:
+        print(json.dumps(described, indent=2, sort_keys=True))
     # The JSON is data; this block is what an operator must read before --publish.
     print(
         f"relkit release: exact asset set for {value['tag']} ({len(value['assets'])} file(s)):",
@@ -533,6 +548,8 @@ def read_state(runner: Runner, path: Path, tag: str, *, same_version: bool) -> d
 
 
 def record_result(result: Result, state: dict, path: Path, *, saved: bool = False) -> None:
+    from . import feedback
+
     value = state["plan"]
     result.data["release"] = {
         "observation": "local-receipt" if saved else "current-run",
@@ -544,6 +561,7 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
         "plan": described_plan(value),
         "tool_version": value["tool_version"],
         "resume_version_matches": value["tool_version"] == __version__,
+        **feedback.facts(state),
         **{
             key: state.get(key)
             for key in (
@@ -562,19 +580,12 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
                 "retained_temporaries",
                 "error",
                 "outcome",
+                "verifier_version",
+                "ci_problems",
             )
         },
     }
-    if state["verification"] != "passed" and not state.get("outcome"):
-        result.next_action = [
-            "relkit",
-            "release",
-            "resume",
-            value["tag"],
-            "--publish",
-            "--root",
-            value["root"],
-        ]
+    result.next_action = feedback.next_action(state)
 
 
 def _stage(path: Path, state: dict, name: str, status: str = "running") -> None:
@@ -589,7 +600,7 @@ def validate_saved_plan(runner: Runner, value: dict) -> None:
     raw = tomllib.loads(raw_text)
     release = settings.parse(raw.get("release"))
     if (
-        asdict(release) != value["settings"]
+        asdict(release) != asdict(settings.parse(value["settings"]))
         or hashlib.sha256(raw_text.encode()).hexdigest() != value["source_config_sha256"]
     ):
         raise ReleaseError("saved release settings differ from the pinned committed configuration")
@@ -858,10 +869,14 @@ def _ci(
     path: Path,
     deadline: float,
     accept_ci_attempt: int = 0,
+    *,
+    verify_only: bool = False,
 ) -> dict:
     value = state["plan"]
     print("relkit release: waiting for the planned tag workflow", flush=True)
     _stage(path, state, "ci")
+    state["ci_verdict"] = "pending"
+    state["ci_problems"] = []
     # Full reconciliation costs about a dozen Git and GitHub calls. It is the right
     # check on entry, on completion and periodically, and a waste on every poll of a
     # run that is still going: an hour of five-second reconciles is thousands of API
@@ -909,14 +924,16 @@ def _ci(
                 if not pushed:
                     raise ReleaseError("tag disappeared while waiting for CI")
                 if run["conclusion"] != "success":
-                    raise ReleaseError(
+                    state["ci_problems"].append(
                         f"CI failed ({run['conclusion']}); release publication is {state['publication']}"
                     )
                 jobs = github.jobs(run["id"], run["run_attempt"])
                 for name in value["settings"]["required_jobs"]:
                     selected = [job for job in jobs if job_matches(job["name"], name)]
                     if not selected:
-                        raise ReleaseError(f"required CI job never ran in this run: {name}")
+                        state["ci_problems"].append(
+                            f"required CI job never ran in this run: {name}"
+                        )
                     # Every matched leg, not the first: a matrix gates publication only
                     # if all of its legs passed on this exact commit.
                     failed = [
@@ -927,12 +944,17 @@ def _ci(
                         or job["head_sha"] != value["sha"]
                     ]
                     if failed:
-                        raise ReleaseError(
+                        state["ci_problems"].append(
                             "required CI job did not pass for this exact commit: "
                             + ", ".join(sorted(failed))
                         )
+                state["ci_verdict"] = "failed" if state["ci_problems"] else "passed"
+                if state["ci_problems"]:
+                    _stage(path, state, "ci", "failed")
+                    if not verify_only:
+                        raise ReleaseError("; ".join(state["ci_problems"]))
                 if published and not published["draft"]:
-                    _stage(path, state, "ci", "passed")
+                    _stage(path, state, "ci", state["ci_verdict"])
                     return published
                 if published:
                     raise Pending(
@@ -1292,7 +1314,10 @@ def run(
     runner: Runner | None = None,
     github: GitHub | None = None,
     result: Result | None = None,
+    human: bool = False,
 ) -> int:
+    from . import feedback
+
     result = result or Result()
     original_log = runner.log if runner is not None else None
     state = None
@@ -1310,6 +1335,8 @@ def run(
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")
         if reason and action != "abandon":
             raise ReleaseError("--reason is accepted only by release abandon")
+        if action == "verify" and (publish or no_download):
+            raise ReleaseError("verify never publishes; --publish/--no-download are not accepted")
         if action == "abandon":
             if not reason.strip():
                 raise ReleaseError(
@@ -1322,7 +1349,7 @@ def run(
         if action == "plan":
             value = plan(runner, version, github=github)
             result.data["plan"] = described_plan(value)
-            show_plan(value)
+            show_plan(value, human=human)
             return 0
         if action == "status":
             if publish or plan_hash or no_download:
@@ -1334,7 +1361,7 @@ def run(
             validate_saved_plan(runner, saved["plan"])
             record_result(result, saved, path, saved=True)
             print(
-                f"relkit release: recorded {tag}: publication={saved['publication']}, verification={saved['verification']}, cleanup={saved['cleanup']}; no remote check performed"
+                f"relkit release: recorded {tag}: {feedback.summary(saved)}; no remote check performed"
             )
             print(f"relkit release: receipt: {path}")
             return 0
@@ -1349,22 +1376,22 @@ def run(
                 f"version once its local tag is gone; receipt: {path}"
             )
             return 0
-        if action not in {"run", "resume"}:
+        if action not in {"run", "resume", "verify"}:
             raise ReleaseError("unknown release action")
-        if not publish:
+        if action != "verify" and not publish:
             raise ReleaseError(
                 "run/resume require --publish after reviewing release plan; plan is read-only"
             )
         lock = _acquire_lock(root, tag)
         state_path = storage.checked(_state_path(root, tag))
-        if action == "resume":
+        if action in {"resume", "verify"}:
             saved = read_state(runner, state_path, tag, same_version=False)
             if outcome := saved.get("outcome"):
                 raise ReleaseError(
                     f"{tag} was recorded as {outcome['status']} at {outcome['at']}; "
                     "start a new release run instead of resuming"
                 )
-            if saved["plan"]["tool_version"] != __version__:
+            if action == "resume" and saved["plan"]["tool_version"] != __version__:
                 raise ReleaseError(
                     "saved plan identity/version is invalid; use the same release-kit version and checkout"
                 )
@@ -1393,7 +1420,7 @@ def run(
                 "cleanup": "not-run",
             }
             _save(state_path, state)
-        if action == "resume" and plan_hash and plan_hash != fingerprint(value):
+        if action in {"resume", "verify"} and plan_hash and plan_hash != fingerprint(value):
             raise ReleaseError("supplied plan hash differs from the saved plan")
         if sys.platform not in value["settings"]["smoke_platforms"]:
             raise ReleaseError("resume host is not declared for the downloaded-application smoke")
@@ -1403,8 +1430,10 @@ def run(
         github = github or GitHub(runner, value["settings"]["repository"])
         state["verification"] = "not-run"
         # Reconciliation precedes project commands, downloads, retries and cleanup.
-        pushed, _ = _reconcile(runner, github, state)
+        pushed, existing = _reconcile(runner, github, state)
         _save(state_path, state)
+        if action == "verify" and (not pushed or not existing or existing["draft"]):
+            raise ReleaseError("verify requires an existing published release for the saved plan")
         workspace = storage.Workspace(root, "release-")
         runner.temporary = workspace.path / "runtime"
         runner.temporary.mkdir()
@@ -1419,11 +1448,25 @@ def run(
                 state["retained_temporaries"].append(old_temporary)
         state["temporary"] = str(workspace.path)
         _save(state_path, state)
-        if not pushed:
+        if not pushed and action != "verify":
             _prepare(runner, github, state, state_path, workspace, no_download)
         deadline = time.monotonic() + value["settings"]["timeout"]
-        published = _ci(runner, github, state, state_path, deadline, accept_ci_attempt)
+        published = _ci(
+            runner,
+            github,
+            state,
+            state_path,
+            deadline,
+            accept_ci_attempt,
+            verify_only=action == "verify",
+        )
+        state["verifier_version"] = __version__
         _verify(runner, github, state, state_path, published, workspace)
+        if state.get("ci_verdict") != "passed":
+            raise ReleaseError(
+                "artifacts verified; release acceptance incomplete: "
+                + "; ".join(state["ci_problems"])
+            )
         cleaned = workspace.cleanup()
         workspace = None
         state["cleanup"] = "passed" if cleaned else "retained-unowned-or-changed-files"
@@ -1477,11 +1520,11 @@ def run(
             except (OSError, storage.StorageError):
                 pass
             print(
-                f"relkit release: publication={state['publication']}, verification={state['verification']}; {error}",
+                f"relkit release: {feedback.summary(state)}; {error}",
                 file=sys.stderr,
             )
             print(
-                f'relkit release: diagnostics: {state_path.parent}; resume: relkit release resume {tag} --publish --root "{root}"',
+                f"relkit release: diagnostics: {state_path.parent}",
                 file=sys.stderr,
             )
             if state.get("temporary") and state.get("cleanup") != "passed":
@@ -1489,6 +1532,16 @@ def run(
                     f"relkit release: retained scratch files: {state['temporary']}", file=sys.stderr
                 )
             record_result(result, state, state_path)
+            if result.next_action:
+                print(
+                    "relkit release: next: " + subprocess.list2cmdline(result.next_action),
+                    file=sys.stderr,
+                )
+            if state.get("ci_problems"):
+                print(
+                    "relkit release: review the failed CI run before resuming; a newer attempt requires --accept-ci-attempt N",
+                    file=sys.stderr,
+                )
         else:
             print(f"relkit release: {error}", file=sys.stderr)
         return 3 if isinstance(error, Pending) else 2 if state is None else 1

@@ -408,7 +408,12 @@ class BridgeTests(Fixture):
         broken = Path(outside.name).resolve() / "broken"
         (broken / ".git").mkdir(parents=True)
 
-        with self.assertRaisesRegex(ValueError, "git could not identify the bound checkout"):
+        # Project-owned temporary files can live below a real repository. Prevent
+        # Git from discovering that parent when this deliberately broken .git fails.
+        with (
+            patch.dict(os.environ, {"GIT_CEILING_DIRECTORIES": str(Path(outside.name).resolve())}),
+            self.assertRaisesRegex(ValueError, "git could not identify the bound checkout"),
+        ):
             Bridge(broken, self.digest)
 
     def test_the_reviewed_binding_covers_the_publishing_workflow(self):

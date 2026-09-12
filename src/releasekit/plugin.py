@@ -1,9 +1,38 @@
 """Read the installed plugin's fixed update source without executing project code."""
 
 import json
+import tomllib
 from pathlib import Path
 
 from . import __version__, distribution, storage
+
+
+def component_versions(root: Path) -> dict[str, str]:
+    """Versions of our components; third-party dependency versions are independent."""
+    manifest = json.loads(
+        storage.inside(root, root / ".codex-plugin/plugin.json").read_text(encoding="utf-8")
+    )
+    runtime = tomllib.loads(
+        storage.inside(root, root / "pyproject.toml").read_text(encoding="utf-8")
+    )["project"]
+    lock = tomllib.loads(storage.inside(root, root / "uv.lock").read_text(encoding="utf-8"))
+    packages = [item for item in lock["package"] if item["name"] == runtime["name"]]
+    if len(packages) != 1:
+        raise ValueError("plugin lock must contain exactly one runtime package")
+    return {
+        "plugin": manifest["version"],
+        "runtime": runtime["version"],
+        "lock": packages[0]["version"],
+    }
+
+
+def check_versions(root: Path, version: str) -> dict[str, str]:
+    versions = component_versions(root)
+    if any(value != version for value in versions.values()):
+        raise ValueError(
+            f"plugin, runtime, lock and CLI versions must agree ({version}): {versions}"
+        )
+    return versions
 
 
 class Bundle:
@@ -15,6 +44,11 @@ class Bundle:
         inventory = json.loads(self.inventory_path.read_text(encoding="utf-8"))
         if inventory.get("schema") != 1 or inventory.get("version") != __version__:
             raise ValueError("plugin inventory and running version must agree")
+        self.versions = {
+            **check_versions(self.root, __version__),
+            "cli": __version__,
+            "inventory": inventory["version"],
+        }
         if self.path.stat().st_size > distribution.MAX_ARCHIVE_BYTES:
             raise ValueError("bundled distribution exceeds the size limit")
         self.artifact = distribution.inspect(self.path.read_bytes())

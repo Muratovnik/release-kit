@@ -293,9 +293,13 @@ def build_parser() -> argparse.ArgumentParser:
 
     release = subcommands.add_parser(
         "release",
-        help="Plan, run, resume, inspect or abandon a GitHub tag release; CI publishes.",
+        help="Plan, publish, inspect and verify a GitHub release; CI publishes.",
+        description="Start with plan VERSION, then run VERSION --publish. After interruption, "
+        "use status VERSION (saved local facts) and resume VERSION --publish. "
+        "Use verify VERSION to download and smoke-test an existing publication without pushing. "
+        "Abandon closes an unpublished attempt with --reason; it never deletes tags.",
     )
-    release.add_argument("action", choices=("plan", "run", "resume", "status", "abandon"))
+    release.add_argument("action", choices=("plan", "run", "resume", "status", "verify", "abandon"))
     release.add_argument("version", help="Stable X.Y.Z or vX.Y.Z")
     release.add_argument("--root", default=".", help="Owning repository")
     release.add_argument(
@@ -322,6 +326,7 @@ def build_parser() -> argparse.ArgumentParser:
             accept_ci_attempt=arguments.accept_ci_attempt,
             reason=arguments.reason,
             result=arguments.result,
+            human=not arguments.json,
         )
     )
     release.add_argument(

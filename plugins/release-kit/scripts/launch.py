@@ -22,15 +22,17 @@ def main(argv=None):
         raise ValueError("install a built release-kit plugin, not the source template")
     sys.path.insert(0, str(ROOT / "lib"))
     from releasekit import storage
+    from releasekit.plugin import Bundle
 
     package = json.loads(storage.inside(ROOT, ROOT / "package.json").read_text(encoding="utf-8"))
     for name, expected_hash in package["files"].items():
         if storage.digest(storage.inside(ROOT, ROOT / name)) != expected_hash:
             raise ValueError(f"plugin payload changed: {name}")
+    bundle = Bundle(ROOT)
     if arguments.check:
         print(
             json.dumps(
-                {"version": package["version"], "files": len(package["files"]), "valid": True}
+                {"version": package["version"], "components": bundle.versions, "files": len(package["files"]), "valid": True}
             )
         )
         return 0

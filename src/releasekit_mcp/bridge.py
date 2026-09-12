@@ -281,6 +281,19 @@ class Bridge:
             self.reviewed(request.plan_hash, plan["plan_sha256"])
             return Prepared([*argv, "--plan-hash=" + request.plan_hash], argv, True, plan)
         if isinstance(request, models.Release):
+            if request.action == "verify":
+                if distribution.version_tuple(self.executor_artifact.version) < (0, 19, 0):
+                    raise ValueError(
+                        "release verify requires release-kit 0.19.0 or newer; sync the project or upgrade the plugin"
+                    )
+                if request.no_download:
+                    raise ValueError(
+                        "verify downloads published assets; no_download is not accepted"
+                    )
+                argv = ["release", "verify", request.version]
+                if request.plan_hash:
+                    argv.append("--plan-hash=" + request.plan_hash)
+                return Prepared(argv, argv[:2])
             action = "status" if request.action == "resume_plan" else request.action
             argv = ["release", action, request.version]
             command = argv[:2]

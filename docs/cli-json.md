@@ -17,9 +17,9 @@ python .github/relkit.pyz release status v1.2.0 --json
 python .github/relkit.pyz update --dry-run --json
 ```
 
-`--json` may appear before or after the command. Without it, the existing text
-interface remains available; notably `release plan` still prints its original plan
-object. Help (`--help`) always displays human-readable usage and exits.
+`--json` may appear before or after the command. Without it, `release plan`
+prints a short human-readable plan and continuation command. Use `--json` for
+the complete plan object. Help (`--help`) displays usage and exits.
 
 ## Process boundary
 
@@ -96,6 +96,20 @@ update; it must not be interpreted as proof that no side effects occurred.
   Not-yet-known fields are `null`. Publication and verification are separate:
   a published release can fail verification. Retained cleanup is also independent.
 - `release status`: the same release view with `observation: "local-receipt"`.
+  Additional independent fields are `tag_state` (`absent`, `local`, `pushed`),
+  `publication_state` (`absent`, `draft`, `published`), `ci_verdict`
+  (`unknown`, `pending`, `failed`, `passed`) and `acceptance` (`incomplete`,
+  `accepted`). The legacy `publication` field remains unchanged for old readers;
+  its `not-pushed` value means no publication was observed, not that a tag is absent.
+  Unknown CI in an old receipt is not inferred to have passed.
+- `release verify VERSION`: re-observes and verifies an existing publication from
+  the saved receipt. It never prepares/pushes a tag or creates a release; it writes
+  local diagnostics, downloads assets and executes the pinned smoke commands.
+  Compatible old plans retain their original bytes and fingerprint; the current
+  verifier is recorded as `verifier_version`. `verification = passed` with failed
+  CI still returns `1` and `acceptance = incomplete`; inspect `ci_problems`.
+  Missing publication, identity drift and invalid signatures remain failures.
+  `next_action` suggests `verify` for unverified publications, without `--publish`.
   It reads a bounded schema-1 receipt and checks its plan digest, checkout identity
   and pinned committed inputs. It does **not** contact GitHub, run project commands,
   create a lock, append logs, clean files or rerun verification. Exit `0` means

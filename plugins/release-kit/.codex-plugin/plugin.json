@@ -1,6 +1,6 @@
 {
   "name": "release-kit",
-  "version": "0.18.0",
+  "version": "0.19.0",
   "description": "Reviewed release workflows, project updates and publication checks.",
   "author": {
     "name": "Nikolai Muratov"

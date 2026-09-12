@@ -130,11 +130,14 @@ it does not install or refresh either. `owner_audit = true` additionally require
 the existing private owner policy and `require_guard = true`. These options do not
 grant permission to alter project hooks or override its instructions.
 
-## Plan, run, resume, abandon
+## Plan, run, inspect, verify and resume
 
 ```bash
 relkit release plan v1.0.0
 relkit release run v1.0.0 --publish --plan-hash REVIEWED_SHA256
+relkit release status v1.0.0
+# For an existing publication whose files need verification, without another push:
+relkit release verify v1.0.0
 relkit release resume v1.0.0 --publish
 # After manually reviewing a CI rerun of the SAME run, explicitly accept its attempt:
 relkit release resume v1.0.0 --publish --accept-ci-attempt 2
@@ -146,13 +149,15 @@ For a vendored projection, replace `relkit` with `python .github/relkit.pyz`.
 `--root` selects the owning project. `--no-download` prevents audit-engine downloads,
 not the release asset downloads needed for verification.
 
-`plan` performs read-only Git and GitHub queries, outputs the exact source SHA,
-previous tag/object, notes, asset names, workflow identity, refspecs and fingerprint.
+`plan` performs read-only Git and GitHub queries. The terminal shows the source
+SHA, previous tag, steps, asset names, caveats and command with the plan fingerprint.
+Use `--json` for the complete plan including previous tag/object, notes, workflow
+identity and refspecs.
 It does not run project commands, create service files, tag, push or publish.
 `--publish` on `plan` still cannot publish. A stale `--plan-hash` stops execution.
 Without a supplied hash, `run --publish` authorizes its freshly computed plan.
 
-Beside the JSON, `plan` prints an operator block on stderr: the exact asset set,
+`plan` also prints an operator block on stderr: the exact asset set,
 the post-publication timing of its verification, the checksum-manifest rule, jobs
 it could not verify statically, workflow jobs outside `required_jobs`, and the
 fact that local checks ran on this host only while CI owns the platform matrix.
@@ -182,6 +187,18 @@ then resume, rather than creating a duplicate. A newer attempt of the same run n
 the explicit flag above; its artifact attestations must also identify that attempt.
 Missing/deleted/rewritten objects require owner investigation, not automatic repair.
 Keep the same release-kit version and checkout for an unfinished run.
+
+`verify` checks a publication from its existing local receipt without another
+tag, push or local release-preparation run. It reconciles remote identities,
+downloads assets, verifies signatures and executes the pinned smoke commands.
+It can read compatible older receipts without changing their plan/fingerprint;
+`verifier_version` identifies the tool that performed the latest check. It does
+not automatically accept a different CI attempt or change publication policy.
+If CI failed after publishing, the artifact checks can still complete, but
+overall acceptance remains incomplete and exit code is `1`. The output separates
+tag state, publication, CI, artifact verification and acceptance. Inspect the
+reported CI problems before resuming. Missing/invalid signatures still fail;
+an explicitly repeated verify can recover once a delayed signature is available.
 
 While CI runs, the coordinator polls the selected workflow run with a backoff from
 5 to 30 seconds and reconciles the full remote state on entry, when the run

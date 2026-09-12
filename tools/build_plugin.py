@@ -6,7 +6,6 @@ import argparse
 import hashlib
 import json
 import tempfile
-import tomllib
 import zipfile
 from pathlib import Path
 
@@ -28,12 +27,11 @@ FILES = (
 
 def payloads():
     from releasekit import distribution, storage
+    from releasekit.plugin import check_versions
 
     version = distribution.source_version((SOURCE / "__init__.py").read_text(encoding="utf-8"))
     manifest = json.loads((TEMPLATE / FILES[0]).read_text(encoding="utf-8"))
-    runtime = tomllib.loads((TEMPLATE / "pyproject.toml").read_text(encoding="utf-8"))
-    if manifest["version"] != version or runtime["project"]["version"] != version:
-        raise ValueError("plugin, runtime and CLI versions must agree")
+    check_versions(TEMPLATE, version)
     if manifest["name"] != TEMPLATE.name:
         raise ValueError("plugin name must match its directory")
     payload = {name: storage.inside(ROOT, TEMPLATE / name).read_bytes() for name in FILES}

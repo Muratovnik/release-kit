@@ -131,7 +131,12 @@ class PluginBuildTests(unittest.TestCase):
                 check=False,
             )
             self.assertEqual(0, result.returncode, result.stderr)
-            self.assertTrue(json.loads(result.stdout)["valid"])
+            checked = json.loads(result.stdout)
+            self.assertTrue(checked["valid"])
+            self.assertEqual(
+                {name: __version__ for name in ("plugin", "runtime", "lock", "cli", "inventory")},
+                checked["components"],
+            )
             self.assertFalse((package / ".runtime").exists())
             (package / "skills/release-kit/SKILL.md").write_text("modified", encoding="utf-8")
             result = subprocess.run(
@@ -148,6 +153,22 @@ class PluginBuildTests(unittest.TestCase):
     def test_version_mismatch_refuses_packaging(self):
         with (
             patch("json.loads", return_value={"name": "release-kit", "version": "0.0.0"}),
+            self.assertRaisesRegex(ValueError, "versions must agree"),
+        ):
+            BUILDER["payloads"]()
+
+    def test_stale_runtime_lock_refuses_packaging(self):
+        original = tomllib.loads
+
+        def stale_lock(text):
+            parsed = original(text)
+            for package in parsed.get("package", []):
+                if package["name"] == "release-kit-plugin-runtime":
+                    package["version"] = "0.0.0"
+            return parsed
+
+        with (
+            patch("tomllib.loads", side_effect=stale_lock),
             self.assertRaisesRegex(ValueError, "versions must agree"),
         ):
             BUILDER["payloads"]()

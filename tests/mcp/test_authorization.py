@@ -297,6 +297,17 @@ class ReleaseAuthorizationTests(Fixture):
                             self.assertEqual(
                                 fixture.sha, fixture.runner.git("rev-parse", "v1.0.0^{}")
                             )
+                    fixture.github.ci_result = "failure"
+                    verified = await client.call_tool(
+                        "relkit_release",
+                        {"request": {"action": "verify", "version": "v1.0.0"}},
+                    )
+                    self.assertTrue(verified.is_error, verified)
+                    release = verified.structured_content["result"]["data"]["release"]
+                    self.assertEqual("passed", release["verification"])
+                    self.assertEqual("failed", release["ci_verdict"])
+                    self.assertEqual("incomplete", release["acceptance"])
+                    self.assertEqual(1, fixture.runner.pushes)
 
         self.run_async(scenario)
 

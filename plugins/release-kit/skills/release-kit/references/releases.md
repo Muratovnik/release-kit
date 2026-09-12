@@ -73,6 +73,18 @@ refs, policy and CI attempts; request new authority only if the effects exceed
 the user's instruction. A later human refusal remains binding. A declined MCP
 attempt is not retried through another route without new user direction.
 
+## Verify an existing publication
+
+Use `relkit_release` action `verify` (CLI: `relkit release verify VERSION`) when
+publication exists but verification failed or needs repeating. It uses the saved
+plan and original tag/commit/run identities, downloads the published files and
+executes the pinned smoke commands. It creates no release or tag and needs no
+publication authorization; it still has local execution and diagnostic effects.
+Compatible old receipts keep their plan fingerprint. A different CI attempt is
+not silently accepted. Inspect `tag_state`, `publication_state`, `ci_verdict`,
+`verification` and `acceptance` separately. Verified artifacts with failed CI
+return failure and incomplete acceptance; review the CI failure before resuming.
+
 Never force-push, rewrite an existing release/tag, bypass Git hooks, auto-commit
 unrelated changes, or lower local/CI trust gates. New local edits during CI waiting
 are not the state of the published commit. Do not rerun a completed publication.

@@ -39,7 +39,13 @@ permission for that exact location. Runtime ownership or lock drift refuses
 reuse; do not delete unknown files to make startup pass.
 
 `python <installed-plugin>/scripts/launch.py --check` verifies packaged hashes
-without creating a runtime. Normal startup never creates a daemon, installs a
+and reports the manifest, runtime, lock, inventory and CLI versions together,
+without creating a runtime. Packaging and startup refuse version disagreement;
+third-party dependency versions and historical changelog entries are independent.
+Install the complete versioned package, without changing its manifest after
+building: a plugin-only cachebuster would invalidate both version equality and
+the signed payload inventory. A new distribution version already provides a new
+installation identity. Normal startup never creates a daemon, installs a
 Git hook, registers another client or changes global Git configuration.
 
 The MCP launcher uses `cwd: "."` and a relative script path. Codex resolves that

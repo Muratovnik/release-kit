@@ -2,7 +2,23 @@
 
 ## [Unreleased]
 
+## [0.19.0](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.19.0) - 2026-09-12
+
+### Added
+
+- `release verify VERSION` checks an existing publication using its saved plan,
+  without creating or pushing tags. Compatible older receipts keep their original
+  plan fingerprint. Failed CI remains a separate failed acceptance verdict even
+  when the published files, signatures and downloaded application pass verification.
+- Release output distinguishes tag, publication, CI, artifact verification and
+  acceptance. Terminal plans explain the steps and exact command to continue;
+  `--json` retains the structured plan for automation.
+
 ### Fixed
+
+- Plugin packaging and startup reject a stale runtime version in `uv.lock` as
+  well as mismatched manifest, runtime, inventory and bundled CLI versions.
+  The launcher's `--check` reports all component versions together.
 
 - The projection no longer describes the host that built it. `ZipInfo` takes
   `create_system` from `sys.platform`, so the same content produced a different
