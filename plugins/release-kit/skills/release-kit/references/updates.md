@@ -73,3 +73,14 @@ path and retention. Do not remove recovery receipts just because a check passed.
 The CLI equivalent is `update --dry-run --json`, followed by the same source
 selection with `--plan-hash <reviewed hash> --yes --json`. `--yes` acknowledges
 permission already obtained; it cannot grant permission or bypass project rules.
+
+## Migrate an older guard with the installed CLI
+
+If sync refuses a missing workflow pin or reviewed guard drift, request
+`relkit_sync` with `action = plan` and `refresh_guard = true`. This uses the
+installed plugin's CLI, so an old project CLI cannot turn a new guard requirement
+into a no-op. Inspect every changed policy/workflow digest. Apply the same option
+with the exact plan hash and `protect_install` authorization scope when the user
+has authorized those hook effects. This refresh changes only the existing owned
+guard; afterwards request a separate ordinary sync plan to update the CLI.
+Neither a plugin update nor the presence of drift authorizes accepting new inputs.

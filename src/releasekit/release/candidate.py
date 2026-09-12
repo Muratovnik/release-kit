@@ -63,8 +63,8 @@ def inventory(value, directory, *, manifest=False):
     assets = []
     for name in sorted(value["assets"]):
         path = storage.inside(directory, directory / name)
-        if not path.is_file() or path.stat().st_size == 0:
-            raise ReleaseError(f"release asset is not a nonempty ordinary file: {name}")
+        if not path.is_file():
+            raise ReleaseError(f"release asset is not an ordinary file: {name}")
         assets.append(
             {"name": name, "size": path.stat().st_size, "digest": "sha256:" + storage.digest(path)}
         )
@@ -181,6 +181,7 @@ def prepare(runner, github, value, run_id, no_download, result):
         "plan": value,
         "plan_sha256": canonical.fingerprint(value),
         "status": "running",
+        "log": str(path.with_suffix(".log")),
         "ci_run": run_id,
         "started_at": datetime.now(UTC).isoformat(),
     }
@@ -226,6 +227,10 @@ def prepare(runner, github, value, run_id, no_download, result):
         state.update(status="pending" if isinstance(error, Pending) else "failed", error=str(error))
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
+        print(
+            f"relkit release: candidate {value['tag']} {state['status']}; receipt: {path}; log: {runner.log}",
+            file=sys.stderr,
+        )
         raise
     finally:
         runner.log, runner.temporary = previous_log, previous_temp
@@ -322,10 +327,11 @@ def draft(runner, github, version, directory):
         != (expected_notes or "").replace("\r\n", "\n").rstrip()
     ):
         raise ReleaseError("draft notes differ from the committed curated entry")
-    remote = github.assets(release["id"])
+    from .coordinator import asset_set
+
+    remote = asset_set(github.assets(release["id"]), value["assets"])
     if (
-        any(asset["state"] != "uploaded" for asset in remote)
-        or sorted(
+        sorted(
             [{key: asset[key] for key in ("name", "size", "digest")} for asset in remote],
             key=lambda item: item["name"],
         )

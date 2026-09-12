@@ -342,14 +342,14 @@ class Bridge:
                         request.sha256,
                         request.repository,
                         request.release,
-                        request.refresh_guard,
                     )
                 ):
                     raise ValueError("bundled updates cannot select another source")
-                argv += [
-                    "--artifact=" + str(self.bundle.path),
-                    "--sha256=" + self.bundle.artifact.sha256,
-                ]
+                if not request.refresh_guard:
+                    argv += [
+                        "--artifact=" + str(self.bundle.path),
+                        "--sha256=" + self.bundle.artifact.sha256,
+                    ]
             for name in ("repository", "release", "sha256"):
                 value = getattr(request, name)
                 if value:

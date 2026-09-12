@@ -20,6 +20,59 @@ BUILD_PLUGIN = runpy.run_path(str(ROOT / "tools/build_plugin.py"))["build_plugin
 
 
 class SyncTests(Fixture):
+    def test_explicit_installed_guard_migration_precedes_old_cli_update(self):
+        protection.install(self.root)
+        old_guard = (self.root / ".git/hooks/pre-push").read_bytes()
+        policy = self.root / "relkit.toml"
+        policy.write_text(
+            policy.read_text()
+            + """
+[release]
+repository = "example/project"
+workflow = ".github/workflows/release.yml"
+required_jobs = ["publish"]
+version_file = "VERSION"
+version_pattern = "^(.+)$"
+assets = ["application.bin"]
+checks = [["python", "check.py"]]
+smoke = [["python", "smoke.py"]]
+smoke_platforms = ["linux", "darwin", "win32"]
+"""
+        )
+        workflow = self.root / ".github/workflows/release.yml"
+        workflow.parent.mkdir(parents=True, exist_ok=True)
+        workflow.write_text("jobs:\n  publish:\n    runs-on: ubuntu-latest\n")
+        self.git("add", "relkit.toml", ".github/workflows/release.yml")
+        self.git("commit", "-qm", "ci: declare publication workflow")
+
+        async def scenario():
+            async with self.sync_client(callback=None) as client:
+                refused = await self.sync(client, "plan")
+                self.assertTrue(refused.is_error)
+                preview = await self.sync(client, "plan", refresh_guard=True)
+                self.assertFalse(preview.is_error, preview)
+                data = preview.structured_content
+                self.assertIn(".github/workflows/release.yml", json.dumps(data))
+                planned = {
+                    "plan_hash": data["result"]["data"]["plan_sha256"],
+                    "authorization": {
+                        "source": "user_request",
+                        "scope": "protect_install",
+                        "review_sha256": data["review_sha256"],
+                    },
+                }
+                result = await self.sync(client, "apply", refresh_guard=True, **planned)
+                self.assertFalse(result.is_error, result)
+                self.assertEqual(self.old_bytes, self.projection.read_bytes())
+                self.assertNotEqual(old_guard, (self.root / ".git/hooks/pre-push").read_bytes())
+                self.assertIsNone(protection.problem(self.root))
+                result = await self.sync(client, "apply", **await self.authorized_plan(client))
+                self.assertFalse(result.is_error, result)
+                self.assertEqual(self.target, self.projection.read_bytes())
+                self.assertFalse((self.root / "old-code-executed.txt").exists())
+
+        self.run_async(scenario)
+
     def setUp(self):
         super().setUp()
         folder = self.root / ".cache/installed plugin"
@@ -36,7 +89,7 @@ class SyncTests(Fixture):
         buffer = io.BytesIO()
         with (
             zipfile.ZipFile(io.BytesIO(self.target)) as original,
-            zipfile.ZipFile(buffer, "w") as changed,
+            zipfile.ZipFile(buffer, "w", compression=zipfile.ZIP_DEFLATED) as changed,
         ):
             for name in original.namelist():
                 payload = original.read(name)

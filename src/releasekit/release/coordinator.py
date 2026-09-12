@@ -1114,6 +1114,16 @@ def _asset_identity(asset: dict) -> dict:
     return {key: asset[key] for key in ("id", "name", "size", "digest")}
 
 
+def asset_set(assets: list[dict], names: list[str]) -> list[dict]:
+    """The same uploaded-inventory rule before and after publication."""
+    identities = sorted(
+        (_asset_identity(asset) for asset in assets), key=lambda asset: asset["name"]
+    )
+    if [asset["name"] for asset in identities] != sorted(names):
+        raise ReleaseError("release assets differ from the planned exact file set")
+    return identities
+
+
 def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str) -> dict:
     if release["draft"] or release["prerelease"] or release.get("immutable") is not True:
         raise ReleaseError("release must be published, stable and immutable")
@@ -1121,11 +1131,7 @@ def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str
         raise ReleaseError("published release names another tag")
     if (release.get("body") or "").replace("\r\n", "\n").rstrip("\n") != value["notes"]:
         raise ReleaseError("published notes differ from the committed changelog entry")
-    assets = sorted(
-        (_asset_identity(asset) for asset in github.assets(release["id"])), key=lambda a: a["name"]
-    )
-    if [asset["name"] for asset in assets] != sorted(value["assets"]):
-        raise ReleaseError("published assets differ from the planned exact file set")
+    assets = asset_set(github.assets(release["id"]), value["assets"])
     # Everything above came from an unsigned REST response. GitHub also signs a
     # statement about an immutable release and its exact asset set; require the two
     # to agree, so a rewritten API answer cannot decide what was published.

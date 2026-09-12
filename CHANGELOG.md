@@ -20,6 +20,9 @@
 
 ### Fixed
 
+- Explicit `relkit_sync` guard-refresh plans use the installed CLI, including when
+  the project copy cannot recognize a newly required workflow pin. Hook changes
+  require their own reviewed plan and authority before a separate CLI update.
 - Changelog boundaries follow publications, with checks for changes omitted from
   skipped candidates. Published tag drift and deleted known releases require explicit
   reconciliation; draft and prerelease records do not become stable predecessors.

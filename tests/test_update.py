@@ -705,8 +705,11 @@ class UpdateTests(UpdateFixture):
 
     def test_guard_only_audit_failure_leaves_hook_and_projection_untouched(self) -> None:
         old_hook = self.guard()
-        current = artifact_bytes("0.6.0", audit_exit=1)
+        current = artifact_bytes("0.6.0")
         self.projection.write_bytes(current)
+        self.policy.write_text(POLICY + 'private_paths = ["private.txt"]\n')
+        (self.root / "private.txt").write_text("private fixture")
+        self.git("add", "private.txt")
         self.assertEqual(2, self.invoke(refresh_guard=True)[0])
         self.assertEqual(old_hook, self.hook.read_bytes())
         self.assertEqual(current, self.projection.read_bytes())

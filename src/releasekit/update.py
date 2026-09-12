@@ -609,19 +609,21 @@ def run(
                 )
                 return 0
             _confirm(yes)
-            # Check the verified candidate in its own interpreter before replacing
-            # a zipapp that might be running this updater on Windows.
-            candidate_path = Path(temporary) / "candidate.pyz"
-            candidate_path.write_bytes(payload)
-            workspace.remember(candidate_path)
-            output = _run(
-                [sys.executable, str(candidate_path), "--version"],
-                root,
-                environment=workspace.environment(),
-            )
-            if not output.startswith(f"release-kit {candidate.version} "):
-                raise UpdateError("candidate runtime version does not match the inspected artifact")
             if not refresh_guard:
+                # Check the verified candidate in its own interpreter before replacing
+                # a zipapp that might be running this updater on Windows.
+                candidate_path = Path(temporary) / "candidate.pyz"
+                candidate_path.write_bytes(payload)
+                workspace.remember(candidate_path)
+                output = _run(
+                    [sys.executable, str(candidate_path), "--version"],
+                    root,
+                    environment=workspace.environment(),
+                )
+                if not output.startswith(f"release-kit {candidate.version} "):
+                    raise UpdateError(
+                        "candidate runtime version does not match the inspected artifact"
+                    )
                 _clean(root)
             _check_inputs(root, inputs)
             if (
@@ -654,10 +656,28 @@ def run(
             try:
                 if not refresh_guard:
                     _atomic(projection, payload, int(receipt["projection_mode"]))
-                audit = [sys.executable, str(candidate_path), "audit", "--root", str(root)]
-                if no_download:
-                    audit.append("--no-download")
-                _run(audit, root, environment=workspace.environment())
+                if refresh_guard:
+                    # The installed updater validates its own guard schema. Executing
+                    # the old projection here would reintroduce the migration gap.
+                    from . import publication
+
+                    if publication.run(
+                        root,
+                        history=False,
+                        staged=False,
+                        strict=False,
+                        owner_mode=False,
+                        require_overlay=False,
+                        allow_download=not no_download,
+                    ):
+                        raise UpdateError(
+                            "current-tool publication audit failed during guard refresh"
+                        )
+                else:
+                    audit = [sys.executable, str(candidate_path), "audit", "--root", str(root)]
+                    if no_download:
+                        audit.append("--no-download")
+                    _run(audit, root, environment=workspace.environment())
                 _check_inputs(root, inputs)
                 if protection._sha256(_safe_path(projection, root)) != candidate.sha256:
                     raise UpdateError("projection changed during validation")

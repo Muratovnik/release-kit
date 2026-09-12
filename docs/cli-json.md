@@ -80,6 +80,11 @@ update; it must not be interpreted as proof that no side effects occurred.
   `install --dry-run` returns `data.plan` with exact before/after hook hashes,
   guarded inputs, effective dispatcher identity and `plan_sha256`; pass that hash
   with `install --plan-hash HASH` to reject drift. Preview does not write a hook.
+- `release next`: `data.next` contains the published `previous` identity, selected
+  `version`/`tag`, explicit `bump` and independent `tag_state` (available/occupied).
+- `release prepare`: `data.candidate` records the local attempt, plan fingerprint,
+  CI identity, outcome and receipt/log paths. A passing candidate is included in
+  subsequent `data.plan.candidate`; preparation never creates a stable tag.
 - `release plan`: `data.plan` is the existing described plan, including
   `plan_sha256`, pinned SHA, previous tag, exact refspecs, assets, future actions,
   statically read `workflow_jobs` (declared/unverified/optional), the planning

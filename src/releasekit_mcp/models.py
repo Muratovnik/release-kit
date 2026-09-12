@@ -115,14 +115,17 @@ class Sync(Request):
     action: Literal["status", "plan", "apply", "rollback_plan", "rollback"] = "status"
     plan_hash: str = ""
     no_download: bool = False
+    refresh_guard: bool = False
     authorization: UserAuthorization | None = None
 
     @model_validator(mode="after")
     def exact_action(self):
+        if self.refresh_guard and self.action not in ("plan", "apply"):
+            raise ValueError("refresh_guard is only valid for sync plan/apply")
         if self.action in ("status", "plan", "rollback_plan") and self.plan_hash:
             raise ValueError("plan_hash is only valid for apply/rollback")
         if self.authorization and self.authorization.scope != {
-            "apply": "sync_update",
+            "apply": "protect_install" if self.refresh_guard else "sync_update",
             "rollback": "sync_rollback",
         }.get(self.action):
             raise ValueError("authorization must match sync apply/rollback scope")

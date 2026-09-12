@@ -28,7 +28,7 @@ owns their versions, official release URLs, SHA-256 digests, platform selection 
 invocation. An adopting repository owns only `relkit.toml` and, where needed, a narrow
 `.betterleaks.toml`. It does not carry download snippets or another secret/link parser.
 
-An optional `relkit release plan/run/resume/status/abandon` coordinator connects a
+An optional `relkit release next/prepare/plan/run/resume/status/verify` coordinator connects a
 prepared commit, annotated tag, existing tag CI and verified publication. CI remains
 the sole publisher; project commands own build/test/application details. See the
 [managed-release contract and adoption prerequisites](docs/release-coordinator.md).

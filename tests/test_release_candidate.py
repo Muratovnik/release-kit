@@ -79,12 +79,15 @@ class CandidateTests(ReleaseFixture):
             "passed", candidate.draft(self.runner, self.github, "1.0.0", target)["verification"]
         )
         self.github.extra_asset = True
-        with self.assertRaisesRegex(ReleaseError, "draft assets differ"):
+        with self.assertRaisesRegex(ReleaseError, "assets differ"):
             candidate.draft(self.runner, self.github, "1.0.0", target)
 
     def test_failure_can_retry_same_number_and_keeps_attempts(self):
         self.run_data["conclusion"] = "failure"
-        self.assertNotEqual(0, self.prepare()[0])
+        code, output = self.prepare()
+        self.assertNotEqual(0, code)
+        self.assertIn("receipt:", output)
+        self.assertIn("log:", output)
         self.assertFalse(candidate.receipt_path(self.root, "v1.0.0").exists())
         self.run_data["conclusion"] = "success"
         code, output = self.prepare()

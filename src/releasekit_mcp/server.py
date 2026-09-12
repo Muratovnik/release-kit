@@ -342,6 +342,7 @@ def create_server(bridge=None, *, projects=None, bundle=None):
                             action=request.action,
                             plan_hash=request.plan_hash,
                             no_download=request.no_download,
+                            refresh_guard=request.refresh_guard,
                         )
                     )
                 )
@@ -367,7 +368,7 @@ def create_server(bridge=None, *, projects=None, bundle=None):
                 "with sync_update scope and plan's review_sha256, or native confirmation. "
                 "Rollback authorization uses sync_rollback and rollback_plan's review_sha256; "
                 "rollback_plan/rollback use the project's receipt. Never downgrades or "
-                "silently changes a project when the plugin updates."
+                "silently changes a project when the plugin updates. Explicit refresh_guard on plan/apply reviews and refreshes the existing guard using the installed CLI without changing the project pin; apply requires protect_install scope. Review changed inputs, then request a separate CLI update plan."
             ),
             annotations=ToolAnnotations(destructive_hint=True, open_world_hint=True),
         )
@@ -397,6 +398,7 @@ def create_server(bridge=None, *, projects=None, bundle=None):
                             action=request.action,
                             plan_hash=request.plan_hash,
                             no_download=request.no_download,
+                            refresh_guard=request.refresh_guard,
                         ),
                         prepared.prepared,
                         approval.data,
