@@ -44,9 +44,9 @@ class Projects:
             "AGENTS.md",
             ".git/hooks/pre-push",
         ]
-        if policy.release is not None:
-            # The workflow is what publishes, and the owner guard pins it. A change
-            # to it must expire this binding exactly like a change to the policy.
+        if policy.release is not None and policy.release.workflow:
+            # Only the Actions publisher has a workflow. An empty local-publisher
+            # workflow would name the project root, not a stampable policy file.
             names.append(policy.release.workflow)
         inputs = {name: bridge.stamp(bridge.root / name) for name in dict.fromkeys(names)}
         if inputs["relkit.toml"] != policy_stamp:

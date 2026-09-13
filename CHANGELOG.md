@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- MCP project review and binding accept the `directory` and `github` publishers
+  without a workflow file. Policy changes still invalidate bindings; the Actions
+  publisher continues to track its configured workflow.
+
 ## [0.21.1](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.1) - 2026-09-12
 
 ### Fixed
