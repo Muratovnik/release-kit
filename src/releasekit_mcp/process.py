@@ -53,19 +53,9 @@ async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024
                 else {"start_new_session": True}
             )
             if os.name == "nt":
-                import win32api
-                import win32job
+                from releasekit._winjob import Job
 
-                job = win32job.CreateJobObject(None, "")
-                info = win32job.QueryInformationJobObject(
-                    job, win32job.JobObjectExtendedLimitInformation
-                )
-                info["BasicLimitInformation"]["LimitFlags"] |= (
-                    win32job.JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
-                )
-                win32job.SetInformationJobObject(
-                    job, win32job.JobObjectExtendedLimitInformation, info
-                )
+                job = Job()
             process = await anyio.open_process(
                 [sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(path), digest, *argv],
                 cwd=root,
@@ -73,11 +63,7 @@ async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024
                 **options,
             )
             if job is not None:
-                handle = win32api.OpenProcess(0x0100 | 0x0001, False, process.pid)
-                try:
-                    win32job.AssignProcessToJobObject(job, handle)
-                finally:
-                    handle.Close()
+                job.assign(process.pid)
             await process.stdin.send(b"1")
             await process.stdin.aclose()
         with anyio.fail_after(timeout):
@@ -95,18 +81,22 @@ async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024
         return code, bytes(stdout), stderr.decode("utf-8", errors="replace"), stderr_truncated
     finally:
         with anyio.CancelScope(shield=True):
-            if job is not None:
-                job.Close()  # kills any surviving descendants, including after normal exit
-            elif process is not None and os.name != "nt":
-                try:
-                    os.killpg(process.pid, signal.SIGKILL)
-                except ProcessLookupError:
-                    pass
-            if process is not None:
-                if process.returncode is None:
+            try:
+                if job is not None:
+                    await anyio.to_thread.run_sync(job.stop)
+                elif process is not None and os.name != "nt":
                     try:
-                        process.kill()
+                        os.killpg(process.pid, signal.SIGKILL)
                     except ProcessLookupError:
                         pass
-                await process.wait()
-                await process.aclose()
+            finally:
+                if job is not None:
+                    job.close()
+                if process is not None:
+                    if process.returncode is None:
+                        try:
+                            process.kill()
+                        except ProcessLookupError:
+                            pass
+                    await process.wait()
+                    await process.aclose()

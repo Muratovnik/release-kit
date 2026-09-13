@@ -103,6 +103,23 @@ def main():
 
         self.run_async(scenario)
 
+    @unittest.skipUnless(os.name == "nt", "Windows descendant teardown regression")
+    def test_timeout_releases_descendant_cwd_before_returning(self):
+        path, digest = self.sleeper()
+
+        async def scenario():
+            for index in range(3):
+                cwd = self.root / f"child cwd {index}"
+                cwd.mkdir()
+                with self.assertRaises(TimeoutError):
+                    await process.execute(path, digest, [], cwd, dict(os.environ), 0.7)
+                marker = cwd / "pids.json"
+                self.assertTrue(marker.is_file(), "the descendant must have started")
+                marker.unlink()
+                cwd.rmdir()
+
+        self.run_async(scenario)
+
     def test_cancellation_kills_owned_tree(self):
         path, digest = self.sleeper()
 
@@ -152,7 +169,7 @@ def main():
 
         async def scenario():
             with (
-                patch("win32job.AssignProcessToJobObject", side_effect=OSError("job refused")),
+                patch("releasekit._winjob.Job.assign", side_effect=OSError("job refused")),
                 self.assertRaisesRegex(OSError, "job refused"),
             ):
                 await process.execute(path, digest, [], self.root, dict(os.environ), 5)

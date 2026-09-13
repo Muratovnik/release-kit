@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import storage
+from .. import processes, storage
 
 
 class ReleaseError(RuntimeError):
@@ -62,7 +62,7 @@ class Runner:
             env["PYTHONDONTWRITEBYTECODE"] = "1"
         handle = storage.checked(output).open("xb") if output else None
         try:
-            result = subprocess.run(
+            result = processes.run(
                 args,
                 cwd=cwd or self.root,
                 env=env,

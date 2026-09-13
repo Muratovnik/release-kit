@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from .. import canonical, storage
+from .. import canonical, processes, storage
 from . import candidate, coordinator
 from .backend import ReleaseError, clean
 
@@ -91,6 +91,8 @@ def prepare(runner, store, value, no_download, result):
     print(f"relkit release: local preparation {value['tag']}; log: {runner.log}", flush=True)
     try:
         with storage.temporary(runner.root, "candidate-") as workspace:
+            state["temporary"] = str(workspace.path)
+            storage.atomic_json(path, state)
             runner.temporary = workspace.path / "runtime"
             runner.temporary.mkdir()
             temporary = workspace.path / "project-temp"
@@ -130,8 +132,12 @@ def prepare(runner, store, value, no_download, result):
                     candidate=record,
                     candidate_sha256=canonical.fingerprint(record),
                 )
+            except processes.CleanupError:
+                state["process_cleanup"] = "unconfirmed"
+                raise
             finally:
-                workspace.remember(runner.temporary)
+                if state.get("process_cleanup") != "unconfirmed":
+                    workspace.remember(runner.temporary)
         storage.atomic_json(path, state)
         storage.atomic_json(candidate.receipt_path(runner.root, value["tag"]), state)
         result.data["candidate"] = {**state, "receipt": str(path), "assets": str(directory)}
@@ -139,11 +145,14 @@ def prepare(runner, store, value, no_download, result):
             f"relkit release: prepared {value['tag']} locally; no tag or hosting write; assets: {directory}"
         )
     except BaseException as error:
-        state.update(status="failed", error=str(error))
+        unconfirmed = isinstance(error, processes.CleanupError)
+        state.update(status="cleanup-unconfirmed" if unconfirmed else "failed", error=str(error))
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(
-            f"relkit release: preparation failed; retry the same version; receipt: {path}; log: {runner.log}",
+            "relkit release: preparation failed; "
+            + ("verify owned commands before recovery" if unconfirmed else "retry the same version")
+            + f"; receipt: {path}; log: {runner.log}",
             file=sys.stderr,
         )
         raise

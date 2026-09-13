@@ -16,6 +16,8 @@ import tempfile
 from contextlib import contextmanager
 from pathlib import Path
 
+from .processes import CleanupError
+
 
 class StorageError(RuntimeError):
     """An owned path cannot safely be used."""
@@ -229,11 +231,15 @@ class Workspace:
 @contextmanager
 def temporary(root: Path, prefix: str):
     workspace = Workspace(root, prefix)
+    unconfirmed = False
     try:
         yield workspace
+    except CleanupError:
+        unconfirmed = True
+        raise
     finally:
         try:
-            clean = workspace.cleanup()
+            clean = False if unconfirmed else workspace.cleanup()
         except (OSError, StorageError):
             clean = False
         if not clean:

@@ -48,8 +48,15 @@ must not be read as proof of no side effects.
 Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `check_error`, `check_failed`, `engine_error`, `protection_error`, `invalid_notes`,
 `missing_notes`, `confirmation_required`, `update_error`, `release_error`,
-`release_pending`, `interrupted`, `internal_error` and fallback `command_failed`.
+`release_pending`, `release_cleanup_unconfirmed`, `interrupted`, `internal_error`
+and fallback `command_failed`.
 `lock_retained` is a warning.
+
+`release_cleanup_unconfirmed` retains the release lock and recovery evidence.
+`data.process_cleanup` and, when available, `data.release.process_cleanup` are
+`unconfirmed`; `next_action` is `null`. Verify the owned commands and descendants
+have stopped before removing the exact retained lock. A stopped parent PID is
+insufficient, and an unknown remote outcome still needs reconciliation.
 
 ## Command payloads
 

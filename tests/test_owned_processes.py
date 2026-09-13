@@ -16,6 +16,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from releasekit import processes
+from releasekit.release.backend import CommandError, Pending, Runner
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -96,6 +97,24 @@ class OwnedProcessTests(unittest.TestCase):
         result = processes.run(command, cwd=self.root, env=self.environment, timeout=5)
         self.assertEqual(0, result.returncode)
         self.assert_no_late_write(ready, late)
+
+    def test_coordinator_keeps_timeout_unknown_but_stops_owned_workers(self):
+        command, ready, late = self.tree()
+        with self.assertRaises(Pending):
+            Runner(self.root).call(command, cwd=self.root, timeout=2)
+        self.assert_no_late_write(ready, late)
+
+    def test_coordinator_preserves_native_failure_and_binary_output(self):
+        runner = Runner(self.root)
+        output = self.root / "output.bin"
+        runner.call(
+            self.command("import sys; sys.stdout.buffer.write(bytes([0,255,1]))"), output=output
+        )
+        self.assertEqual(bytes([0, 255, 1]), output.read_bytes())
+        with self.assertRaises(CommandError) as raised:
+            runner.call(self.command("import sys; sys.stderr.write('diagnostic'); sys.exit(7)"))
+        self.assertEqual(7, raised.exception.result.returncode)
+        self.assertEqual(b"diagnostic", raised.exception.result.stderr)
 
     def test_missing_executable_fails_without_running_fallback(self):
         # Windows reports the wrapper's native error as a nonzero result; it never

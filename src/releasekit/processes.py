@@ -87,7 +87,17 @@ def _stop(process, job, *, graceful=True) -> None:
             except ProcessLookupError:
                 pass
         process.wait(timeout=_GRACE)
-    except (OSError, subprocess.TimeoutExpired, TimeoutError) as error:
+        if job is None:
+            deadline = time.monotonic() + _GRACE
+            while True:
+                try:
+                    os.killpg(process.pid, 0)
+                except ProcessLookupError:
+                    break
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("owned process group did not disappear after termination")
+                time.sleep(0.01)
+    except (OSError, subprocess.TimeoutExpired, TimeoutError, KeyboardInterrupt) as error:
         raise CleanupError("owned command cleanup is unconfirmed; retain its state lock") from error
 
 

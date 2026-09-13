@@ -158,19 +158,25 @@ Review retained failure directories before removing them.
 
 ## Command lifetime and reuse decisions
 
-Distribution stages use a bounded command runner. Commands receive separate
-arguments and noninteractive stdin, with a 1800-second limit per stage.
+The coordinator and distribution stages use the same bounded command runner.
+Commands receive separate arguments and noninteractive stdin. Distribution stages
+have a 1800-second limit; coordinator commands retain their configured limit.
 POSIX execution owns a process group. Cooperative release-kit runners handle SIGTERM,
 stop their nested workers and unwind before releasing shared state; a short grace
 period precedes the final group kill. Windows uses a native kill-on-close Job Object
 and a startup barrier so the command cannot spawn outside the job before assignment.
 Windows cleanup waits for process teardown as well as empty job accounting before
-returning. The coordinator and asynchronous MCP executor retain their existing
-execution paths; adopting this runner there requires separate recovery checks.
+returning. The asynchronous MCP executor also uses this Windows Job adapter and
+waits for its cleanup without blocking the event loop.
 
 Timeouts remain failures/unknown remote outcomes, not proof a publication did not
 happen. Ordinary owned descendants are stopped on timeout, interruption and normal
-exit. An unconfirmed cleanup keeps the distribution state lock. Forced host kills,
+exit. An unconfirmed cleanup keeps the distribution or release state lock, receipt,
+log and scratch. `prepare`, `run` and `resume` return a structured
+`release_cleanup_unconfirmed` error and no automatic retry suggestion. Confirm
+that all owned commands and descendants have stopped before removing that exact
+lock; preserve receipts and use the same version to reconcile remote outcomes.
+Forced host kills,
 power loss and POSIX descendants deliberately leaving their group cannot promise
 cooperative reporting or cleanup; retained state requires explicit recovery, not a
 PID-only unlock. No global PID search or termination of unrelated processes occurs.

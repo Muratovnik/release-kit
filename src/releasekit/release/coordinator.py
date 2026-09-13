@@ -16,7 +16,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
-from .. import __version__, canonical, config, owner, protection, publication, storage
+from .. import __version__, canonical, config, owner, processes, protection, publication, storage
 from ..result import Result
 from . import changelog, settings, versions
 from .backend import (
@@ -665,6 +665,7 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
                 "publication",
                 "verification",
                 "cleanup",
+                "process_cleanup",
                 "stage",
                 "stages",
                 "ci",
@@ -1436,8 +1437,9 @@ def _acquire_lock(root: Path, tag: str) -> Path:
             stream.write(json.dumps({"pid": os.getpid(), "tag": tag, "root": str(root)}))
     except FileExistsError as error:
         raise ReleaseError(
-            f"another release owns {lock}: {_lock_owner(lock)}; after a crash verify its "
-            "PID is stopped before manually removing this exact lock"
+            f"another release owns {lock}: {_lock_owner(lock)}; after a crash verify all "
+            "owned commands and descendants have stopped before manually removing this exact "
+            "lock; a stopped PID alone is insufficient"
         ) from error
     return lock
 
@@ -1531,6 +1533,8 @@ def run(
     state = None
     state_path = None
     lock = None
+    lock_identity = None
+    cleanup_unconfirmed = False
     workspace = None
     try:
         root = storage.checked(root)
@@ -1614,6 +1618,7 @@ def run(
             if publish or plan_hash:
                 raise ReleaseError("prepare never publishes; review the resulting plan afterwards")
             lock = _acquire_lock(root, tag)
+            lock_identity = storage.identity(lock)
             value = plan(runner, version, github=github, candidate_receipt=False)
             github = publisher(runner, settings.parse(value["settings"]), github)
             if settings.local(value["settings"]):
@@ -1646,6 +1651,7 @@ def run(
             return 0
         if action == "abandon":
             lock = _acquire_lock(root, tag)
+            lock_identity = storage.identity(lock)
             path = storage.checked(_state_path(root, tag))
             saved = read_state(runner, path, tag, same_version=False)
             _abandon(runner, github, saved, path, reason.strip())
@@ -1662,6 +1668,7 @@ def run(
                 "run/resume require --publish after reviewing release plan; plan is read-only"
             )
         lock = _acquire_lock(root, tag)
+        lock_identity = storage.identity(lock)
         state_path = storage.checked(_state_path(root, tag))
         if action in {"resume", "verify"}:
             saved = read_state(runner, state_path, tag, same_version=False)
@@ -1718,6 +1725,7 @@ def run(
         runner.log.chmod(0o600)
         github = publisher(runner, settings.parse(value["settings"]), github)
         state["verification"] = "not-run"
+        state.pop("process_cleanup", None)
         # Reconciliation precedes project commands, downloads, retries and cleanup.
         pushed, existing = _reconcile(runner, github, state)
         _save(state_path, state)
@@ -1784,6 +1792,7 @@ def run(
             print(f"relkit release: cleanup retained changed/unowned files: {state['temporary']}")
         return 0
     except (
+        processes.CleanupError,
         ReleaseError,
         config.ConfigError,
         storage.StorageError,
@@ -1794,16 +1803,30 @@ def run(
         TypeError,
         KeyboardInterrupt,
     ) as error:
+        cleanup_unconfirmed = isinstance(error, processes.CleanupError)
         if isinstance(error, KeyboardInterrupt):
             error = Pending("interrupted; resume to reconcile the actual remote state")
-        result.error("release_pending" if isinstance(error, Pending) else "release_error", error)
+        result.error(
+            "release_cleanup_unconfirmed"
+            if cleanup_unconfirmed
+            else "release_pending"
+            if isinstance(error, Pending)
+            else "release_error",
+            error,
+        )
+        if cleanup_unconfirmed:
+            result.data["process_cleanup"] = "unconfirmed"
+            result.next_action = None
         if state is not None and state_path is not None:
             state["error"] = str(error)
+            if cleanup_unconfirmed:
+                state["process_cleanup"] = "unconfirmed"
+                state["cleanup"] = "retained-process-cleanup-unconfirmed"
             if state["verification"] == "running":
                 state["verification"] = "failed"
             if (stage := state.get("stage")) and state.get("stages", {}).get(stage) == "running":
                 state["stages"][stage] = "pending" if isinstance(error, Pending) else "failed"
-            if workspace is not None:
+            if workspace is not None and not cleanup_unconfirmed:
                 # Only known unchanged scratch bytes are disposable. Keep receipt/log
                 # and any changed/unknown files, never recursively sweep a directory.
                 try:
@@ -1847,16 +1870,18 @@ def run(
             runner.log = original_log
         if lock is not None:
             try:
+                if cleanup_unconfirmed or storage.identity(lock) != lock_identity:
+                    raise storage.StorageError("release ownership must be retained")
                 storage.checked(lock).unlink()
             except (OSError, storage.StorageError):
                 result.warnings.append(
                     {
                         "code": "lock_retained",
                         "path": str(lock),
-                        "message": "Inspect the retained release lock",
+                        "message": "Verify owned commands and descendants before removing the retained release lock",
                     }
                 )
                 print(
-                    f"relkit release: lock changed or could not be removed; inspect {lock}",
+                    f"relkit release: lock retained; verify owned commands and descendants before recovery: {lock}",
                     file=sys.stderr,
                 )

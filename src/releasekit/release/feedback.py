@@ -19,6 +19,7 @@ def facts(state: dict) -> dict:
         "ci_verdict": ci,
         "acceptance": "accepted"
         if publication == "published"
+        and state.get("process_cleanup") != "unconfirmed"
         and state["verification"] == "passed"
         and (
             ci == "passed"
@@ -32,7 +33,11 @@ def facts(state: dict) -> dict:
 
 
 def next_action(state: dict) -> list[str] | None:
-    if state.get("outcome") or facts(state)["acceptance"] == "accepted":
+    if (
+        state.get("process_cleanup") == "unconfirmed"
+        or state.get("outcome")
+        or facts(state)["acceptance"] == "accepted"
+    ):
         return None
     value = state["plan"]
     if state["publication"] == "published" and state["verification"] != "passed":

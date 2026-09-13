@@ -10,7 +10,7 @@ import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from .. import canonical, config, storage
+from .. import canonical, config, processes, storage
 from . import settings
 from .backend import Pending, ReleaseError, clean
 
@@ -224,7 +224,17 @@ def prepare(runner, github, value, run_id, no_download, result):
             f"relkit release: candidate {value['tag']} prepared at {value['sha']}; no tag created; receipt: {path}"
         )
     except BaseException as error:
-        state.update(status="pending" if isinstance(error, Pending) else "failed", error=str(error))
+        unconfirmed = isinstance(error, processes.CleanupError)
+        state.update(
+            status="cleanup-unconfirmed"
+            if unconfirmed
+            else "pending"
+            if isinstance(error, Pending)
+            else "failed",
+            error=str(error),
+        )
+        if unconfirmed:
+            state["process_cleanup"] = "unconfirmed"
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(

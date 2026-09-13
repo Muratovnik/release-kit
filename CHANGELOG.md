@@ -14,6 +14,10 @@
 
 ### Fixed
 
+- Release commands now clean up owned descendants on completion, timeout and
+  interruption. Unconfirmed cleanup preserves the release lock, receipt and scratch
+  across prepare/run/resume, with a structured error instead of a traceback or an
+  unsafe retry suggestion. Windows command and MCP cleanup share a native Job adapter.
 - Dotbot manifests are parsed completely, including quoted keys, comments, flow
   mappings and aliases. Unsupported links and duplicate keys refuse the whole
   manifest instead of silently omitting mounts. JSON needs no extra dependency;
