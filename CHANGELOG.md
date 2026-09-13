@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [0.22.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.22.0) - 2026-09-13
+
 ### Added
 
 - A standalone CLI quick start, exact starter policies and plugin marketplace
