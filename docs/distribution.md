@@ -124,6 +124,11 @@ never discovers an ancestor's checkout or invents a source SHA: the coordinator
 receipt binds its source and candidate. A standalone package check proves the
 behavior of the supplied bytes, not their source origin.
 
+The packaged stdio smoke starts two clients concurrently against a fresh runtime.
+On Windows it also nests the extracted package so dependency installation crosses
+the legacy path-length boundary even when the selected scratch parent is short.
+Both clients must discover tools, inspect the fixture and report aligned files.
+
 ## Check state and reports
 
 A checkout defaults to ignored `.cache/release-kit-checks/`. With `--work-dir`,

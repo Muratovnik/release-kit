@@ -11,7 +11,9 @@ import tempfile
 import tomllib
 import unittest
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from pathlib import Path
+from threading import Event
 from unittest.mock import patch
 
 from releasekit import __version__, distribution, storage
@@ -23,6 +25,63 @@ BUILDER = runpy.run_path(str(ROOT / "tools/build_plugin.py"))
 
 
 class PluginBuildTests(unittest.TestCase):
+    def test_windows_runtime_paths_support_long_drive_and_unc_locations(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        with patch.object(sys, "platform", "win32"):
+            for value, expected in (
+                ("C:\\example project\\cache", "\\\\?\\C:\\example project\\cache"),
+                ("\\\\server\\share\\cache", "\\\\?\\UNC\\server\\share\\cache"),
+                ("\\\\?\\C:\\example\\cache", "\\\\?\\C:\\example\\cache"),
+            ):
+                self.assertEqual(expected, launcher["process_path"](value))
+        with patch.object(sys, "platform", "linux"):
+            self.assertEqual("/example/cache", launcher["process_path"]("/example/cache"))
+
+    def test_concurrent_cold_launch_waits_for_runtime_receipt(self):
+        with tempfile.TemporaryDirectory(prefix="cold plugin ") as temporary:
+            folder = Path(temporary)
+            output = folder / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as archive:
+                archive.extractall(folder)
+            package = folder / "release-kit"
+            launcher = runpy.run_path(str(package / "scripts/launch.py"))
+            writing, release, entered = Event(), Event(), Event()
+            atomic_json = storage.atomic_json
+
+            def paused_receipt(path, value):
+                writing.set()
+                if not release.wait(10):
+                    raise RuntimeError("test did not release receipt writer")
+                atomic_json(path, value)
+
+            def second_launch():
+                entered.set()
+                return launcher["main"]([])
+
+            with (
+                patch.object(sys, "path", list(sys.path)),
+                patch("shutil.which", return_value="uv"),
+                patch("subprocess.call", return_value=0) as invoke,
+                patch.object(storage, "atomic_json", side_effect=paused_receipt),
+                ThreadPoolExecutor(max_workers=2) as pool,
+            ):
+                first = pool.submit(launcher["main"], [])
+                try:
+                    self.assertTrue(writing.wait(10))
+                    second = pool.submit(second_launch)
+                    self.assertTrue(entered.wait(10))
+                    # A contender must wait while ownership is being published.
+                    with self.assertRaises(TimeoutError):
+                        second.result(timeout=0.5)
+                finally:
+                    release.set()
+                self.assertEqual(0, first.result(timeout=10))
+                self.assertEqual(0, second.result(timeout=10))
+                self.assertEqual(4, invoke.call_count)
+            receipt = json.loads((package / ".runtime/owner.json").read_text())
+            self.assertEqual(storage.digest(package / "uv.lock"), receipt["lock_sha256"])
+
     def test_distributions_carry_the_license_and_human_package_metadata(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text())["project"]
         self.assertTrue(project.get("authors"), "the declared human maintainer must be identified")
@@ -85,17 +144,35 @@ class PluginBuildTests(unittest.TestCase):
             ):
                 self.assertEqual(0, launcher["main"]([]))
                 environment = invoke.call_args.kwargs["env"]
-                self.assertEqual(str(runtime / "venv"), environment["UV_PROJECT_ENVIRONMENT"])
-                self.assertEqual(str(runtime / "cache"), environment["UV_CACHE_DIR"])
-                self.assertEqual(str(runtime / "tmp"), environment["TEMP"])
+                prefix = "\\\\?\\" if sys.platform == "win32" else ""
+                self.assertEqual(
+                    prefix + str(runtime / "venv"), environment["UV_PROJECT_ENVIRONMENT"]
+                )
+                self.assertEqual(prefix + str(runtime / "cache"), environment["UV_CACHE_DIR"])
+                self.assertEqual(prefix + str(runtime / "tmp"), environment["TEMP"])
                 self.assertNotIn("UV_OFFLINE", environment)
                 for leaf in ("tmp", "cache", "venv"):
                     self.assertIn(((package, runtime / leaf),), checked.call_args_list)
                 self.assertEqual(0, launcher["main"]([]))
+                owner = (runtime / "owner.json").read_bytes()
                 (runtime / "owner.json").write_text("{}", encoding="utf-8")
                 with self.assertRaisesRegex(ValueError, "ownership/version"):
                     launcher["main"]([])
-                self.assertEqual(2, invoke.call_count)
+                self.assertEqual(4, invoke.call_count)
+                (runtime / "owner.json").unlink()
+                with self.assertRaisesRegex(ValueError, "ownership/version"):
+                    launcher["main"]([])
+                self.assertFalse((runtime / "owner.json").exists())
+                self.assertEqual(4, invoke.call_count)
+                (runtime / "owner.json").write_bytes(owner)
+                invoke.reset_mock()
+                invoke.side_effect = [7, 0, 0]
+                self.assertEqual(7, launcher["main"]([]))
+                self.assertEqual(1, invoke.call_count)
+                self.assertEqual("sync", invoke.call_args.args[0][1])
+                self.assertEqual(0, launcher["main"]([]))
+                self.assertEqual(3, invoke.call_count)
+                self.assertIn("--no-sync", invoke.call_args.args[0])
 
     def test_deterministic_complete_package_and_read_only_check(self):
         with tempfile.TemporaryDirectory(prefix="plugin space ") as temporary:

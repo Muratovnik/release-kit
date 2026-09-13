@@ -114,6 +114,15 @@ Expect JSON with `valid: true` and equal `plugin`, `runtime`, `lock`, `cli` and
 `inventory` component versions. This verifies packaged hashes/versions without
 creating `.runtime/`; it does **not** prove MCP startup or native-client discovery.
 
+Cold starts serialize runtime ownership and `uv sync --locked` using an OS file
+lock at `.runtime.lock`. The lock file stays in place; do not delete it while
+clients may be starting. Waiting is bounded to 150 seconds. Servers release this
+lock before running, so multiple clients can remain connected independently.
+A missing or mismatched receipt in an existing `.runtime/` still refuses startup;
+install a fresh complete package instead of claiming that directory. Windows
+runtime paths use the extended path format so nested caches and installed wheels
+can exceed the legacy path limit without changing global system settings.
+
 In a fresh client session, verify the release-kit skill and tools are discovered,
 including `relkit_project`, `relkit_sync`, `relkit_audit` and `relkit_release`.
 For a first useful read, use an existing project installed through the

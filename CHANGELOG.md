@@ -16,6 +16,11 @@
 
 ### Fixed
 
+- Concurrent cold plugin starts serialize runtime ownership and locked dependency
+  installation before running independent servers. Incomplete or foreign receipts
+  still refuse startup, and a failed installation never starts the server.
+- The packaged plugin uses extended Windows paths for its private cache, environment
+  and temporary files, including deeply nested release preparation directories.
 - Release commands now clean up owned descendants on completion, timeout and
   interruption. Unconfirmed cleanup preserves the release lock, receipt and scratch
   across prepare/run/resume, with a structured error instead of a traceback or an

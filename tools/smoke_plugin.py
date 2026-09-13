@@ -114,7 +114,14 @@ def smoke(archive_path: Path, directory: Path, version: str) -> None:
     import anyio
     from mcp import Client, StdioServerParameters
 
-    package = extract(archive_path, directory)
+    if sys.platform == "win32":
+        # Exercise uv's real cache and wheel installation beyond MAX_PATH even
+        # when the caller selected a short workspace. Keep the adopter path short.
+        directory.mkdir()
+        padding = max(0, 180 - len(str(directory / "plugin space" / "release-kit")))
+        package = extract(archive_path, directory / ("plugin space" + "x" * padding))
+    else:
+        package = extract(archive_path, directory)
     launch = load_launch(package, fixture_environment())
     check_launch(launch, version)
     if (package / ".runtime").exists():
@@ -163,7 +170,12 @@ def smoke(archive_path: Path, directory: Path, version: str) -> None:
                 if aligned.is_error or aligned.structured_content["sync"]["state"] != "aligned":
                     raise RuntimeError(f"built plugin failed read-only alignment: {aligned}")
 
-    anyio.run(scenario)
+    async def concurrent_start():
+        async with anyio.create_task_group() as group:
+            group.start_soon(scenario)
+            group.start_soon(scenario)
+
+    anyio.run(concurrent_start)
     if git(project, project_environment, "rev-parse", "HEAD") != before:
         raise RuntimeError("plugin read changed the fixture commit")
     if git(project, project_environment, "status", "--porcelain"):
