@@ -16,6 +16,8 @@ dependencies = []
 
 [project.optional-dependencies]
 mcp = ["mcp==2.1.1"]
+# YAML compatibility is optional; JSON Dotbot manifests need only the standard library.
+overlay-yaml = ["PyYAML==6.0.3"]
 
 [project.scripts]
 relkit = "releasekit.cli:main"

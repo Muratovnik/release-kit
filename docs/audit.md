@@ -214,9 +214,46 @@ Dotbot creates links; release-kit verifies them. Projects with copy/sync overlay
 may adopt the publication checks independently; changing the ownership/mount model
 is a separate migration. `relkit overlay` diagnoses this contract without repairs.
 
-The current reader supports simple block-style `- link:` mappings with explicit
-destination/source pairs. Richer YAML syntax requires a separately reviewed parser
-change; this version does not claim support for general JSON/YAML manifests.
+### Manifest formats and YAML compatibility
+
+The former line-based YAML reader could omit a later block containing a comment,
+quoted key or flow mapping. It is no longer used. The complete document is parsed
+before any mounts are returned; an unsupported link anywhere refuses the whole list.
+
+JSON uses Python's standard library. Dotbot accepts JSON as well as YAML, so the
+same reviewed `install.conf.yaml` can contain JSON without adding a second list or
+changing release-kit's private-root discovery. For example:
+
+```json
+[{"link": {"../public/.someclient": "local/.someclient"}}]
+```
+
+For existing YAML, install the `overlay-yaml` extra from a reviewed source checkout
+into the isolated Python environment that actually executes the CLI:
+
+```text
+python -m pip install "<reviewed-source-checkout>[overlay-yaml]"
+```
+
+The extra pins PyYAML 6.0.3. Its safe loader handles YAML syntax; release-kit only
+validates explicit, unconditional destination/source pairs. Duplicate mapping keys,
+implicit/extended targets, conditional/glob link defaults and environment/home
+expansions refuse rather than receive a partial verdict. The loader never executes
+Dotbot commands or YAML Python object tags. Missing PyYAML is an actionable error,
+not permission to ignore a block. Base CLI commands and JSON overlays need no extra.
+
+**Compatibility:** upgrading the zipapp alone does not install PyYAML. Review the
+executing interpreter, including a hook's interpreter, before adopting this change.
+The built plugin's existing locked SDK environment does not include PyYAML: use
+JSON in the shared manifest for that path, or the separately installed standalone
+adapter with `[mcp,overlay-yaml]`. Do not edit an installed plugin's lock or use an
+unreviewed global install to suppress the error. No manifest is rewritten or renamed
+automatically. An optional in-place YAML-to-JSON migration must preserve the entire
+Dotbot document, not just its links, and remain an explicit owner-reviewed change.
+
+This dependency is deliberately optional rather than a bundled YAML reimplementation.
+See [Dotbot formats](https://github.com/anishathalye/dotbot#configuration) and
+[PyYAML safe loading](https://pyyaml.org/wiki/PyYAMLDocumentation).
 
 ## Diagnostic and automation interfaces
 

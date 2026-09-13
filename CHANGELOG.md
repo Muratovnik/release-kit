@@ -14,6 +14,12 @@
 
 ### Fixed
 
+- Dotbot manifests are parsed completely, including quoted keys, comments, flow
+  mappings and aliases. Unsupported links and duplicate keys refuse the whole
+  manifest instead of silently omitting mounts. JSON needs no extra dependency;
+  YAML now requires the optional `overlay-yaml` extra in the executing interpreter.
+  Review that environment before updating a zipapp or hook. The locked plugin
+  does not include PyYAML; see [YAML compatibility](docs/audit.md#manifest-formats-and-yaml-compatibility).
 - MCP project review and binding accept the `directory` and `github` publishers
   without a workflow file. Policy changes still invalidate bindings; the Actions
   publisher continues to track its configured workflow.
