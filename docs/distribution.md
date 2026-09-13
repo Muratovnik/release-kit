@@ -159,8 +159,11 @@ Review retained failure directories before removing them.
 ## Command lifetime and reuse decisions
 
 The coordinator and distribution stages use the same bounded command runner.
-Commands receive separate arguments and noninteractive stdin. Distribution stages
-have a 1800-second limit; coordinator commands retain their configured limit.
+Commands receive separate arguments and noninteractive stdin. Each source suite
+has a 3600-second limit; build and package stages retain a 1800-second limit.
+The full base suite can exceed thirty minutes on Windows with owned process
+startup and teardown. This project's coordinator allows 7200 seconds for its
+combined base/MCP command; other repositories retain their configured limit.
 POSIX execution owns a process group. Cooperative release-kit runners handle SIGTERM,
 stop their nested workers and unwind before releasing shared state; a short grace
 period precedes the final group kill. Windows uses a native kill-on-close Job Object

@@ -30,6 +30,6 @@ checks = [["{python}", "tools/check_distribution.py", "--source-only"]]
 # Runs from the committed Git-free snapshot against these exact candidate files.
 smoke = [["{python}", "tools/check_distribution.py", "--assets", "{assets}", "--version", "{version}", "--work-dir", "{temp}"]]
 smoke_platforms = ["linux", "darwin", "win32"]
-# Allow the declared suite and first-start dependency/scanner provisioning.
-command_timeout = 1800
+# The combined source command includes separate bounded base and MCP suites.
+command_timeout = 7200
 require_provenance = false

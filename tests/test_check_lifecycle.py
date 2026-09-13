@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import os
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -53,6 +54,23 @@ class CheckLifecycleTests(unittest.TestCase):
         return [
             json.loads(p.read_text(encoding="utf-8")) for p in self.state.glob("reports/*.json")
         ]
+
+    def test_full_source_suite_can_exceed_thirty_minutes_but_still_has_a_limit(self):
+        for elapsed, expected in ((1801, 0), (3601, 1)):
+            with self.subTest(elapsed=elapsed):
+
+                def command(args, *, timeout, duration=elapsed, **kwargs):
+                    # Model elapsed runtime at the runner boundary without a long sleep.
+                    if duration > timeout:
+                        raise subprocess.TimeoutExpired(args, timeout)
+                    return subprocess.CompletedProcess(args, 0)
+
+                with patch("releasekit.processes.run", side_effect=command):
+                    code, output, _ = self.invoke()
+                self.assertEqual(expected, code, output)
+                self.assertFalse((self.state / "check.lock").exists())
+                if expected:
+                    self.assertIn('"status": "timed-out"', output)
 
     def test_repeated_runs_reuse_sdk_and_cache_but_remove_successful_workspaces(self):
         probe = (

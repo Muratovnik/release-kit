@@ -308,7 +308,13 @@ def main(argv=None) -> int:
         environment = check_environment(ROOT, state, workspace)
         print(f"distribution-check: {report['kind']}; workspace {workspace}", flush=True)
         if assets is None:
-            run_stages(source_checks(ROOT, uv), root=ROOT, environment=environment, report=report)
+            run_stages(
+                source_checks(ROOT, uv),
+                root=ROOT,
+                environment=environment,
+                report=report,
+                timeout=3600,
+            )
             if not arguments.source_only:
                 assets = workspace / "assets"
                 run_stages(
