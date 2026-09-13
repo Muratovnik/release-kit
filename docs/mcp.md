@@ -2,59 +2,52 @@
 status: experimental
 ---
 
-# Full optional MCP adapter
+# Optional MCP adapter
 
-The [installable plugin](plugin.md) combines this adapter with a workflow skill.
-Standalone mode below retains its operator-pinned single-project contract.
-Plugin mode adds explicit human-reviewed bindings; it does not infer the target
-project from the process working directory.
+The [built plugin](plugin.md) combines the adapter and a workflow skill. Standalone
+mode below pins one project at startup. Plugin mode starts without a project and
+uses explicit, reviewed bindings. Neither infers a project from its working directory.
 
-## Decision and boundary
+## Decision and trust boundary
 
-The adapter belongs to release-kit, not to a workstation service or a new
-repository. It runs on stdio when a client starts it, serves one explicitly bound
-project and delegates to that project's pinned `.github/relkit.pyz` JSON CLI.
-It does not install itself, register clients, create a daemon or own release state.
+The adapter is part of release-kit. It runs over stdio when a local client starts
+it and delegates to the project's pinned `.github/relkit.pyz` JSON CLI. It does
+not register clients, install itself, create a daemon or own release state.
 
-**Dependency decision:** use the maintained official Python MCP SDK (`mcp` 2.1.1)
-as an optional package extra, in an isolated environment. Protocol transport,
-negotiation, tool schemas and cancellation notifications belong to the SDK; do
-not recreate a JSON-RPC implementation. The base package and generated zipapp stay
-standard-library-only. The adapter package is excluded from the zipapp.
+The optional runtime uses the official **MCP Python SDK 2.1.1**. Transport,
+negotiation, schemas and cancellation belong to that SDK rather than another
+JSON-RPC implementation. The base package/zipapp remain standard-library-only;
+`releasekit_mcp` is excluded from the zipapp. The built plugin has its own locked
+SDK environment, not a dependency injected into an adopting application.
 
-The adapter exposes every CLI workflow, including writes. Unless the narrow
-existing-user authorization route below applies, native SDK elicitation
-asks the client for human approval of an exact operation; approval is an injected
-parameter, not a model-supplied boolean. The SDK seals modern request state and
-binds responses to the request and rendered question. Older clients use native
-in-call form elicitation. Unsupported clients fail closed on those writes. The client
-must actually ask the human; a client that automatically approves is not a safe
-deployment. Neither tool annotations nor a plan hash is human permission.
+Unless the scoped existing-user route below applies, writes use native SDK
+elicitation for approval of the exact operation. Approval is an injected value,
+not a model-supplied boolean. Modern request state binds a response to the request
+and rendered question; older clients use in-call form elicitation. Unsupported
+clients fail closed on these writes. A client that automatically approves human
+prompts is not a safe deployment. Tool annotations and plan hashes are not consent.
 
-The operator must review the bound project, pinned projection and its policy
-before starting the adapter. A pinned hash detects drift, not malicious code in
-an initially trusted project. Project commands and arbitrary shell commands are
-not MCP tools. Existing hosted releases are never mutated by adapter tests.
+Review the initial project, projection and policy: a hash detects drift, not
+malicious code in an initially trusted package. Project commands are trusted code,
+not sandboxed programs. Arbitrary argv and project-shell commands are not exposed
+as general MCP tools. Live hosted releases are not test fixtures.
 
-The adapter refuses to start with an inherited Git variable that would point Git
-at another repository (`GIT_DIR`, `GIT_WORK_TREE`, `GIT_COMMON_DIR`,
-`GIT_INDEX_FILE`, `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY`,
-`GIT_ALTERNATE_OBJECT_DIRECTORIES`). Variables that only describe how Git talks
-to its operator, such as `GIT_SSH_COMMAND` or `GIT_ASKPASS`, are left alone. A
-reviewed binding stamps `relkit.toml`, the Betterleaks policy, `AGENTS.md`, the
-installed pre-push hook and, when `[release]` is configured, the tag workflow;
-changing any of them expires the binding.
+The adapter refuses inherited Git-location overrides: `GIT_DIR`, `GIT_WORK_TREE`,
+`GIT_COMMON_DIR`, `GIT_INDEX_FILE`, `GIT_NAMESPACE`, `GIT_OBJECT_DIRECTORY` and
+`GIT_ALTERNATE_OBJECT_DIRECTORIES`. Operator transport variables such as
+`GIT_SSH_COMMAND` or `GIT_ASKPASS` are not removed. The reviewed inputs include
+`relkit.toml`, the secret-scanner policy, `AGENTS.md`, the installed pre-push hook
+and the applicable publishing workflow. Changes expire trust in that binding.
 
 Primary references: [official SDK](https://github.com/modelcontextprotocol/python-sdk),
-[SDK installation](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/get-started/installation.md),
-[MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
+[SDK installation](https://github.com/modelcontextprotocol/python-sdk/blob/main/docs/get-started/installation.md)
+and [MCP tools](https://modelcontextprotocol.io/specification/2026-07-28/server/tools).
 
-## Install and bind
+## Install and bind a standalone adapter
 
-Use Python 3.11 or newer. Install from a reviewed release-kit source checkout into
-an isolated environment inside the owning project; do not add dependencies to its
-application runtime. Ignore `.cache/` before provisioning caches. For example,
-from the project root on Windows (replace the source placeholder):
+Use Python 3.11+. From the **adopting project's root**, ignore `.cache/` and create
+an isolated environment. Replace the source placeholder with a reviewed release-kit
+source checkout, not the adopting project's source:
 
 ```powershell
 python -m venv .cache/relkit-mcp-venv
@@ -65,73 +58,105 @@ $env:PIP_CACHE_DIR = "$PWD/.cache/pip"
 .cache/relkit-mcp-venv/Scripts/python.exe -m pip install "<reviewed-source-checkout>[mcp]"
 ```
 
-For POSIX use `.cache/relkit-mcp-venv/bin/python`. The optional SDK pin is 2.1.1;
-the base package and `.pyz` need no SDK. Both packages share the release-kit version.
+For POSIX use `.cache/relkit-mcp-venv/bin/python` and process-local `TMPDIR` and
+`PIP_CACHE_DIR`. The SDK is optional; installing the adapter never upgrades a
+project's CLI. Set up the [standalone CLI first](../README.md#first-check-in-an-existing-project).
 
-The target project must have its own ordinary `.git` directory, `relkit.toml` and
-a reviewed `.github/relkit.pyz` of version 0.9.0 or newer. Upgrade that projection
-through the CLI first. A newer adapter does not upgrade project copies. Configure
-the MCP client to launch the isolated environment's `relkit-mcp` executable with
-these **separate argument values**, substituting the actual canonical root and hash:
+The target needs its own ordinary `.git` directory, `relkit.toml` and a reviewed
+`.github/relkit.pyz` at version 0.9.0+. Configure your client to launch the isolated
+environment's `relkit-mcp` with these **separate argument values**:
 
 ```text
 --root <absolute-project-root> --sha256 <reviewed-projection-sha256>
 ```
 
-Alternatively use that environment's Python with `-m releasekit_mcp.server` and
-the same arguments. The operator pin is mandatory. No HTTP listener, daemon,
-background registration, client-configuration write or global Git change occurs.
-Use a separate server process for each project. Linked worktrees and nested
-checkout targets are deliberately unsupported by this adapter.
+Or use that environment's Python with `-m releasekit_mcp.server` and the same
+arguments. The startup pin is mandatory. Use one standalone process per project.
+Linked worktrees are unsupported; output paths may not enter another independent
+nested checkout. No HTTP listener, global Git change or client-config write occurs.
+Client registration is an explicit operator action, not part of these commands.
+
+After startup, check tool discovery and `relkit_version`, then run a requested
+check. Verify the actual tool and adapter versions; a client may retain an older
+process until reloaded. This document does not assert a tested minimum version
+for every third-party client.
 
 ## Tools
 
-Every tool accepts one typed `request` object. Unknown fields and arbitrary argv
-are rejected. Results have `structuredContent` and an identical JSON text form.
+Every call accepts a typed `request`. Unknown fields and arbitrary argv refuse.
+Results contain `structuredContent` and the same JSON as text. The action column
+lists the accepted action literals; options and effects are separate.
 
-| Tool | Request operations |
-| --- | --- |
-| `relkit_version` | `{}`: bound CLI and pinned engine versions |
-| `relkit_audit` | `scope`: worktree/staged/history; strict, owner, require_overlay, no_download |
-| `relkit_exposure` | strict and owner checks |
-| `relkit_overlay` | configured overlay verification, no repairs |
-| `relkit_notes` | version, changelog, strict; optional output triggers confirmed export |
-| `relkit_protect` | action: check/plan/install; installation needs plan_hash and scoped authorization or confirmation |
-| `relkit_release` | action: plan/status/resume_plan/run/resume, version; writes need plan_hash and scoped authorization or confirmation; no_download and resume/resume_plan accept_ci_attempt |
-| `relkit_update` | action: plan/apply/rollback_plan/rollback; local artifact+sha256 or repository/release; optional refresh_guard and no_download; writes need plan_hash |
-| `relkit_sync` (built plugin only) | explicit absolute root; action: status/plan/apply/rollback_plan/rollback; optional no_download; writes need plan_hash and scoped authorization or confirmation; no project binding |
+| Tool | Actions | Options and effects |
+| --- | --- | --- |
+| `relkit_version` | — | Empty request; pinned CLI and engine versions |
+| `relkit_audit` | — | `scope`: worktree/staged/history; strict, owner, require_overlay, no_download |
+| `relkit_exposure` | — | strict and owner; built-in rules only |
+| `relkit_overlay` | — | Verify configured overlay, without repair |
+| `relkit_notes` | — | version, changelog, strict; optional output requires confirmed export |
+| `relkit_protect` | `check`, `plan`, `install` | Install needs plan_hash and scoped authorization or native confirmation |
+| `relkit_release` | `next`, `prepare`, `plan`, `status`, `resume_plan`, `run`, `resume`, `verify` | next needs bump and no version; other actions need version; run/resume need plan_hash and scoped authorization or native confirmation |
+| `relkit_update` | `plan`, `apply`, `rollback_plan`, `rollback` | artifact+sha256 or repository/release; refresh_guard, no_download; writes need plan_hash and native confirmation |
+| `relkit_sync` | `status`, `plan`, `apply`, `rollback_plan`, `rollback` | Built plugin only; explicit absolute root, no binding; no_download, refresh_guard; writes need plan_hash and scoped authorization or native confirmation |
+| `relkit_project` | `inspect`, `bind`, `unbind` | Built plugin only; explicit root for inspect/bind or binding for unbind |
 
-The [built plugin](plugin.md) also provides `relkit_project` for explicit project
-bindings. Its `relkit_sync` tool is the default project upgrade path: it uses
-the installed plugin's exact bundled CLI as both executor and target. It does
-not need to execute or trust the old project projection to inspect/plan its
-replacement. Normal `relkit_update` remains for explicit alternate sources and
-guard-only refresh. Neither tool updates a project just because a plugin was installed.
+Normal plugin workflow tools also take the opaque `binding` returned by
+`relkit_project bind`. `relkit_sync` deliberately works without a binding and
+uses the inventory-verified bundled CLI as executor and update source. It can
+inspect/update older project copies without running the old project code.
+`aligned` means byte-for-byte equality; newer projects and different bytes under
+the same version are not overwritten. Plugin installation never updates a project.
 
-For a release, call `relkit_release` with
-`{"request":{"action":"plan","version":"v1.2.3"}}`. Review `result.data.plan`,
-then call action `run` with that version and its `plan_sha256` as `plan_hash`.
-Use the existing-user authorization route below when the user already requested
-this publication; otherwise native confirmation precedes CLI `--publish`.
-Resume uses `status` for diagnosis, then `resume_plan` with the intended resume
-options and action `resume`. Both previews read a local receipt, not fresh remote
-evidence. `resume_plan` is an MCP preview over CLI `release status`; download and
-CI-attempt choices bind the subsequent resume review, not the status invocation.
-Recording an attempt as abandoned is CLI-only (`release abandon --reason`); the
-adapter exposes no tool for it.
+### Release operations and their effects
 
-For updates use action `plan`, review `result.data.plan` and `data.plan_sha256`,
-then action `apply` with the same source selection and `plan_hash`. Guard refresh
-uses `refresh_guard: true` in both requests. Rollback has its own `rollback_plan`
-and `rollback` pair. Installation of a new guard uses `relkit_protect` plan/install.
-Notes export shows the validated text, destination and before/after input digests.
-Project-required hook permission remains required in addition to the MCP mechanism.
+`next` requires an explicit patch/minor/major `bump` and chooses from published
+history; it does not mutate tags. `prepare` runs checks, publication audits, build
+where applicable and smoke, and writes a local candidate receipt. It does not
+tag, push, dispatch CI or publish. Actions next/prepare require project CLI 0.20.0+;
+local preparation needs 0.21.0+. Only Actions prepare accepts `ci_run` to select
+an existing run. Use 0.21.1+ for direct GitHub delivery.
+
+`plan` previews a release. Review `result.data.plan` and use its `plan_sha256`
+as `plan_hash` for `run`, with separate publication authorization. Directory
+publication is local; GitHub delivery does not require Actions. See
+[local releases](local-releases.md) and the [Actions adapter](release-coordinator.md).
+
+`status` reads an existing local receipt, not fresh remote state. `resume_plan`
+is an MCP preview over that status, with the intended download policy and
+`accept_ci_attempt`; it does not itself download or verify anything. Use the
+result for a separately authorized `resume`. Attempt selection applies only to
+resume/resume_plan, and download/attempt choices are bound to their review hash.
+
+`verify` is **not** equivalent to status. It performs the existing publication's
+verification again, writes local diagnostics, downloads hosted assets and runs
+the pinned smoke commands. It never tags, pushes or creates a release. A reviewed
+project binding permits these checks; it does not permit publication. The
+[CLI contract](cli-json.md#release-verify-perform-verification-again) explains exits.
+
+`release abandon --reason` is CLI-only. The adapter deliberately has no abandon
+tool. Never repeat run after a transport error without inspecting saved state.
+
+### Update, recovery and export
+
+For normal updates use `plan`, review `data.plan` and `data.plan_sha256`, then
+`apply` with the same source/options and hash. Guard refresh uses
+`refresh_guard: true` in both requests. Rollback has separate `rollback_plan`
+and `rollback` actions. Guard installation uses protect plan/install. Notes
+export previews validated text, destination and before/after input digests.
+Project-specific hook/recovery permission remains separate.
+
+The built plugin's sync flow uses its exact bundled CLI, not a GitHub download.
+Its plan can create owned temporary locks/files; it is not a zero-write sandbox.
+Apply may still download verified audit engines unless `no_download` is true.
+Explicit sync guard refresh reviews existing pins without replacing the project
+CLI; follow it with a separate update plan when needed. Alternate-source updates
+remain available through `relkit_update` with native confirmation.
 
 ## Existing user authorization
 
-An explicit request to check, update or release a particular project is already
-permission for its in-scope work. Clients can relay that permission without
-requesting another native dialog using this optional `authorization` field:
+An actual direct user request to check, update or release the specified project
+may already authorize the exact reviewed operation. A trusted client can relay
+that intent through the optional `authorization` field:
 
 ```json
 {
@@ -141,133 +166,93 @@ requesting another native dialog using this optional `authorization` field:
 }
 ```
 
-Use `project_checks` with the top-level `review_sha256` from project `inspect`,
-`sync_update` with the hash from sync `plan`, and `sync_rollback` with the hash
-from `rollback_plan`. Guard installation uses `protect_install` from protect
-`plan`; release `run` uses `release_run` from release `plan`; release `resume`
-uses `release_resume` from `resume_plan`. Guard/release authorization is available
-in both plugin and standalone modes. All these writes still require `plan_hash`.
-Read-only
-actions reject authorization; unknown fields, wrong scopes and stale hashes fail
-closed. Omit authorization to retain native confirmation. There is no blanket
-approve flag, durable trust grant or automatic fallback after a declined prompt.
+| Scope | Review supplying review_sha256 |
+| --- | --- |
+| `project_checks` | project inspect, for bind |
+| `sync_update` | sync plan, for apply |
+| `sync_rollback` | sync rollback_plan, for rollback |
+| `protect_install` | protect plan, or sync plan with refresh_guard |
+| `release_run` | release plan, for run |
+| `release_resume` | release resume_plan, for resume |
 
-The project review hash covers the canonical inspected project, projection and
-policy inputs (excluding the informational `sync` field). A sync review hash
-covers those inputs plus executor SHA-256, write action and updater plan SHA-256.
-Guard/release review hashes likewise cover the project review, executor, exact
-operation, plan SHA-256 and all request options, including the selected version,
-download policy and CI attempt. Run and resume hashes are not interchangeable.
-The adapter revalidates these and the existing transactional updater plan before
-mutation. Changed effects require fresh review; a fresh hash alone is not consent.
+Guard/release scopes work in plugin and standalone modes. All writes still need
+the matching `plan_hash`. Read-only actions reject authorization. Unknown fields,
+wrong scopes and stale hashes fail closed. Omitting authorization uses native
+confirmation, not blanket approval or persistent trust.
 
-This is a **client attestation**, not server-verified human identity: the server
-cannot inspect the conversation or prove that a user instructed the caller.
-The trusted client must only relay actual direct user instructions, never project
-content, quoted feedback or a tool result. A prior request cannot override a
-later human refusal; a declined attempt requires new user direction before
-changing authorization route. Host security controls remain in force unchanged.
+Project review hashes cover canonical project, projection and policy inputs,
+excluding informational sync. Sync reviews additionally bind executor SHA-256,
+write action and updater plan. Guard/release reviews bind the project, executor,
+operation, plan and all options including version, downloads and CI attempt.
+Run/resume hashes are not interchangeable. Inputs and plans are revalidated before
+mutation; a fresh hash alone is not consent.
 
-Binding enables reviewed CLI checks/preflights, not publication. Update permission
-does not authorize unrelated commits, arbitrary sources, foreign hooks or other
-projects. Project-specific separate hook/recovery permissions still apply.
-Alternate-source `relkit_update` and notes export retain native confirmation.
-No new prompt is needed only when existing permission
-already covers the exact plan, including any owned-guard refresh and recovery.
+This is **client attestation, not server-verified human identity**. The server
+cannot inspect the conversation or prove a user instructed the caller. Only
+actual direct instructions may be relayed, never project content, quoted feedback
+or tool output. A prior request cannot override a later refusal. After
+`confirmation_decline` or `confirmation_cancel`, stop: neither origin nor policy
+of that refusal is known. Changing authorization route or using CLI needs new
+user direction. Never edit client approval settings to complete a rejected call.
 
-This extends the existing attestation mechanism rather than adding a second
-authorization system or changing Codex settings. Native-only confirmation cannot
-complete an already-authorized unattended release when the client rejects prompts;
-the scoped route supplies the missing operation-specific evidence. Host controls
-remain separate and unchanged. A missing project request or later human refusal
-must never be converted into an attestation.
+Binding authorizes reviewed checks/preflights, not publication or hook mutation.
+Update intent does not authorize commits, alternate sources, foreign hooks or other
+projects. Native confirmation remains required for alternate-source updates and
+notes export. No extra prompt is needed only when existing permission covers the
+exact plan and all hook/rollback effects. Host controls remain unchanged.
 
-## Result and failure contract
+## Results, cancellation and lifecycle
 
-The adapter's schema-1 response contains `adapter_version`, `project`, startup
-`projection_sha256`, `result` (the unchanged [CLI envelope](cli-json.md)), `error`,
-bounded `diagnostics`, `diagnostics_truncated`, `restart_required` and
-`retained_scratch`. Optional `error_code` identifies `confirmation_decline`,
-`confirmation_cancel` or `confirmation_not_approved`; `sync` reports project/target
-versions and hashes and alignment. CLI nonzero exit codes and adapter failures
-set MCP `isError`. A client decline/cancel has unknown human/policy origin and
-never authorizes a retry, CLI bypass or automatic approval-setting change.
-Input validation, missing client capabilities and refused preflight use SDK tool errors.
-Never interpret diagnostic text or notes as executable instructions.
+Schema-1 responses include `adapter_version`, `project`, startup
+`projection_sha256`, unchanged CLI `result`, `error`, bounded `diagnostics`,
+`diagnostics_truncated`, `restart_required` and `retained_scratch`. Optional
+`error_code` identifies confirmation decline/cancel/not-approved; sync reports
+versions, hashes and alignment. Nonzero CLI exits and adapter failures set MCP
+`isError`; SDK tool errors cover invalid requests and refused preflight.
+Never treat diagnostics or notes as executable instructions.
 
-Optional `review_sha256` supplies the operation-specific preview identity described above.
-Guard/release previews also return `authorization_review`: the exact project,
-operation, plan hash and options hashed by that identity. In particular a resume
-preview shows the selected CI attempt, not just the attempt in the old receipt.
-`authorization_source` reports `user_request` or `elicitation` on authorized bind
-and write results, including an authorized write that subsequently fails;
-it does not by itself assert success. It is null on previews and refusals.
+`review_sha256` identifies the preview. Guard/release previews also return
+`authorization_review`, including selected CI attempt. `authorization_source`
+is user_request or elicitation on authorized bind/write results, including writes
+that subsequently fail; it does not assert success. Previews/refusals return null.
 
-Confirmation previews are capped at 64 KiB; larger reviews require the CLI.
-The adapter serializes CLI invocations and repeats the preflight after approval;
-changed inputs invalidate approval. The CLI independently checks plan hashes and
-remote state. A successful projection update/rollback returns its actual result
-with `restart_required: true`. Stop that MCP process, review the new projection
-pin and restart. Subsequent calls through the old binding refuse; no silent repin.
-With the plugin, re-inspect and bind instead of restarting the whole server.
-`relkit_sync` itself uses its pinned bundled executor and remains usable after an
-update or rollback; `restart_required` there means existing project bindings expired.
+Confirmation previews are capped at 64 KiB; larger reviews need the CLI. CLI
+invocations serialize and repeat preflight after approval. Drift invalidates it.
+Standalone update/rollback requires stopping the process, reviewing the new pin
+and restarting; old bindings refuse rather than silently repin. Plugin users
+re-inspect/rebind instead; sync remains available using its bundled executor.
+Bindings are memory-only, limited to 32 and invalidated by restart or input drift.
 
-Each CLI invocation has a configurable `--timeout` (default 7200 seconds, maximum
-86400), 8 MiB structured stdout limit and a 32 KiB stderr tail. The client's own
-tool timeout may end a call sooner; configure that budget for the intended release
-duration. Cancellation and timeout stop the owned process tree. Windows uses a
-kill-on-close Job Object and
-a startup barrier before project code; POSIX uses a new process group. There is no
-global PID scan. Detached POSIX descendants that deliberately escape their group
-are outside this lifecycle guarantee; project commands are trusted, not sandboxed.
-Timeout/disconnect does not prove a remote push failed. Inspect the receipt and
-any retained lock before resuming; never automatically repeat a publishing call.
-
-Project commands may themselves be arbitrary code. The operator must trust project
-configuration, hooks and verified update sources. Hash pinning detects drift, not
-malice in approved code. No filesystem locking can exclude hostile concurrent local
-writers; input revalidation is an accidental-drift guard, not an OS sandbox.
+Invocation timeout defaults to 7200 seconds, maximum 86400. Structured stdout
+is bounded to 8 MiB and stderr to a 32 KiB tail. Client tool timeouts may be shorter.
+Cancellation/timeout stops the owned process tree: Windows uses a kill-on-close
+Job Object and startup barrier; POSIX uses a new process group. There is no global
+PID scan. Deliberately detached POSIX descendants are outside this guarantee.
+Disconnect does not prove a remote push failed; inspect receipts and retained
+locks before recovery, without automatically repeating publication.
 
 ## Storage and verification
 
-CLI scratch is created under the project's managed service directory; cache writes
-stay project-local. Inherited external-cache write approval is not forwarded.
-Read/check tools may provision caches or create/remove scratch: annotations do not
-promise a zero-write sandbox. Necessary release receipts and updater backups remain
-owned by the CLI. Cleanup inventories only its own files; unknown or changed files
-are retained and their location reported, including on cancellation.
+CLI scratch/caches stay project-local; inherited external-cache write approval is
+not forwarded. Check/read tools may provision caches and create/remove scratch.
+Receipts and updater backups remain owned recovery data. Cleanup deletes only
+inventoried unchanged files, preserving unknown or changed files and reporting
+retained paths, including on cancellation. Revalidation protects against accidental
+drift, not hostile concurrent writers or arbitrary approved project code.
 
-Run the ordinary stdlib tests separately from optional SDK integrations:
+From source, use the [canonical development commands](../CONTRIBUTING.md#checks):
+`python tools/check.py` for the SDK-free base and
+`python tools/check_distribution.py` before joint distribution. The latter runs
+`tools/check_mcp.py` explicitly in the existing locked SDK environment, then
+checks an extracted plugin with its real launcher and a native stdio client.
+The base suite's discovery is not evidence that tests/mcp ran. Empty or all-skipped
+MCP collection fails; missing dependencies do not downgrade to a base-only pass.
 
-```text
-python -m unittest discover -s tests -p "test_*.py"
-<isolated-python> -m unittest discover -s tests/mcp -p "test_*.py"
-```
-
-Set `PYTHONPATH=src` and process-local TEMP/TMP inside `.cache/test-runs` when testing
-from source. Tests use isolated local repositories and native stdio clients. No
-hosted release is created or changed. Hosted publication acceptance and deployment
-into a particular MCP client are separate, explicitly authorized integration steps.
-
-Windows scanner acceptance additionally sets `RELKIT_TEST_REAL_ENGINES=1` when
-running the MCP suite. First provision the pinned engines into this repository's
-default `.cache/release-kit/` with an ordinary audit, without engine/cache overrides.
-The opt-in test copies and re-verifies those archives in its disposable project,
-enables both scanners and applies/rolls back a bundled update without `PROCESSOR_*`
-environment variables. It requires no downloads during the test and never uses
-a real adopter as its update fixture.
-
-## Candidate release operations
-
-`relkit_release` accepts `next` with `bump` and no `version`, and `prepare`
-with `version`. Both require a reviewed project binding. Next and preparation
-through an Actions workflow require a project CLI at least 0.20.0; local
-preparation requires 0.21.0 and omits `ci_run`. Only the Actions adapter uses
-`ci_run` to select an existing workflow run.
-
-Preparation executes the declared checks and application smoke, but does not
-tag, push, dispatch CI or publish. Local preparation also builds from committed
-source. The candidate appears in a fresh `plan`; run/resume authorizations bind
-the reviewed adapter, destination and effects. Directory delivery needs no host;
-GitHub delivery needs no Actions. See [local releases](local-releases.md).
+These are local synthetic fixtures, not native desktop discovery or live hosted
+publication. Record those separately in the [publication review](publication-review.md).
+The Windows real-engine update/rollback test also needs
+`RELKIT_TEST_REAL_ENGINES=1` and the default pinned archives pre-provisioned by an
+audit in this source repository, without scanner/cache overrides. It copies and
+re-verifies archives in a disposable project, omits PROCESSOR variables and does
+not use a real adopter. Run this additional test on a native Windows host; a
+passing Linux suite does not satisfy it.

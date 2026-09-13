@@ -1,28 +1,16 @@
-# This repository runs its own gate. It declares no names: a tool that shipped a list
-# of what must not be published would leak exactly what it protects, so the list is
-# always the adopting repository's, never this one's.
+# This repository runs its own gate. Private owner values never belong here.
 [exposure]
 betterleaks_config = ".gitleaks.toml"
 
-# The tests have to contain the material the rules detect - a fake home directory, a
-# path that climbs out of a repository - or they would not be testing anything. That
-# is what an exclusion is for, and it is the only one here. It is not a baseline:
-# nothing under tests/ is debt waiting to be removed.
+# Synthetic fixtures contain the material the structural rules detect. This is
+# not adoption debt and does not turn off the independent secret scanner.
 exclude = ["tests/*"]
 
-# The entry the coordinator publishes is validated, never regenerated. Strict is the
-# release path's own floor anyway; declaring it keeps `relkit notes` in CI and the
-# coordinator on one profile instead of one flag apart.
 [changelog]
 profile = "strict"
 
-# This tool publishes itself with its own coordinator. Naming this repository is not
-# the hardcoding the rule above forbids: it is this repository's own identity, like
-# the author in its package metadata. Nothing here names a project it guards.
-#
-# Build and check on the maintainer's machine; GitHub is only the selected
-# delivery adapter. No hosted runner, paid quota or Actions artifact is required.
-# The generic directory adapter can deliver the same files without any hosting.
+# Build and qualify locally; GitHub is an explicit delivery adapter. This names
+# the tool's own publisher, never a project it guards. No hosted runner is needed.
 [release]
 repository = "Muratovnik/release-kit"
 publisher = "github"
@@ -37,10 +25,11 @@ assets = [
     "release-kit-plugin.zip.sha256",
     "release.json",
 ]
-checks = [["{python}", "tools/check.py"]]
-smoke = [["{python}", "tools/smoke.py", "--assets", "{assets}", "--version", "{version}"]]
+# Source checks do not qualify a throwaway build as the release candidate.
+checks = [["{python}", "tools/check_distribution.py", "--source-only"]]
+# Runs from the committed Git-free snapshot against these exact candidate files.
+smoke = [["{python}", "tools/check_distribution.py", "--assets", "{assets}", "--version", "{version}", "--work-dir", "{temp}"]]
 smoke_platforms = ["linux", "darwin", "win32"]
-# The suite alone runs for minutes on a cold checkout; the default 600 leaves no
-# room for a slower host, and a check killed by its own timeout reads as a failure.
+# Allow the declared suite and first-start dependency/scanner provisioning.
 command_timeout = 1800
 require_provenance = false

@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import posixpath
 import tempfile
 import zipfile
 from pathlib import Path
@@ -23,6 +24,38 @@ FILES = (
     "skills/release-kit/references/updates.md",
     "skills/release-kit/references/releases.md",
 )
+DOCUMENTS = (
+    "README.md",
+    "LICENSE",
+    "SECURITY.md",
+    "docs/plugin.md",
+    "docs/mcp.md",
+    "docs/cli-json.md",
+    "docs/local-releases.md",
+    "docs/release-coordinator.md",
+    "docs/audit.md",
+    "docs/updates.md",
+    "docs/notes.md",
+    "examples/audit/README.md",
+    "examples/audit/relkit.toml",
+    "examples/audit/.betterleaks.toml",
+    "examples/audit/.gitignore",
+    "examples/plugin-marketplace.json",
+)
+SOURCE_DOCUMENTS = ("CONTRIBUTING.md", "docs/distribution.md", "docs/publication-review.md")
+
+
+def document_bytes(name: str, payload: bytes, version: str) -> bytes:
+    """Link source-only maintainer pages to this release, preserving anchors."""
+    if not name.endswith(".md"):
+        return payload
+    text = payload.decode("utf-8")
+    for target in SOURCE_DOCUMENTS:
+        relative = posixpath.relpath(target, posixpath.dirname(name) or ".")
+        url = f"https://github.com/Muratovnik/release-kit/blob/v{version}/{target}"
+        text = text.replace(f"]({relative})", f"]({url})")
+        text = text.replace(f"]({relative}#", f"]({url}#")
+    return text.encode("utf-8")
 
 
 def payloads():
@@ -39,16 +72,11 @@ def payloads():
         for path in sorted((ROOT / "src" / package).rglob("*.py")):
             name = "lib/" + path.relative_to(ROOT / "src").as_posix()
             payload[name] = storage.inside(ROOT, path).read_bytes()
-    payload["README.md"] = b"# Release Kit\n\nSee [installation and use](docs/plugin.md).\n"
-    payload["LICENSE"] = (ROOT / "LICENSE").read_bytes()
-    for name in (
-        "plugin.md",
-        "mcp.md",
-        "cli-json.md",
-        "local-releases.md",
-        "release-coordinator.md",
-    ):
-        payload["docs/" + name] = (ROOT / "docs" / name).read_bytes()
+    # Package user journeys and examples, not the repository maintenance manual.
+    for name in DOCUMENTS:
+        payload[name] = document_bytes(
+            name, storage.inside(ROOT, ROOT / name).read_bytes(), version
+        )
     return version, payload
 
 

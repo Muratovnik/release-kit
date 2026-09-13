@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+### Added
+
+- A standalone CLI quick start, exact starter policies and plugin marketplace
+  example, with focused audit, update, notes and installation references.
+- A distribution gate that checks explicit MCP discovery, exact package membership
+  and hashes, real-scanner onboarding and the packaged MCP launcher. Provided
+  assets are checked without rebuilding them; source and package checks are separate.
+- Bounded distribution-stage processes retain check state when cleanup cannot be
+  confirmed. Windows termination waits for process teardown before returning.
+
 ### Fixed
 
 - MCP project review and binding accept the `directory` and `github` publishers

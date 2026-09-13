@@ -1,10 +1,6 @@
 name: check
 
-# Optional declared gates on every platform, on explicit request. This
-# workflow publishes nothing and needs no write permission: it exists so a platform
-# failure can be investigated before publication. Neither workflow runs on tags;
-# local preparation and the explicit publisher own the release lifecycle.
-
+# Optional hosted matrix. The same complete gate can run locally without Actions.
 on:
   workflow_dispatch:
 
@@ -16,14 +12,9 @@ jobs:
     permissions:
       contents: read
     strategy:
-      # Every platform reports. Cancelling the others on the first failure is how a
-      # second, unrelated platform failure stays hidden for another release.
       fail-fast: false
       matrix:
-        os:
-          - ubuntu-latest
-          - macos-latest
-          - windows-latest
+        os: [ubuntu-latest, macos-latest, windows-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -31,5 +22,5 @@ jobs:
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.11"
-      - run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt
-      - run: python tools/check.py
+      - run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt uv
+      - run: python tools/check_distribution.py
