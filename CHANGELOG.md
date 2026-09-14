@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.25.0](https://github.com/Muratovnik/release-kit/compare/v0.24.0...v0.25.0) (2026-09-14)
+
+### Highlights
+
+A project can now declare how its changelog entries are drafted, and `relkit notes
+<version> --draft` produces one from history. `engine = "git-cliff"` is provisioned and
+verified the way the scanners are; `command = [...]` runs an exact argv the project
+supplies, which is how the Node tools are reached. A draft is checked against the
+configured profile and written nowhere: publication still reads the entry a person
+reviewed and committed.
+
+### BREAKING CHANGES
+
+The `vue-like` changelog profile is now `conventional-changelog`. It named a project
+that publishes the layout rather than the layout itself, which is what
+`conventional-changelog -p angular` emits. The old value is refused and the error names
+the new one; there is no alias.
+
+### Features
+
+- **changelog:** draft entries with a declared generator ([6cefa01](https://github.com/Muratovnik/release-kit/commit/6cefa011698fa79cf13b7cf865bced245d77bbf4))
+
 ## [0.24.0](https://github.com/Muratovnik/release-kit/compare/v0.23.2...v0.24.0) (2026-09-14)
 
 ### Features

@@ -50,16 +50,16 @@ a convenience; it is not what makes a clone reproducible.
 ### On your machine
 
 ```text
-uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.24.0/release_kit-0.24.0-py3-none-any.whl
+uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.25.0/release_kit-0.25.0-py3-none-any.whl
 ```
 
 `pipx install <same URL>` works the same way. This installs the published artifact, but
 it does **not** check the file against its published checksum. To verify first:
 
 ```text
-gh release download v0.24.0 --repo Muratovnik/release-kit --pattern 'release_kit-*' --dir .cache/relkit-download
+gh release download v0.25.0 --repo Muratovnik/release-kit --pattern 'release_kit-*' --dir .cache/relkit-download
 python -c "import glob,hashlib,pathlib,sys; w=glob.glob('.cache/relkit-download/*.whl')[0]; e=pathlib.Path(w+'.sha256').read_text().split()[0]; a=hashlib.sha256(pathlib.Path(w).read_bytes()).hexdigest(); sys.exit('checksum mismatch') if a!=e else print(w)"
-uv tool install .cache/relkit-download/release_kit-0.24.0-py3-none-any.whl
+uv tool install .cache/relkit-download/release_kit-0.25.0-py3-none-any.whl
 ```
 
 A checksum published beside a file detects corruption; it is not independent publisher
@@ -73,7 +73,7 @@ no Python packaging at all. Download `relkit.pyz` and `relkit.pyz.sha256` from t
 reviewed release, then verify and place them with one command that works in every shell:
 
 ```text
-gh release download v0.24.0 --repo Muratovnik/release-kit --pattern 'relkit.pyz*' --dir .cache/relkit-download
+gh release download v0.25.0 --repo Muratovnik/release-kit --pattern 'relkit.pyz*' --dir .cache/relkit-download
 python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-download'); t=pathlib.Path('.github/relkit.pyz'); e=(s/'relkit.pyz.sha256').read_text().split()[0]; a=hashlib.sha256((s/'relkit.pyz').read_bytes()).hexdigest(); sys.exit('checksum mismatch') if a!=e else None; sys.exit('already installed: use the update guide') if t.exists() else None; t.parent.mkdir(parents=True,exist_ok=True); shutil.copy(s/'relkit.pyz',t)"
 ```
 
