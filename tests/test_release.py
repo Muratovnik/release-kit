@@ -10,6 +10,7 @@ import runpy
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from datetime import UTC, datetime
@@ -215,10 +216,34 @@ class FakeGitHub:
         ]
 
 
+CLEANUP_ATTEMPTS = 6
+CLEANUP_BACKOFF = 0.05
+
+
+def remove_fixture_tree(temporary) -> None:
+    """Remove a fixture tree, tolerating Windows' brief directory handle.
+
+    Every fixture below is a real Git repository, and Windows keeps a handle on
+    a directory for a moment after the last process that touched it exits. By
+    then the tree is empty, so the final `rmdir` is what raises WinError 32 —
+    in teardown, which failed a different, unrelated test on each full run and
+    made the base gate report a defect no assertion had found. Retry briefly; a
+    directory something genuinely holds still fails.
+    """
+    for attempt in range(CLEANUP_ATTEMPTS):
+        try:
+            temporary.cleanup()
+            return
+        except PermissionError:
+            if attempt == CLEANUP_ATTEMPTS - 1:
+                raise
+            time.sleep(CLEANUP_BACKOFF * (attempt + 1))
+
+
 class ReleaseFixture(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory(prefix="release fixture ")
-        self.addCleanup(temporary.cleanup)
+        self.addCleanup(remove_fixture_tree, temporary)
         self.root = Path(temporary.name) / "project with spaces"
         self.root.mkdir()
         self.runner = LocalRunner(self.root)
@@ -1241,3 +1266,30 @@ class SelfHostingTests(unittest.TestCase):
             script = next((arg for arg in command if arg.endswith(".py")), None)
             self.assertIsNotNone(script, command)
             self.assertTrue((ROOT / script).is_file(), script)
+
+
+class FixtureCleanupTests(unittest.TestCase):
+    class Held:
+        """A fixture handle Windows refuses to release for a bounded moment."""
+
+        def __init__(self, failures: int) -> None:
+            self.failures = failures
+            self.calls = 0
+
+        def cleanup(self) -> None:
+            self.calls += 1
+            if self.calls <= self.failures:
+                raise PermissionError(32, "the process cannot access the file")
+
+    def test_a_briefly_held_fixture_tree_is_removed_after_a_retry(self) -> None:
+        held = self.Held(failures=2)
+        with patch.object(time, "sleep") as sleep:
+            remove_fixture_tree(held)
+        self.assertEqual(held.calls, 3)
+        self.assertEqual(sleep.call_count, 2)
+
+    def test_a_permanently_held_fixture_tree_still_fails_teardown(self) -> None:
+        held = self.Held(failures=CLEANUP_ATTEMPTS)
+        with patch.object(time, "sleep"), self.assertRaises(PermissionError):
+            remove_fixture_tree(held)
+        self.assertEqual(held.calls, CLEANUP_ATTEMPTS)
