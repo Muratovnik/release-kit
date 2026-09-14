@@ -42,8 +42,12 @@ def build(output: Path, *, repository: str = "") -> None:
     # The coordinator requires the released heading to carry the compare link for the
     # actual Git boundary. Accepting only an unlinked heading here is what made this
     # repository unable to publish itself with its own release command.
+    # Both dated heading forms the supported profiles use: Keep-a-Changelog writes
+    # `- 2026-01-01`, the Vue-like layout writes `(2026-01-01)`. The date itself is not
+    # optional in either, because an undated entry is what a reader cannot place.
     if not re.search(
-        rf"^## \[{re.escape(version)}\](?:\([^\s)]+\))? - \d{{4}}-\d{{2}}-\d{{2}}$",
+        rf"^## \[{re.escape(version)}\](?:\([^\s)]+\))? "
+        rf"(?:- \d{{4}}-\d{{2}}-\d{{2}}|\(\d{{4}}-\d{{2}}-\d{{2}}\))$",
         changelog,
         re.MULTILINE,
     ):

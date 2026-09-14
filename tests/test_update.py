@@ -75,30 +75,35 @@ class DistributionTests(unittest.TestCase):
                     builder(output)
                 self.assertFalse(output.exists())
 
-    def test_builder_accepts_the_linked_heading_the_coordinator_requires(self) -> None:
+    def test_builder_accepts_every_dated_linked_heading_a_profile_writes(self) -> None:
         # The coordinator requires the released heading to compare the actual previous
         # tag to this one. A builder that took only an unlinked heading meant no
-        # project could satisfy both, including this one.
+        # project could satisfy both, including this one. Keep-a-Changelog introduces
+        # the date with a dash and the Vue-like layout parenthesises it; this
+        # repository's own changelog is written in the second form.
         builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            source = root / "src/releasekit"
-            source.mkdir(parents=True)
-            (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
-            (source / "cli.py").write_text("def main():\n    return 0\n")
-            (root / "pyproject.toml").write_text(
-                '[project]\ndynamic = ["version"]\nauthors = []\nlicense = "MIT"\n'
-            )
-            (root / "LICENSE").write_text("license text\n")
-            (root / "CHANGELOG.md").write_text(
-                "## [0.6.0](https://example.invalid/o/r/compare/v0.5.0...v0.6.0) - 2026-01-01\n"
-            )
-            output = root / "relkit.pyz"
+        link = "https://example.invalid/o/r/compare/v0.5.0...v0.6.0"
+        for heading in (
+            f"## [0.6.0]({link}) - 2026-01-01\n",
+            f"## [0.6.0]({link}) (2026-01-01)\n",
+        ):
+            with self.subTest(heading=heading), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                source = root / "src/releasekit"
+                source.mkdir(parents=True)
+                (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
+                (source / "cli.py").write_text("def main():\n    return 0\n")
+                (root / "pyproject.toml").write_text(
+                    '[project]\ndynamic = ["version"]\nauthors = []\nlicense = "MIT"\n'
+                )
+                (root / "LICENSE").write_text("license text\n")
+                (root / "CHANGELOG.md").write_text(heading)
+                output = root / "relkit.pyz"
 
-            with patch.dict(builder.__globals__, {"ROOT": root, "SOURCE": source}):
-                builder(output)
+                with patch.dict(builder.__globals__, {"ROOT": root, "SOURCE": source}):
+                    builder(output)
 
-            self.assertEqual("0.6.0", distribution.inspect(output.read_bytes()).version)
+                self.assertEqual("0.6.0", distribution.inspect(output.read_bytes()).version)
 
     def test_the_projection_does_not_describe_the_host_that_built_it(self) -> None:
         # The published 0.18.0 could not be reproduced on Windows: `version made by`

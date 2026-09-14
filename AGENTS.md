@@ -125,8 +125,16 @@ a committed clean tracked tree and all intended refs fetched. Never rewrite hist
 or publish merely to make a check pass.
 
 Every change to a rule needs a test that fails without it. A regression that a real
-repository hit gets a test that names what it hit, not a generic one. Keep release
-notes user-facing; preserve historical entries and move detail to linked references.
+repository hit gets a test that names what it hit, not a generic one.
+
+This repository's own `CHANGELOG.md` uses the `vue-like` profile and is derived from
+the commits of each released range: every bullet is one commit, named by its scope and
+subject and linked to it, and only `feat`, `fix`, `perf`, `revert` and breaking changes
+appear. So the commit subject is the release note. Write it for a reader of the release,
+and put the reasoning in the body. Do not hand-write entries and do not restate a
+commit; regenerate the entry from history instead. Adopters choosing `legacy` or
+`strict` keep curated prose, and for them the guidance stays: keep notes user-facing,
+preserve historical entries and move detail to linked references.
 
 ## Git
 
