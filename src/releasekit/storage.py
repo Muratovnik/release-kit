@@ -13,6 +13,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -173,6 +174,31 @@ def environment(path: Path) -> dict[str, str]:
     return {**os.environ, **confinement(path)}
 
 
+# Windows can refuse a rename for a moment after the bytes are written, and a
+# receipt is written at exactly the points a release must not lose.
+REPLACE_ATTEMPTS = 6
+REPLACE_BACKOFF = 0.05
+
+
+def _replace(temporary: Path, path: Path) -> None:
+    """Rename over the destination, tolerating a brief refusal.
+
+    Nothing of ours holds either name by now: the descriptor is flushed, synced and
+    closed above. A scanner opening the file it has just seen created is enough for
+    Windows to answer `replace` with WinError 5, and that is what interrupted a
+    release of this repository between publishing and recording its receipt. Retry
+    briefly; a destination something genuinely holds still raises the same error.
+    """
+    for attempt in range(REPLACE_ATTEMPTS):
+        try:
+            temporary.replace(path)
+            return
+        except PermissionError:
+            if attempt == REPLACE_ATTEMPTS - 1:
+                raise
+            time.sleep(REPLACE_BACKOFF * (attempt + 1))
+
+
 def atomic_json(path: Path, value: object) -> None:
     path = checked(path)
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -185,7 +211,7 @@ def atomic_json(path: Path, value: object) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         checked(path)
-        temporary.replace(path)
+        _replace(temporary, path)
     finally:
         checked(temporary).unlink(missing_ok=True)
 

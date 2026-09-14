@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import subprocess
 import tempfile
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -58,6 +59,36 @@ class StorageTests(unittest.TestCase):
         replacement.replace(path)
         self.assertFalse(workspace.cleanup())
         self.assertEqual("same bytes", path.read_text())
+
+    def test_a_briefly_refused_receipt_rename_is_retried(self):
+        # Observed on this repository's own release: the rename raised WinError 5
+        # after publication had already happened, so the receipt was never written.
+        original, refusals = Path.replace, []
+
+        def refuse_twice(self, target):
+            if len(refusals) < 2:
+                refusals.append(target)
+                raise PermissionError(5, "access is denied")
+            return original(self, target)
+
+        receipt = self.root / ".git" / "relkit" / "state.json"
+        with patch.object(Path, "replace", refuse_twice), patch.object(time, "sleep"):
+            storage.atomic_json(receipt, {"published": True})
+        self.assertEqual(2, len(refusals))
+        self.assertEqual('{\n  "published": true\n}\n', receipt.read_text(encoding="utf-8"))
+
+    def test_a_persistently_refused_receipt_rename_still_fails(self):
+        def refuse(self, target):
+            raise PermissionError(5, "access is denied")
+
+        receipt = self.root / ".git" / "relkit" / "state.json"
+        with (
+            patch.object(Path, "replace", refuse),
+            patch.object(time, "sleep"),
+            self.assertRaises(PermissionError),
+        ):
+            storage.atomic_json(receipt, {"published": True})
+        self.assertFalse(receipt.exists())
 
     def test_external_cache_write_requires_exact_approved_path(self):
         cache = self.root.parent / "external cache"
