@@ -1737,6 +1737,7 @@ def run(
         workspace.remember(runner.temporary)
         (workspace.path / "project-temp").mkdir()
         workspace.remember(workspace.path / "project-temp")
+        workspace.scratch(workspace.path / "project-temp")
         if old_temporary := state.get("temporary"):
             old_path = storage.inside(root, Path(old_temporary))
             if old_path.exists() and old_temporary not in state.setdefault(
@@ -1771,7 +1772,7 @@ def run(
                 "artifacts verified; release acceptance incomplete: "
                 + "; ".join(state["ci_problems"])
             )
-        cleaned = workspace.cleanup()
+        cleaned = workspace.cleanup(discard_scratch=True)
         workspace = None
         state["cleanup"] = "passed" if cleaned else "retained-unowned-or-changed-files"
         state.pop("error", None)

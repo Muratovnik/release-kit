@@ -216,16 +216,100 @@ def atomic_json(path: Path, value: object) -> None:
         checked(temporary).unlink(missing_ok=True)
 
 
+def _discard_contents(path: Path) -> None:
+    """Empty a directory this run owns whole, never following a link or junction.
+
+    `os.walk` is not usable here: it decides what to descend into with `is_symlink`,
+    which is false for a Windows junction, so it would walk into the target and
+    delete another directory's contents. Every entry is classified from its own
+    `lstat` instead, and a reparse point is removed as the link it is.
+    """
+    for entry in path.iterdir():
+        info = entry.lstat()
+        attributes = getattr(info, "st_file_attributes", 0)
+        if stat.S_ISLNK(info.st_mode):
+            entry.unlink()
+        elif attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+            entry.rmdir() if attributes & stat.FILE_ATTRIBUTE_DIRECTORY else entry.unlink()
+        elif stat.S_ISDIR(info.st_mode):
+            _discard_contents(entry)
+            entry.rmdir()
+        else:
+            entry.unlink()
+
+
+# A workspace a run left behind is a diagnostic while the failure is fresh, and after
+# that it is a directory nothing will ever read again. Two weeks outlives an
+# investigation and is far longer than any run, so a live workspace is never a
+# candidate, and receipts live beside `tmp`, never inside it.
+TEMPORARY_RETENTION_DAYS = 14
+
+
+def _retention_days() -> float:
+    configured = os.environ.get("RELKIT_TEMPORARY_RETENTION_DAYS", "").strip()
+    if not configured:
+        return TEMPORARY_RETENTION_DAYS
+    try:
+        return float(configured)
+    except ValueError:
+        return TEMPORARY_RETENTION_DAYS
+
+
+def prune_temporaries(parent: Path, *, now: float | None = None) -> list[Path]:
+    """Discard workspaces older than the retention window and report what went.
+
+    Conservative cleanup keeps whatever a run did not inventory, which is correct
+    for one run and unbounded across many: nothing else ever removed these, so a
+    project accumulated them until someone noticed the disk. Age is the only signal
+    used, and a failure outlives the window it plausibly needs.
+    """
+    days = _retention_days()
+    if days < 0:
+        return []
+    cutoff = (time.time() if now is None else now) - days * 86400
+    removed: list[Path] = []
+    try:
+        entries = sorted(parent.iterdir())
+    except OSError:
+        return removed
+    for entry in entries:
+        try:
+            info = entry.lstat()
+            attributes = getattr(info, "st_file_attributes", 0)
+            # Never age out something reached through a link: it is not ours to time.
+            if stat.S_ISLNK(info.st_mode) or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
+                continue
+            if info.st_mtime >= cutoff:
+                continue
+            if stat.S_ISDIR(info.st_mode):
+                _discard_contents(entry)
+                entry.rmdir()
+            else:
+                entry.unlink()
+        except OSError:
+            # A workspace still held open is simply not removed; the run matters more.
+            continue
+        removed.append(entry)
+    return removed
+
+
 class Workspace:
     """Only files inventoried before a consumer runs are eligible for removal."""
 
     def __init__(self, root: Path, prefix: str = "run-"):
         parent = service_root(root) / "tmp"
         checked(parent).mkdir(parents=True, exist_ok=True)
+        if expired := prune_temporaries(parent):
+            print(
+                f"relkit: discarded {len(expired)} temporary workspace(s) older than "
+                f"{_retention_days():g} days",
+                file=sys.stderr,
+            )
         self.path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
         self.identity = identity(self.path)
         self.files: dict[str, tuple[str, tuple[int, int, int]]] = {}
         self.directories: dict[str, tuple[int, int, int]] = {}
+        self.scratches: dict[str, tuple[int, int, int]] = {}
 
     def remember(self, path: Path | None = None) -> None:
         target = inside(self.path, path) if path is not None else checked(self.path)
@@ -248,10 +332,30 @@ class Workspace:
                     item.relative_to(self.path).as_posix(), (digest(item), identity(item))
                 )
 
-    def cleanup(self) -> bool:
+    def scratch(self, path: Path) -> None:
+        """Declare a directory this run creates only to be another process's temporary one.
+
+        `remember` inventories what this tool wrote, so a child's output is correctly
+        unknown to it and survives. A directory whose entire purpose is to be handed
+        to a child as its TMP is different: nothing in it is meant to outlive the run.
+        Leaving it retained the child's package cache on every successful release,
+        hundreds of megabytes each, which nothing ever removed. Ownership is still
+        declared before the consumer runs and only a successful run discards it.
+        """
+        target = inside(self.path, path)
+        self.scratches[target.relative_to(self.path).as_posix()] = identity(target)
+
+    def cleanup(self, *, discard_scratch: bool = False) -> bool:
         checked(self.path)
         if identity(self.path) != self.identity:
             raise StorageError("temporary directory identity changed; refusing cleanup")
+        if discard_scratch:
+            for relative, expected in self.scratches.items():
+                item = inside(self.path, self.path / relative)
+                # A replaced directory is a different one; only what this run made is ours.
+                if item.is_dir() and identity(item) == expected:
+                    _discard_contents(item)
+                    item.rmdir()
         for relative, expected in self.files.items():
             item = inside(self.path, self.path / relative)
             if item.is_file() and (digest(item), identity(item)) == expected:
@@ -277,14 +381,21 @@ class Workspace:
 def temporary(root: Path, prefix: str):
     workspace = Workspace(root, prefix)
     unconfirmed = False
+    failed = False
     try:
         yield workspace
     except CleanupError:
         unconfirmed = True
+        failed = True
+        raise
+    except BaseException:
+        failed = True
         raise
     finally:
         try:
-            clean = False if unconfirmed else workspace.cleanup()
+            # Scratch is discarded only on the way out of a run that raised nothing:
+            # a failure keeps the child's temporary files as the diagnostic they are.
+            clean = False if unconfirmed else workspace.cleanup(discard_scratch=not failed)
         except (OSError, StorageError):
             clean = False
         if not clean:

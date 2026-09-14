@@ -195,6 +195,7 @@ def prepare(runner, github, value, run_id, no_download, result):
             runner.temporary.mkdir()
             temporary = workspace.path / "project-temp"
             temporary.mkdir()
+            workspace.scratch(temporary)
             ci_identity(github, expected, release, run_id)
             coordinator._local_checks(runner, value, workspace, no_download)
             directory = workspace.path / "assets"

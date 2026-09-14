@@ -155,3 +155,118 @@ class StorageTests(unittest.TestCase):
         with self.assertRaises(storage.StorageError):
             storage.atomic_json(alias, {"new": True})
         self.assertEqual("user data", original.read_text())
+
+    def _age(self, path: Path, days: float) -> None:
+        stamp = time.time() - days * 86400
+        os.utime(path, (stamp, stamp))
+
+    def test_a_workspace_left_by_an_old_run_is_aged_out_by_the_next_one(self):
+        abandoned = storage.Workspace(self.root).path
+        (abandoned / "child.lock").write_text("never inventoried, never removed")
+        self._age(abandoned, storage.TEMPORARY_RETENTION_DAYS + 1)
+        storage.Workspace(self.root)
+        self.assertFalse(abandoned.exists())
+
+    def test_a_recent_workspace_is_never_aged_out(self):
+        live = storage.Workspace(self.root).path
+        (live / "in-progress.txt").write_text("another run is using this")
+        self._age(live, storage.TEMPORARY_RETENTION_DAYS - 1)
+        storage.Workspace(self.root)
+        self.assertEqual("another run is using this", (live / "in-progress.txt").read_text())
+
+    def test_retention_never_ages_out_what_a_link_points_at(self):
+        other = self.root.parent / "elsewhere"
+        other.mkdir()
+        marker = other / "user.txt"
+        marker.write_text("preserved")
+        parent = storage.service_root(self.root) / "tmp"
+        parent.mkdir(parents=True, exist_ok=True)
+        link = parent / "linked"
+        try:
+            link.symlink_to(other, target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                self.skipTest("symlinks unavailable")
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(other)],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest("junctions unavailable")
+        try:
+            self._age(link, storage.TEMPORARY_RETENTION_DAYS + 1)
+            self.assertEqual([], storage.prune_temporaries(parent))
+            self.assertEqual("preserved", marker.read_text())
+        finally:
+            link.rmdir() if not link.is_symlink() else link.unlink()
+
+    def test_the_retention_window_is_configurable_and_never_negative(self):
+        abandoned = storage.Workspace(self.root).path
+        self._age(abandoned, 2)
+        with patch.dict(os.environ, {"RELKIT_TEMPORARY_RETENTION_DAYS": "-1"}):
+            self.assertEqual([], storage.prune_temporaries(abandoned.parent))
+        self.assertTrue(abandoned.is_dir())
+        with patch.dict(os.environ, {"RELKIT_TEMPORARY_RETENTION_DAYS": "1"}):
+            self.assertEqual([abandoned], storage.prune_temporaries(abandoned.parent))
+
+    def test_declared_scratch_is_discarded_only_when_asked(self):
+        workspace = storage.Workspace(self.root)
+        scratch = workspace.path / "project-temp"
+        scratch.mkdir()
+        workspace.scratch(scratch)
+        (scratch / "child-cache").mkdir()
+        (scratch / "child-cache" / "wheel.lock").write_text("a child tool's own file")
+        self.assertFalse(workspace.cleanup())
+        self.assertTrue(scratch.is_dir())
+        self.assertTrue(workspace.cleanup(discard_scratch=True))
+        self.assertFalse(workspace.path.exists())
+
+    def test_a_successful_run_discards_the_scratch_a_child_filled(self):
+        with storage.temporary(self.root, "test-") as workspace:
+            scratch = workspace.path / "project-temp"
+            scratch.mkdir()
+            workspace.scratch(scratch)
+            (scratch / "uv-cache").mkdir()
+            (scratch / "uv-cache" / "package.lock").write_text("child tool output")
+        self.assertFalse(workspace.path.exists())
+
+    def test_a_failing_run_keeps_its_scratch_as_the_diagnostic_it_is(self):
+        with (
+            self.assertRaises(ValueError),
+            storage.temporary(self.root, "test-") as workspace,
+        ):
+            scratch = workspace.path / "project-temp"
+            scratch.mkdir()
+            workspace.scratch(scratch)
+            (scratch / "evidence.log").write_text("why the run failed")
+            raise ValueError("the release failed")
+        kept = workspace.path / "project-temp/evidence.log"
+        self.assertEqual("why the run failed", kept.read_text())
+
+    def test_discarding_scratch_removes_a_link_and_never_its_target(self):
+        other = self.root.parent / "outside"
+        other.mkdir()
+        marker = other / "user.txt"
+        marker.write_text("preserved")
+        workspace = storage.Workspace(self.root)
+        scratch = workspace.path / "project-temp"
+        scratch.mkdir()
+        workspace.scratch(scratch)
+        link = scratch / "escape"
+        try:
+            link.symlink_to(other, target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                self.skipTest("symlinks unavailable")
+            # A junction needs no symlink privilege and is what `os.walk` would follow.
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(link), str(other)],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest("junctions unavailable")
+        self.assertTrue(workspace.cleanup(discard_scratch=True))
+        self.assertFalse(workspace.path.exists())
+        self.assertEqual("preserved", marker.read_text())
