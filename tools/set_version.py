@@ -16,6 +16,7 @@ import shutil
 import subprocess
 import sys
 import tomllib
+from copy import deepcopy
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -63,12 +64,27 @@ def _lock(root: Path) -> dict:
     return tomllib.loads((plugin_root(root) / "uv.lock").read_bytes().decode("utf-8"))
 
 
+def _resolved(lock: dict) -> dict[str, str]:
+    return {package["name"]: package["version"] for package in lock["package"]}
+
+
 def relock(root: Path, version: str) -> bool:
-    """Let uv write its own lock, then refuse every change but the runtime version."""
+    """Let uv write its own lock, then refuse any resolved version but the runtime's.
+
+    Deliberately not `--offline`: an incomplete cache makes offline resolution answer
+    with whatever it already has, which downgraded a pinned dependency here instead of
+    reporting that it could not confirm the pin. Plain `uv lock` keeps locked versions
+    unless a constraint changed, and the comparison below is what makes sure of it.
+
+    What is compared is the resolved versions, not the whole document. A uv other than
+    the one that wrote the lock legitimately rewrites environment markers from the same
+    inputs, and refusing that would only teach the operator to bypass this tool. Such a
+    rewrite is reported instead, because it still belongs in the diff they review.
+    """
     template = plugin_root(root)
     before = _lock(root)
     completed = subprocess.run(
-        ["uv", "lock", "--offline"],
+        ["uv", "lock"],
         cwd=template,
         capture_output=True,
         text=True,
@@ -78,17 +94,31 @@ def relock(root: Path, version: str) -> bool:
     if completed.returncode:
         raise SystemExit(f"set-version: uv lock failed\n{completed.stderr.strip()}")
     after = _lock(root)
-    changed = before != after
     runtime = tomllib.loads((template / "pyproject.toml").read_bytes().decode("utf-8"))
-    for package in before["package"]:
+    expected = {**_resolved(before), runtime["project"]["name"]: version}
+    observed = _resolved(after)
+    if observed != expected:
+        moved = sorted(
+            f"{name} {expected.get(name, 'absent')} -> {observed.get(name, 'absent')}"
+            for name in expected.keys() | observed.keys()
+            if expected.get(name) != observed.get(name)
+        )
+        raise SystemExit(
+            "set-version: uv lock resolved different dependency versions; review that "
+            f"change on its own instead of carrying it in a version bump: {', '.join(moved)}"
+        )
+    if before != after and _without_runtime(before, version, runtime) != after:
+        print("set-version: uv also rewrote lock metadata; review the lock diff before committing")
+    return before != after
+
+
+def _without_runtime(lock: dict, version: str, runtime: dict) -> dict:
+    """The lock as it would read if only the runtime version had moved."""
+    expected = deepcopy(lock)
+    for package in expected["package"]:
         if package["name"] == runtime["project"]["name"]:
             package["version"] = version
-    if before != after:
-        raise SystemExit(
-            "set-version: uv lock changed more than the runtime version; review that "
-            "dependency change on its own instead of carrying it in a version bump"
-        )
-    return changed
+    return expected
 
 
 def main(argv: list[str] | None = None) -> int:

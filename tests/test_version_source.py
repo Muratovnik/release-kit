@@ -1,5 +1,7 @@
 """One declared version, mechanically propagated to the files that must carry it."""
 
+import contextlib
+import io
 import subprocess
 import sys
 import tempfile
@@ -77,11 +79,24 @@ class VersionSourceTests(unittest.TestCase):
             {item["name"]: item["version"] for item in lock["package"]},
         )
 
-    def test_a_lock_change_beyond_the_runtime_version_is_refused(self):
+    def test_a_resolved_dependency_version_change_is_refused(self):
         # A version bump is not the place to discover that a dependency also moved.
         drifted = LOCK.replace(b'"0.1.0"\nsource', b'"9.9.9"\nsource').replace(b"2.1.1", b"2.2.0")
-        with self._locked(drifted), self.assertRaisesRegex(SystemExit, "more than the runtime"):
+        with self._locked(drifted), self.assertRaises(SystemExit) as refusal:
             set_version.relock(self.root, "9.9.9")
+        self.assertIn("mcp 2.1.1 -> 2.2.0", str(refusal.exception))
+
+    def test_a_metadata_only_rewrite_is_accepted_and_reported(self):
+        # A uv other than the one that wrote the lock rewrites markers from the same
+        # inputs. Refusing that would teach the operator to bypass this tool, so it is
+        # reported into the diff they review instead.
+        rewritten = LOCK.replace(b'"0.1.0"\nsource', b'"9.9.9"\nsource').replace(
+            b'name = "mcp"\nversion = "2.1.1"\n',
+            b'name = "mcp"\nversion = "2.1.1"\nsource = { registry = "https://example.invalid" }\n',
+        )
+        with self._locked(rewritten), contextlib.redirect_stdout(io.StringIO()) as printed:
+            self.assertTrue(set_version.relock(self.root, "9.9.9"))
+        self.assertIn("review the lock diff", printed.getvalue())
 
     def test_package_metadata_declares_no_second_version(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
