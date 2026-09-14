@@ -16,7 +16,17 @@ from datetime import UTC, datetime
 from pathlib import Path
 from urllib.parse import quote, unquote, urlsplit
 
-from .. import __version__, canonical, config, owner, processes, protection, publication, storage
+from .. import (
+    __version__,
+    canonical,
+    config,
+    owner,
+    processes,
+    progress,
+    protection,
+    publication,
+    storage,
+)
 from ..result import Result
 from . import changelog, settings, versions
 from .backend import (
@@ -686,7 +696,34 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
     result.next_action = feedback.next_action(state)
 
 
+# The stages a run performs, in the order it performs them. A denominator has to come
+# from somewhere real: this is the same sequence the plan prints, keyed by what the
+# state records, with the stages a given publisher never reaches left out.
+STAGE_ORDER = (
+    "local-checks",
+    "worktree-audit",
+    "history-audit",
+    "annotated-tag",
+    "push",
+    "ci",
+    "publication-verification",
+    "application-smoke",
+)
+
+
+def _stages_of(state: dict) -> tuple[str, ...]:
+    try:
+        hosted = not settings.local(state["plan"]["settings"])
+    except (KeyError, TypeError):
+        hosted = True
+    return tuple(name for name in STAGE_ORDER if hosted or name != "ci")
+
+
 def _stage(path: Path, state: dict, name: str, status: str = "running") -> None:
+    if status == "running":
+        order = _stages_of(state)
+        if name in order:
+            print(progress.stage(order.index(name) + 1, len(order), name), flush=True)
     state["stage"] = name
     state.setdefault("stages", {})[name] = status
     _save(path, state)
@@ -849,11 +886,12 @@ def _commands(
     try:
         for index, command in enumerate(commands, start=1):
             print(f"relkit release: project command {index}/{len(commands)}", flush=True)
-            runner.call(
-                [arg.format(**substitutions) for arg in command],
-                cwd=snapshot,
-                timeout=value["settings"]["command_timeout"],
-            )
+            with progress.step(f"project command {index}/{len(commands)}"):
+                runner.call(
+                    [arg.format(**substitutions) for arg in command],
+                    cwd=snapshot,
+                    timeout=value["settings"]["command_timeout"],
+                )
     finally:
         runner.temporary = previous
 
@@ -864,6 +902,7 @@ def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_down
         storage.checked(runner.log).open("a", encoding="utf-8") as stream,
         contextlib.redirect_stdout(stream),
         contextlib.redirect_stderr(stream),
+        progress.step(f"{'history' if history else 'worktree'} audit"),
     ):
         status = publication.run(
             runner.root,

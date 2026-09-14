@@ -92,12 +92,20 @@ def main(argv: list[str] | None = None) -> int:
     else:
         pool = ProcessPoolExecutor(max_workers=jobs)
         outcomes = pool.map(_execute, work)
+    # A row of dots says the suite is alive but not how much of it is left. On a
+    # terminal the count replaces itself in place; piped output keeps the plain dots,
+    # so a captured gate log reads exactly as it did before.
+    live = sys.stdout.isatty()
     try:
-        for _, _, test_failures, test_errors, test_skips in outcomes:
+        for done, (_, _, test_failures, test_errors, test_skips) in enumerate(outcomes, start=1):
             failures.extend(test_failures)
             errors.extend(test_errors)
             skipped += len(test_skips)
-            sys.stdout.write("F" if test_failures else ("E" if test_errors else "."))
+            mark = "F" if test_failures else ("E" if test_errors else ".")
+            if live:
+                sys.stdout.write(f"\r[{done}/{len(names)}] {len(failures) + len(errors)} failing ")
+            else:
+                sys.stdout.write(mark)
             sys.stdout.flush()
     finally:
         if jobs != 1:

@@ -50,17 +50,23 @@ a convenience; it is not what makes a clone reproducible.
 ### On your machine
 
 ```text
+gh release download --repo Muratovnik/release-kit --pattern 'release_kit-*' --dir .cache/relkit-download
+python -c "import glob,hashlib,pathlib,subprocess,sys; w=glob.glob('.cache/relkit-download/*.whl')[0]; e=pathlib.Path(w+'.sha256').read_text().split()[0]; a=hashlib.sha256(pathlib.Path(w).read_bytes()).hexdigest(); sys.exit('checksum mismatch') if a!=e else subprocess.run(['uv','tool','install',w],check=True)"
+```
+
+`gh release download` without a tag takes the latest release, so neither command names
+a version. The second verifies the file against its published checksum before handing
+it to `uv`; `pipx` works the same way in its place.
+
+To install without `gh`, name the release in the URL:
+
+```text
 uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.25.0/release_kit-0.25.0-py3-none-any.whl
 ```
 
-`pipx install <same URL>` works the same way. This installs the published artifact, but
-it does **not** check the file against its published checksum. To verify first:
-
-```text
-gh release download v0.25.0 --repo Muratovnik/release-kit --pattern 'release_kit-*' --dir .cache/relkit-download
-python -c "import glob,hashlib,pathlib,sys; w=glob.glob('.cache/relkit-download/*.whl')[0]; e=pathlib.Path(w+'.sha256').read_text().split()[0]; a=hashlib.sha256(pathlib.Path(w).read_bytes()).hexdigest(); sys.exit('checksum mismatch') if a!=e else print(w)"
-uv tool install .cache/relkit-download/release_kit-0.25.0-py3-none-any.whl
-```
+That one command cannot say `latest`: a wheel's filename must carry its version, and
+`releases/latest/download/` only serves assets of whichever release is newest. It also
+skips the checksum. Prefer the two commands above unless you are deliberately pinning.
 
 A checksum published beside a file detects corruption; it is not independent publisher
 authentication. Where available, verify the immutable release with `gh release verify`
@@ -69,13 +75,18 @@ and `gh release verify-asset`. See [trust boundaries](docs/distribution.md#integ
 ### Pinned in a repository
 
 The zipapp needs only Python on PATH, so it suits any repository, including ones with
-no Python packaging at all. Download `relkit.pyz` and `relkit.pyz.sha256` from the same
-reviewed release, then verify and place them with one command that works in every shell:
+no Python packaging at all. Its filename never changes, so it can be fetched from the
+latest release directly, verified and placed with one command that works in every shell:
 
 ```text
-gh release download v0.25.0 --repo Muratovnik/release-kit --pattern 'relkit.pyz*' --dir .cache/relkit-download
+curl -fLO --output-dir .cache/relkit-download --create-dirs https://github.com/Muratovnik/release-kit/releases/latest/download/relkit.pyz
+curl -fLO --output-dir .cache/relkit-download https://github.com/Muratovnik/release-kit/releases/latest/download/relkit.pyz.sha256
 python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-download'); t=pathlib.Path('.github/relkit.pyz'); e=(s/'relkit.pyz.sha256').read_text().split()[0]; a=hashlib.sha256((s/'relkit.pyz').read_bytes()).hexdigest(); sys.exit('checksum mismatch') if a!=e else None; sys.exit('already installed: use the update guide') if t.exists() else None; t.parent.mkdir(parents=True,exist_ok=True); shutil.copy(s/'relkit.pyz',t)"
 ```
+
+Both files must come from the same release, which `latest` gives them as long as no
+release is published between the two downloads. `gh release download --pattern
+'relkit.pyz*'` fetches them in one request if you would rather not depend on that.
 
 Run it as `python .github/relkit.pyz audit`. Commit the file; each project tracks its
 own copy, and updating one does not update the others. Later changes go through the
