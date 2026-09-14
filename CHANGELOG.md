@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.24.0](https://github.com/Muratovnik/release-kit/compare/v0.23.2...v0.24.0) (2026-09-14)
+
+### Features
+
+- **build:** publish an installable wheel beside the zipapp ([95964ec](https://github.com/Muratovnik/release-kit/commit/95964ec9ead2d8e7e74707c343e4f72b6070e19b))
+
+### Bug Fixes
+
+- **storage:** stop keeping every run's temporary workspace forever ([a838876](https://github.com/Muratovnik/release-kit/commit/a83887615945ce4c5005b07802ef19549de6394e))
+- **storage:** clear the read-only bit Git leaves on objects before removing them ([b8d2306](https://github.com/Muratovnik/release-kit/commit/b8d2306115715bc1cb9d754d6f3c7597d3a371ba))
 ## [0.23.2](https://github.com/Muratovnik/release-kit/compare/v0.23.1...v0.23.2) (2026-09-14)
 
 ### Bug Fixes

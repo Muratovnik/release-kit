@@ -2,6 +2,7 @@
 
 import contextlib
 import io
+import re
 import subprocess
 import sys
 import tempfile
@@ -13,6 +14,10 @@ from unittest.mock import patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
 import set_version
+
+from releasekit import distribution
+
+DECLARATION = (ROOT / "src/releasekit/__init__.py").read_text(encoding="utf-8")
 
 MANIFEST = b'{\n  "name": "example",\n  "version": "0.1.0",\n  "skills": "./skills/"\n}\n'
 PROJECT = b'[project]\nname = "runtime"\nversion = "0.1.0"\ndependencies = ["mcp"]\n'
@@ -97,6 +102,18 @@ class VersionSourceTests(unittest.TestCase):
         with self._locked(rewritten), contextlib.redirect_stdout(io.StringIO()) as printed:
             self.assertTrue(set_version.relock(self.root, "9.9.9"))
         self.assertIn("review the lock diff", printed.getvalue())
+
+    def test_the_readme_installs_the_current_version(self):
+        """A quick start that pins an old release installs an old tool.
+
+        The README stated v0.21.1 while v0.23.2 was published, so anyone following it
+        got a CLI three releases behind. Nothing noticed, because nothing compared the
+        two. Every release reference in the README is now the declared version.
+        """
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        referenced = set(re.findall(r"(?:\bv|release_kit-)([0-9]+\.[0-9]+\.[0-9]+)", readme))
+        self.assertTrue(referenced, "the README names no release to install")
+        self.assertEqual({distribution.source_version(DECLARATION)}, referenced)
 
     def test_package_metadata_declares_no_second_version(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
