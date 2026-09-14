@@ -2,26 +2,7 @@
 
 ## [Unreleased]
 
-## [0.23.0](https://github.com/Muratovnik/release-kit/compare/v0.22.0...v0.23.0) - 2026-09-13
-
-### Added
-
-- Owner policy can live in an ordinary private folder selected by the repository-local
-  Git setting `releasekit.privateRoot`. CLI, Git hooks, release coordination and MCP
-  use the same project-specific selection without publishing the path. Explicit
-  environment overrides and the conventional private sibling remain supported.
-  Invalid local settings fail closed instead of silently selecting another policy.
-
-### Fixed
-
-- The packaged plugin starts from deeply installed directories on Windows. Compiled
-  dependencies now load through the volume's short path alias for the same directory,
-  because the DLL loader keeps the `MAX_PATH` limit even where long paths are enabled
-  and the extended prefix never reaches it. A runtime path that cannot be shortened is
-  refused before any dependency is installed, naming the reason instead of failing
-  later with a DLL load error.
-
-## [0.22.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.22.0) - 2026-09-13
+## [0.23.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.23.0) - 2026-09-14
 
 ### Added
 
@@ -32,6 +13,11 @@
   assets are checked without rebuilding them; source and package checks are separate.
 - Bounded distribution-stage processes retain check state when cleanup cannot be
   confirmed. Windows termination waits for process teardown before returning.
+- Owner policy can live in an ordinary private folder selected by the repository-local
+  Git setting `releasekit.privateRoot`. CLI, Git hooks, release coordination and MCP
+  use the same project-specific selection without publishing the path. Explicit
+  environment overrides and the conventional private sibling remain supported.
+  Invalid local settings fail closed instead of silently selecting another policy.
 
 ### Fixed
 
@@ -53,6 +39,12 @@
 - MCP project review and binding accept the `directory` and `github` publishers
   without a workflow file. Policy changes still invalidate bindings; the Actions
   publisher continues to track its configured workflow.
+- The packaged plugin starts from deeply installed directories on Windows. Compiled
+  dependencies now load through the volume's short path alias for the same directory,
+  because the DLL loader keeps the `MAX_PATH` limit even where long paths are enabled
+  and the extended prefix never reaches it. A runtime path that cannot be shortened is
+  refused before any dependency is installed, naming the reason instead of failing
+  later with a DLL load error.
 
 ## [0.21.1](https://github.com/Muratovnik/release-kit/compare/v0.18.0...v0.21.1) - 2026-09-12
 
