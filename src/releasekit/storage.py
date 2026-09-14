@@ -23,10 +23,27 @@ class StorageError(RuntimeError):
     """An owned path cannot safely be used."""
 
 
+# Directories this process already inspected. A repository has a handful of ancestors
+# and thousands of service paths beneath them, so the same parents were lstat-ed tens
+# of thousands of times in one run. Only directories are remembered: a missing path may
+# appear later, and a regular file can gain a hard link after it is written. This makes
+# no promise across runs and adds no trust in metadata - it declines to re-ask about a
+# directory already inspected in this process.
+_VERIFIED_DIRECTORIES: set[str] = set()
+
+
+def forget_verified_paths() -> None:
+    """Drop the per-process directory cache; a test reshaping a tree in place needs it."""
+    _VERIFIED_DIRECTORIES.clear()
+
+
 def checked(path: Path) -> Path:
     """Reject links, junctions, hard-linked files and path aliases before writes."""
     path = Path(os.path.abspath(path))
     for item in (*reversed(path.parents), path):
+        key = str(item)
+        if key in _VERIFIED_DIRECTORIES:
+            continue
         try:
             info = item.lstat()
         except FileNotFoundError:
@@ -35,6 +52,8 @@ def checked(path: Path) -> Path:
             raise StorageError(f"service path contains a link or junction: {item}")
         if stat.S_ISREG(info.st_mode) and info.st_nlink != 1:
             raise StorageError(f"service path is hard-linked: {item}")
+        if stat.S_ISDIR(info.st_mode):
+            _VERIFIED_DIRECTORIES.add(key)
     return path
 
 

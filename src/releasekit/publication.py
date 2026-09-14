@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import engines, owner, protection
+from . import engines, owner, protection, toolchain
 from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
@@ -181,7 +181,20 @@ def run(
 
     engine_failures: list[str] = []
     engine_results = result.data["engines"] = {"betterleaks": None, "lychee": None}
+    # Provision the engines before either scan starts. Each verifies its own archive
+    # and executable, and doing that one after the other put the whole of the second
+    # verification on the clock for no reason: they share nothing.
+    wanted = [
+        name
+        for name, enabled in (
+            ("betterleaks", settings.exposure.check_secrets),
+            ("lychee", settings.exposure.check_links),
+        )
+        if enabled
+    ]
     try:
+        if wanted:
+            toolchain.prepare(wanted, root=root, allow_download=allow_download)
         if settings.exposure.check_secrets:
             engine_results["betterleaks"] = engines.betterleaks(
                 root,

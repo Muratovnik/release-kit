@@ -20,6 +20,8 @@ import tarfile
 import tempfile
 import urllib.request
 import zipfile
+from collections.abc import Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
@@ -34,6 +36,10 @@ class ToolchainError(RuntimeError):
 class Asset:
     filename: str
     sha256: str
+    # The executable's own digest, pinned beside the archive's. Deriving it from the
+    # archive meant unpacking the archive on every run to learn what to expect, and an
+    # expectation computed from the artefact under test is weaker than a stated one.
+    executable_sha256: str
 
 
 @dataclass(frozen=True)
@@ -59,26 +65,32 @@ BETTERLEAKS = Tool(
         ("darwin", "arm64"): Asset(
             "betterleaks_1.8.1_darwin_arm64.tar.gz",
             "8e80f33b5f2a7426b390347b9fd466033723cb94b6bdffa7572632e2eaec964e",
+            "a4808e33f9e9a405198dd7196496a5777023ae1f03eac59ecf24b3e787e344d2",
         ),
         ("darwin", "x64"): Asset(
             "betterleaks_1.8.1_darwin_x64.tar.gz",
             "6abc37df76f881cffae406aa2cec72bea6e6ae64b4e771b3ed21b4aac472ed10",
+            "d0aa388e456ca3eec1bc2d136fe1ac61e29d0a672dffca9f5dcd0e354fd8b959",
         ),
         ("linux", "arm64"): Asset(
             "betterleaks_1.8.1_linux_arm64.tar.gz",
             "bbb578b12a2f65d7082ab436abf37724232bc71d8a078e3c41336574420f1b48",
+            "1d5e40e7ea9070393744a34f0334c435edda1a230989974734fda96fe987001b",
         ),
         ("linux", "x64"): Asset(
             "betterleaks_1.8.1_linux_x64.tar.gz",
             "efa407244e1ea8e35f582b8a42becdeac08bdead04f68eb752adda722d583c2a",
+            "380a770d9ea9215e7d3b964246a72d8698b2975496addef2627d0e82b174a1f8",
         ),
         ("windows", "arm64"): Asset(
             "betterleaks_1.8.1_windows_arm64.zip",
             "aa12beb9ce1f6a911da91e1d0d8a72d7e68daf56a52a53f930038fd81f10f0ba",
+            "b4b4d88ab5cc3942a10fe85f27c9443a3c6319c2963670d2afb438e36ff915fc",
         ),
         ("windows", "x64"): Asset(
             "betterleaks_1.8.1_windows_x64.zip",
             "94310d028285a1bcce7f160bc19eb62f87de6460c95bfd4319151ef5b501ed3f",
+            "727820f1a9f9264319cc50458b99f01acbb93e93df7a39b8eaa2715a7b1aaed5",
         ),
     },
 )
@@ -93,22 +105,27 @@ LYCHEE = Tool(
         ("darwin", "arm64"): Asset(
             "lychee-aarch64-apple-darwin.tar.gz",
             "c9d3740ea2d891854d37116c9fba840f37b6e7c89d330e7db84ac333631c4977",
+            "af111b5890746a863e60b4929720ab383337843ed15b701515871aa6e8817c2b",
         ),
         ("darwin", "x64"): Asset(
             "lychee-x86_64-apple-darwin.tar.gz",
             "887503a9cff667d322b8d0892b40bf49976eb9507af8483220a3706cdad55978",
+            "db236f940ad0dbe02b8c3e12ac0f7b7dcae15be02bb5fb1868def5026b5e01e7",
         ),
         ("linux", "arm64"): Asset(
             "lychee-aarch64-unknown-linux-gnu.tar.gz",
             "91a7bd65685da41b90ccb9bc867a3d649a7818042dae04ff405e55a25bddee4c",
+            "7674d743f60997b0f2c6d6dbf4e02b50b311d8fe6c0051b11ad085c3f244e98a",
         ),
         ("linux", "x64"): Asset(
             "lychee-x86_64-unknown-linux-gnu.tar.gz",
             "1f4e0ef7f6554a6ed33dd7ac144fb2e1bbed98598e7af973042fc5cd43951c9a",
+            "87e6e75195df5753f08c53b5c0a13694b8328edd8df009914ae9e29b5000162d",
         ),
         ("windows", "x64"): Asset(
             "lychee-x86_64-pc-windows-msvc.zip",
             "32975d1493ee1a975d6bb41e4fb56fe419cb442ded628bb772ba2e614acfacad",
+            "2d15a3f78ac680103720b0c59667dc6f1da7de35f7e9c95171bdf4b76fb6829b",
         ),
     },
 )
@@ -271,8 +288,53 @@ def _verify(tool: Tool, executable: Path) -> None:
         )
 
 
+# Engines resolved in this process, keyed by everything that decides the answer.
+# Verification itself is unchanged; an identical request simply is not repeated within
+# one command. Nothing is remembered across runs, and no metadata is trusted.
+_RESOLVED: dict[tuple[str, str, bool, str, str], Path] = {}
+
+
+def forget_resolved_engines() -> None:
+    """Drop the per-process resolution cache; tests change overrides in place."""
+    _RESOLVED.clear()
+
+
 def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
     """Return a verified executable, provisioning the pinned official release once."""
+    key = (
+        name,
+        str(root),
+        allow_download,
+        os.environ.get(f"RELKIT_{name.upper()}", ""),
+        os.environ.get("RELKIT_CACHE_DIR", ""),
+    )
+    if (cached := _RESOLVED.get(key)) is not None:
+        return cached
+    executable = _resolve(name, root=root, allow_download=allow_download)
+    _RESOLVED[key] = executable
+    return executable
+
+
+def prepare(names: Sequence[str], *, root: Path, allow_download: bool = True) -> None:
+    """Provision engines together: they are independent, and each verifies its own file.
+
+    Verification is dominated by hashing and by running the executable once, both of
+    which release the interpreter lock, so overlapping two engines removes roughly the
+    smaller of the two from the wall clock.
+    """
+    if len(names) < 2:
+        for name in names:
+            resolve(name, root=root, allow_download=allow_download)
+        return
+    with ThreadPoolExecutor(max_workers=len(names)) as pool:
+        futures = [
+            pool.submit(resolve, name, root=root, allow_download=allow_download) for name in names
+        ]
+        for future in futures:
+            future.result()
+
+
+def _resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
     root = storage.checked(root)
     tool = TOOLS[name]
     override = os.environ.get(f"RELKIT_{name.upper()}")
@@ -318,20 +380,26 @@ def resolve(name: str, *, root: Path, allow_download: bool = True) -> Path:
         finally:
             temporary_archive.unlink(missing_ok=True)
 
-    observed_archive = _sha256(archive_path)
-    if observed_archive != asset.sha256:
-        raise ToolchainError(
-            f"SHA-256 mismatch for cached {asset.filename}: "
-            f"expected {asset.sha256}, got {observed_archive}"
-        )
-    expected_executable = _archive_executable_sha256(archive_path, tool.executable)
-    if destination.is_file() and _sha256(destination) != expected_executable:
-        raise ToolchainError(f"SHA-256 mismatch for cached executable at {destination}")
-    if not destination.is_file():
+    # What every run must establish is that this executable is the pinned one, and the
+    # pin states that directly. The archive only matters when the executable has to be
+    # produced from it, so hashing and unpacking it belong in that branch: a cached run
+    # used to hash the whole archive and unpack it again to recompute a value already
+    # known. One digest of the executable then decides, instead of one per branch.
+    cached = destination.is_file()
+    if not cached:
+        observed_archive = _sha256(archive_path)
+        if observed_archive != asset.sha256:
+            raise ToolchainError(
+                f"SHA-256 mismatch for cached {asset.filename}: "
+                f"expected {asset.sha256}, got {observed_archive}"
+            )
         storage.cache_write_path(root, destination)
         _extract_executable(archive_path, tool.executable, destination)
-    if _sha256(destination) != expected_executable:
-        raise ToolchainError(f"SHA-256 mismatch for extracted executable at {destination}")
+    if _sha256(destination) != asset.executable_sha256:
+        raise ToolchainError(
+            f"SHA-256 mismatch for {'cached' if cached else 'extracted'} "
+            f"executable at {destination}"
+        )
     _verify(tool, destination)
     return destination
 

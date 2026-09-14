@@ -181,7 +181,11 @@ class PinTests(unittest.TestCase):
             archive_payload = Path(name) / "fixture.zip"
             with zipfile.ZipFile(archive_payload, "w") as archive:
                 archive.writestr("nested/tool.exe", executable)
-            asset = toolchain.Asset("fixture.zip", sha256(archive_payload.read_bytes()).hexdigest())
+            asset = toolchain.Asset(
+                "fixture.zip",
+                sha256(archive_payload.read_bytes()).hexdigest(),
+                sha256(executable).hexdigest(),
+            )
             tool = toolchain.Tool(
                 name="fixture",
                 version="1.2.3",
@@ -210,7 +214,7 @@ class PinTests(unittest.TestCase):
     def test_offline_cache_requires_the_verified_release_archive(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
-            asset = toolchain.Asset("fixture.zip", "a" * 64)
+            asset = toolchain.Asset("fixture.zip", "a" * 64, "b" * 64)
             tool = toolchain.Tool(
                 name="fixture",
                 version="1.2.3",
@@ -236,7 +240,7 @@ class PinTests(unittest.TestCase):
     def test_offline_cache_miss_does_not_create_cache_directories(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
-            asset = toolchain.Asset("fixture.zip", "a" * 64)
+            asset = toolchain.Asset("fixture.zip", "a" * 64, "b" * 64)
             tool = toolchain.Tool(
                 name="fixture",
                 version="1.2.3",
@@ -279,3 +283,33 @@ class ProjectionTests(unittest.TestCase):
         self.assertIn(f"release-kit {__version__}", invoked.stdout)
         self.assertIn("Betterleaks 1.8.1", invoked.stdout)
         self.assertIn("Lychee 0.24.2", invoked.stdout)
+
+
+class PinnedDigestTests(unittest.TestCase):
+    """The executable pin has to keep describing the archive it was taken from."""
+
+    def test_pinned_executable_digest_matches_the_release_archive(self) -> None:
+        # resolve() now trusts the pin instead of unpacking the archive every run, so a
+        # pin that drifts from its release would refuse the engine on every host. This
+        # checks whichever archives this machine has already downloaded.
+        root = Path(__file__).resolve().parents[1]
+        cache = Path(os.environ.get("RELKIT_CACHE_DIR", root / ".cache" / "release-kit"))
+        checked = 0
+        for tool in (toolchain.BETTERLEAKS, toolchain.LYCHEE):
+            for (system, _), asset in tool.assets.items():
+                archive = cache / tool.name / tool.version / asset.filename
+                if not archive.is_file():
+                    continue
+                name = tool.name + (".exe" if system == "windows" else "")
+                self.assertEqual(
+                    asset.executable_sha256,
+                    toolchain._archive_executable_sha256(archive, name),
+                    f"{asset.filename} no longer matches its pinned executable digest",
+                )
+                checked += 1
+        if not checked:
+            self.skipTest("no verified engine archive is cached on this host")
+
+
+if __name__ == "__main__":
+    unittest.main()
