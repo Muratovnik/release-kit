@@ -26,10 +26,10 @@ class CheckLifecycleTests(unittest.TestCase):
         artifact.write_bytes(b"fixture setup only")
         self.root = parent / "source"
         self.environment = create_project(self.root, artifact)
-        (self.root / "pyproject.toml").write_text(
-            '[project]\nversion = "1.2.3"\n', encoding="utf-8"
-        )
-        git(self.root, self.environment, "add", "--", "pyproject.toml")
+        declaration = self.root / "src/releasekit/__init__.py"
+        declaration.parent.mkdir(parents=True, exist_ok=True)
+        declaration.write_text('__version__ = "1.2.3"\n', encoding="utf-8")
+        git(self.root, self.environment, "add", "--", "src/releasekit/__init__.py")
         git(self.root, self.environment, "commit", "-qm", "test: declare check version")
         self.state = self.root / ".cache/release-kit-checks"
 

@@ -15,12 +15,13 @@ import shutil
 import subprocess
 import sys
 import tempfile
-import tomllib
 from pathlib import Path
 
 from smoke import inventory
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from releasekit import distribution
 
 
 class CheckFailure(RuntimeError):
@@ -300,8 +301,9 @@ def main(argv=None) -> int:
         identity = storage.identity(workspace)
         (workspace / "tmp").mkdir()
         report["workspace"] = str(workspace)
-        project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-        version = project["version"]
+        version = distribution.source_version(
+            (ROOT / "src" / "releasekit" / "__init__.py").read_text(encoding="utf-8")
+        )
         report["version"] = version
         if arguments.version is not None and arguments.version != version:
             raise CheckFailure("requested asset version differs from this source snapshot")

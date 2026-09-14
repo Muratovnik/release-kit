@@ -57,7 +57,10 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 - Public behaviour is what the version protects: the `relkit` command line, its exit
   codes, the finding kinds, and the `relkit.toml` schema.
 - Distributed behaviour changes require a new version and dated changelog entry.
-  Keep package and runtime versions aligned; the builder checks both and the
+  `src/releasekit/__init__.py` declares the version once; packaging metadata takes it
+  from there, and `python tools/set_version.py X.Y.Z` writes the plugin manifest, the
+  plugin project and, through uv, its lock. Never hand-edit a version elsewhere and
+  never hand-edit the lock at all. The builder checks the components agree and the
   updater refuses changed artifacts under the same version. Never replace an
   already-published release asset with different bytes, including packaged docs.
 

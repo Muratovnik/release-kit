@@ -4,7 +4,10 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "release-kit"
-version = "0.23.1"
+# One declaration, in src/releasekit/__init__.py. Every builder, the plugin and the
+# release coordinator already read the version from there, so packaging metadata
+# references it rather than repeating a number that can drift from it.
+dynamic = ["version"]
 description = "Release-cycle and publication-exposure gates for any repository"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -25,6 +28,9 @@ relkit-mcp = "releasekit_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "releasekit.__version__"}
 
 [tool.ruff]
 line-length = 100

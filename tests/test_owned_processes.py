@@ -164,7 +164,9 @@ class OwnedProcessTests(unittest.TestCase):
         artifact.write_bytes(b"setup only; never execute")
         source = self.root / "source"
         create_project(source, artifact)
-        (source / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+        declaration = source / "src/releasekit/__init__.py"
+        declaration.parent.mkdir(parents=True, exist_ok=True)
+        declaration.write_text('__version__ = "1.2.3"\n', encoding="utf-8")
         return source
 
     def test_distribution_timeout_cleans_workers_before_unlocking_state(self):

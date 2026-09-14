@@ -55,20 +55,22 @@ def sha(payload: bytes) -> str:
 
 
 class DistributionTests(unittest.TestCase):
-    def test_builder_requires_matching_metadata_and_dated_changelog(self) -> None:
+    def test_builder_refuses_a_second_version_and_needs_a_dated_changelog(self) -> None:
         builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             source = root / "src/releasekit"
             source.mkdir(parents=True)
             (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
-            (root / "pyproject.toml").write_text('[project]\nversion = "0.5.0"\n')
+            # Metadata that states its own number is the drift the declaration removes,
+            # so a literal is refused even when it happens to agree today.
+            (root / "pyproject.toml").write_text('[project]\nversion = "0.6.0"\n')
             (root / "CHANGELOG.md").write_text("## [Unreleased]\n")
             output = root / "relkit.pyz"
             with patch.dict(builder.__globals__, {"ROOT": root, "SOURCE": source}):
-                with self.assertRaisesRegex(ValueError, "versions differ"):
+                with self.assertRaisesRegex(ValueError, "from the runtime declaration"):
                     builder(output)
-                (root / "pyproject.toml").write_text('[project]\nversion = "0.6.0"\n')
+                (root / "pyproject.toml").write_text('[project]\ndynamic = ["version"]\n')
                 with self.assertRaisesRegex(ValueError, "dated changelog"):
                     builder(output)
                 self.assertFalse(output.exists())
@@ -85,7 +87,7 @@ class DistributionTests(unittest.TestCase):
             (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
             (source / "cli.py").write_text("def main():\n    return 0\n")
             (root / "pyproject.toml").write_text(
-                '[project]\nversion = "0.6.0"\nauthors = []\nlicense = "MIT"\n'
+                '[project]\ndynamic = ["version"]\nauthors = []\nlicense = "MIT"\n'
             )
             (root / "LICENSE").write_text("license text\n")
             (root / "CHANGELOG.md").write_text(
@@ -110,7 +112,7 @@ class DistributionTests(unittest.TestCase):
             (source / "__init__.py").write_text('__version__ = "0.6.0"\n')
             (source / "cli.py").write_text("def main():\n    return 0\n")
             (root / "pyproject.toml").write_text(
-                '[project]\nversion = "0.6.0"\nauthors = []\nlicense = "MIT"\n'
+                '[project]\ndynamic = ["version"]\nauthors = []\nlicense = "MIT"\n'
             )
             (root / "LICENSE").write_text("license text\n")
             (root / "CHANGELOG.md").write_text("## [0.6.0] - 2026-01-01\n")

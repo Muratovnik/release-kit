@@ -16,8 +16,8 @@ repository = "Muratovnik/release-kit"
 publisher = "github"
 build = [["{python}", "tools/build_release.py", "{assets}"]]
 branch = "main"
-version_file = "pyproject.toml"
-version_pattern = '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$'
+version_file = "src/releasekit/__init__.py"
+version_pattern = '^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"$'
 assets = [
     "relkit.pyz",
     "relkit.pyz.sha256",

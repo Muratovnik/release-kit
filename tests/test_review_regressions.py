@@ -190,9 +190,9 @@ class ReleaseSetTests(unittest.TestCase):
     def test_package_runner_accepts_git_free_source_with_separate_assets_and_scratch(self):
         snapshot = self.root / "snapshot"
         snapshot.mkdir()
-        (snapshot / "pyproject.toml").write_text(
-            f'[project]\nversion = "{VERSION}"\n', encoding="utf-8"
-        )
+        declaration = snapshot / "src/releasekit/__init__.py"
+        declaration.parent.mkdir(parents=True)
+        declaration.write_text(f'__version__ = "{VERSION}"\n', encoding="utf-8")
         scratch = self.root / "scratch"
         scratch.mkdir()
         # Exercise orchestration/storage with a real child, not SDK behavior.

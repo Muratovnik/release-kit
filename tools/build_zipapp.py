@@ -34,8 +34,10 @@ def _write(archive: zipfile.ZipFile, name: str, payload: bytes) -> None:
 def build(output: Path, *, repository: str = "") -> None:
     version = distribution.source_version((SOURCE / "__init__.py").read_text(encoding="utf-8"))
     project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
-    if project["version"] != version:
-        raise ValueError("package metadata and runtime versions differ")
+    # Packaging metadata takes its version from the runtime declaration above, so there
+    # is no second number to compare. Refuse a literal that reintroduces one.
+    if "version" in project or "version" not in project.get("dynamic", ()):
+        raise ValueError("package metadata must take its version from the runtime declaration")
     changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     # The coordinator requires the released heading to carry the compare link for the
     # actual Git boundary. Accepting only an unlinked heading here is what made this
