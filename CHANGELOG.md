@@ -2,6 +2,29 @@
 
 ## [Unreleased]
 
+## [0.26.0](https://github.com/Muratovnik/release-kit/compare/v0.25.0...v0.26.0) (2026-09-14)
+
+### Highlights
+
+A release used to print four lines in ten minutes, so a slow check and a hung one
+looked the same. Stages are now numbered against the sequence the run performs, and a
+long step reports how long it has been running. The indicator writes only to a
+terminal and only to the process's original stderr, so captured logs and CI output
+keep the shape they had.
+
+Two publications of this project were lost to a draft that its own run could not find
+again: creation reported nothing addressable, so the run searched a list that had not
+caught up. Creation now returns the release and it is addressed by that id.
+
+### Features
+
+- **release:** say which stage is running and for how long ([c22d53c](https://github.com/Muratovnik/release-kit/commit/c22d53c9e4a629d52940010959b87f2a4b616c61))
+
+### Bug Fixes
+
+- **check:** remove a successful check run whose child tools filled its tmp ([c916b38](https://github.com/Muratovnik/release-kit/commit/c916b38563c303adb83159b4bea238e302d46240))
+- **release:** address the created draft by the id creation returned ([07e9fd7](https://github.com/Muratovnik/release-kit/commit/07e9fd79b7e88d7f89429430e4b430b173725448))
+
 ## [0.25.0](https://github.com/Muratovnik/release-kit/compare/v0.24.0...v0.25.0) (2026-09-14)
 
 ### Highlights
