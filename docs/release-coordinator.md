@@ -68,7 +68,7 @@ Add an opt-in section to the adopting project's committed `relkit.toml`:
 
 ```toml
 [changelog]
-profile = "vue-like"
+profile = "conventional-changelog"
 first_version = "1.0.0"
 
 [release]
@@ -300,7 +300,7 @@ closed; no implicit fetch or `pack-refs` repair takes place. The first version m
 be explicitly declared, never inferred from an empty generator result. A subsequent
 heading must compare the actual previous tag to the current tag in this repository.
 Commit links outside editorial sections are checked for existence, matching label,
-repository, reachability and exclusion from the previous release. The Vue-like
+repository, reachability and exclusion from the previous release. The conventional-changelog
 profile additionally requires each top-level change bullet to carry a matching
 commit link on its opening source line; continuation-line links render as detached
 rows and are rejected. Legacy/strict profiles cannot prove provenance for prose

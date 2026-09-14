@@ -1,8 +1,13 @@
-# Curated release notes
+# Release notes
 
-`relkit notes v1.2.0 --output notes.md` extracts the changelog entry a maintainer
-already wrote. It does not regenerate notes from commits. With a project projection,
-replace `relkit` with `python .github/relkit.pyz`.
+`relkit notes v1.2.0 --output notes.md` extracts the changelog entry that is committed
+to the project. That entry is what gets published, always: a generator can draft it,
+but nothing publishes text nobody reviewed. With a project projection, replace `relkit`
+with `python .github/relkit.pyz`.
+
+`relkit notes v1.2.0 --draft` produces an entry with the project's configured generator
+and holds it to the same profile a published entry must satisfy. It writes nothing into
+the changelog and authorizes nothing; you review the draft, edit it and commit it.
 
 The command reads `[changelog]` from the root's `relkit.toml`. Relative `--changelog`
 and `--output` paths are based on that root; `--root` selects another root.
@@ -13,24 +18,57 @@ and `--output` paths are based on that root; `--root` selects another root.
 | --- | --- |
 | `legacy` (default) | Original extraction, including heading-only entries and the first duplicate; also used without `relkit.toml` |
 | `strict` | Reject empty entries and duplicate headings for the requested version; leave layout to the project |
-| `vue-like` | Strict checks plus the bounded layout and visible commit-link rules below |
+| `conventional-changelog` | Strict checks plus the bounded layout and visible commit-link rules below |
 
 `notes --strict` enables strict validation without configuration and never weakens
-an existing `vue-like` profile. A malformed policy is an error, not a fallback.
+an existing `conventional-changelog` profile. A malformed policy is an error, not a fallback.
 Opt in explicitly; `cliff.toml` or generated-looking text does not enable a profile.
 
 ```toml
 [changelog]
-profile = "vue-like"
+profile = "conventional-changelog"
 first_version = "0.1.0"
 ```
 
-The [Vue changelog](https://github.com/vuejs/core/blob/main/CHANGELOG.md) is the
-layout reference. [git-cliff](https://git-cliff.org/docs/templating/examples/) can
-prepare a draft before human review; release-kit never runs it or requires equality
-with generated output.
+The layout is the one [conventional-changelog](https://github.com/conventional-changelog/conventional-changelog)
+emits with its `angular` preset, which is what the
+[Vue changelog](https://github.com/vuejs/core/blob/main/CHANGELOG.md) is generated with.
 
-## Vue-like layout
+## Generators
+
+```toml
+[changelog.generator]
+engine = "git-cliff"
+```
+
+| Form | Meaning |
+| --- | --- |
+| `engine` | A tool release-kit provisions and verifies, exactly like the scanners: one official archive, its pinned SHA-256, one executable checked against its own pinned digest. Supported: `git-cliff`. |
+| `command` | An exact argv this project supplies, run as written from the project root. Use it for anything else, including the Node tools. |
+
+Only a provisioned tool may be named instead of spelled out. A short name for a
+third-party command would have to guess at the environment behind it — `npx` or a
+global install, which package manager, which version — and this tool does not guess.
+
+For a project that already has Node, the most faithful way to reproduce that layout is
+the tool that defines it:
+
+```toml
+[changelog.generator]
+command = ["npx", "conventional-changelog", "-p", "angular"]
+```
+
+`git-cliff` reads its own `cliff.toml` from the project root, so the template stays
+yours. A starter that satisfies the profile is in
+[examples/changelog](../examples/changelog/cliff.toml). Whatever the generator emits,
+`--draft` refuses it unless it satisfies the configured profile.
+
+A generated bullet is a commit subject, which is written for a reviewer rather than for
+a reader of the release. Put what a reader needs in a `Highlights` section: it is
+exempt from the per-bullet commit link, so hand-written context sits above the
+generated list without breaking the layout.
+
+## conventional-changelog layout
 
 Use a level-two version/date heading, for example:
 
@@ -97,6 +135,6 @@ regenerates or reformats human edits.
 
 ## Python API
 
-`releasekit.release.changelog.entry_for(text, version, profile="vue-like", first_version="0.1.0")`
+`releasekit.release.changelog.entry_for(text, version, profile="conventional-changelog", first_version="0.1.0")`
 returns the original entry or `None` when absent. Invalid entries raise
 `ChangelogError` with a one-based `line`. No Git checkout or network is required.

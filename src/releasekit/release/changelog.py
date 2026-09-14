@@ -13,14 +13,14 @@ import re
 from datetime import date
 from urllib.parse import unquote, urlsplit
 
-PROFILES = frozenset({"legacy", "strict", "vue-like"})
+PROFILES = frozenset({"legacy", "strict", "conventional-changelog"})
 _VERSION = re.compile(
     r"(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)"
     r"(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?"
     r"(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 )
 _HEADING = re.compile(r"^ {0,3}##[ \t]+(?:\[([^\]]+)\]|([^\s]+))")
-_VUE_HEADING = re.compile(
+_CONVENTIONAL_HEADING = re.compile(
     r"^## \[([^\]]+)\](?:\(([^\s)]+)\))? \(([0-9]{4}-[0-9]{2}-[0-9]{2})\)[ \t]*$"
 )
 _SECTIONS = frozenset(
@@ -130,7 +130,7 @@ def _url_path(url: str) -> str:
 
 
 def _validate_heading(heading: str, version: str, first_version: str, line: int) -> None:
-    match = _VUE_HEADING.fullmatch(heading)
+    match = _CONVENTIONAL_HEADING.fullmatch(heading)
     if not match or not is_version(match[1]):
         raise ChangelogError(line, "expected ## [SemVer](compare URL) (YYYY-MM-DD)")
     try:
@@ -164,7 +164,9 @@ def _has_commit_link(text: str) -> bool:
     return False
 
 
-def _validate_vue(lines: list[str], start: int, end: int, version: str, first_version: str) -> None:
+def _validate_conventional(
+    lines: list[str], start: int, end: int, version: str, first_version: str
+) -> None:
     _validate_heading(lines[start], version, first_version, start + 1)
     section = ""
     section_line = start + 1
@@ -202,7 +204,9 @@ def _validate_vue(lines: list[str], start: int, end: int, version: str, first_ve
             bullet = []
             nested_detail = False
             if section not in _SECTIONS:
-                raise ChangelogError(index + 1, f"unsupported Vue-like section: {section}")
+                raise ChangelogError(
+                    index + 1, f"unsupported conventional-changelog section: {section}"
+                )
             continue
         if not section:
             raise ChangelogError(index + 1, "release content must be under a supported ### section")
@@ -234,7 +238,7 @@ def entry_for(
     """Extract once and validate that exact entry; never regenerate it.
 
     Legacy preserves the original permissive API. Strict rejects duplicate and empty
-    entries. Vue-like additionally enforces the documented, opt-in layout. Errors
+    entries. The conventional-changelog profile additionally enforces the documented, opt-in layout. Errors
     carry source lines; a version absent from the document still returns None.
     """
     if profile not in PROFILES:
@@ -253,8 +257,8 @@ def entry_for(
         end = next((i for i, _ in headings if i > start), len(lines))
         if not _has_content(lines[start + 1 : end]):
             raise ChangelogError(start + 1, f"empty entry for {version}")
-        if profile == "vue-like":
-            _validate_vue(lines, start, end, version, first_version)
+        if profile == "conventional-changelog":
+            _validate_conventional(lines, start, end, version, first_version)
         return "".join(raw[start:end]).rstrip("\r\n")
     heading = re.escape(normalize(version))
     # Keep-a-Changelog brackets the version whether or not it links anywhere, so the

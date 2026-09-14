@@ -130,7 +130,49 @@ LYCHEE = Tool(
     },
 )
 
-TOOLS = {tool.name: tool for tool in (BETTERLEAKS, LYCHEE)}
+GIT_CLIFF = Tool(
+    name="git-cliff",
+    version="2.14.1",
+    repository="orhun/git-cliff",
+    release="v2.14.1",
+    executable="git-cliff.exe" if sys.platform == "win32" else "git-cliff",
+    assets={
+        ("darwin", "arm64"): Asset(
+            "git-cliff-2.14.1-aarch64-apple-darwin.tar.gz",
+            "2e2d1f60963aa6a201dbd21df14d7f44025328b8bb33437695f15a516598615a",
+            "ffdf813143f2fb2a6483757709d205f8d64d076147f23f76a9c31e779404c56d",
+        ),
+        ("darwin", "x64"): Asset(
+            "git-cliff-2.14.1-x86_64-apple-darwin.tar.gz",
+            "d1ca51bfd8b8c2a09434532bdb85bab50179b7c0bde2378aa48f3c1a7dc2fd36",
+            "6452417f0df5ab338bc495aa2ab04c1ceab3484653dc07cdacc56540f72ffc34",
+        ),
+        ("linux", "arm64"): Asset(
+            "git-cliff-2.14.1-aarch64-unknown-linux-gnu.tar.gz",
+            "e99dc84135c6bc27aefc9d8226f7297119ed6750a32f45418f4587bc6cb260d8",
+            "e7028083454546d5fefa77a509b62f96337a95495c102dbe0ebd5231658cb032",
+        ),
+        ("linux", "x64"): Asset(
+            "git-cliff-2.14.1-x86_64-unknown-linux-gnu.tar.gz",
+            "dfe9bef0c7a00d05fafe78e6e591a1a280d39dd495b8066764db0a559acde67f",
+            "dc44176fa67b3ee0382a05f9f309ececa301ea8012062bb523be431d5f74605a",
+        ),
+        # git-cliff publishes a native Windows arm64 build, which Lychee does not, so
+        # this engine covers a platform the link check still refuses.
+        ("windows", "arm64"): Asset(
+            "git-cliff-2.14.1-aarch64-pc-windows-msvc.zip",
+            "6769ff0f5d65d1892ff8a3711ac76b78bf0c13eb124a80bc04147f6cffc03d0c",
+            "5604cde53da10888775085c5271ff5e29b05d08c52b246363ce87beb1cd68baf",
+        ),
+        ("windows", "x64"): Asset(
+            "git-cliff-2.14.1-x86_64-pc-windows-msvc.zip",
+            "791aa263079aa7894e24d4e2f8e978aa6214e9dd9dbf04f79ae5f3565758f1a1",
+            "a1a3da09d147d82fe4f3253e2788a82674fc6f0d33e0bac3b339da2b2474c1b7",
+        ),
+    },
+)
+
+TOOLS = {tool.name: tool for tool in (BETTERLEAKS, LYCHEE, GIT_CLIFF)}
 
 
 def _windows_machine() -> str:

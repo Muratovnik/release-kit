@@ -12,7 +12,7 @@ class LoadTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
             self.assertEqual("legacy", config.load(root, required=False).changelog.profile)
-            for profile in ("legacy", "strict", "vue-like"):
+            for profile in ("legacy", "strict", "conventional-changelog"):
                 with self.subTest(profile=profile):
                     (root / config.CONFIG_NAME).write_text(
                         f'[changelog]\nprofile = "{profile}"\nfirst_version = "v0.1.0"\n',
@@ -24,7 +24,7 @@ class LoadTests(unittest.TestCase):
 
     def test_malformed_changelog_policy_cannot_silently_disable_validation(self) -> None:
         for payload in (
-            'changelog = "vue-like"',
+            'changelog = "conventional-changelog"',
             '[changelog]\nprofile = "vue"',
             "[changelog]\nprofile = false",
             "[changelog]\nstrict = true",

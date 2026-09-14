@@ -11,8 +11,11 @@ exclude = ["tests/*"]
 # compare link could resolve to, so its commits sit in the release that shipped them.
 # 0.6.0 is the first release and has no predecessor tag.
 [changelog]
-profile = "vue-like"
+profile = "conventional-changelog"
 first_version = "0.6.0"
+
+[changelog.generator]
+engine = "git-cliff"
 
 # Build and qualify locally; GitHub is an explicit delivery adapter. This names
 # the tool's own publisher, never a project it guards. No hosted runner is needed.

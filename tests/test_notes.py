@@ -30,7 +30,9 @@ class NotesTests(unittest.TestCase):
         self.source = self.root / "CHANGELOG.md"
         self.source.write_text(VALID, encoding="utf-8", newline="")
         self.policy = self.root / "relkit.toml"
-        self.policy.write_text('[changelog]\nprofile = "vue-like"\n', encoding="utf-8")
+        self.policy.write_text(
+            '[changelog]\nprofile = "conventional-changelog"\n', encoding="utf-8"
+        )
 
     def run_notes(self, *args: str) -> tuple[int, str, str]:
         stdout, stderr = io.StringIO(), io.StringIO()
@@ -39,7 +41,7 @@ class NotesTests(unittest.TestCase):
         return code, stdout.getvalue(), stderr.getvalue()
 
     def test_stdout_and_file_export_are_the_validated_entry_not_a_regeneration(self) -> None:
-        expected = entry_for(VALID, "v1.2.0", profile="vue-like") + "\n"
+        expected = entry_for(VALID, "v1.2.0", profile="conventional-changelog") + "\n"
         code, stdout, stderr = self.run_notes()
         self.assertEqual((0, expected, ""), (code, stdout, stderr))
         code, stdout, stderr = self.run_notes("--output", "notes.md")
@@ -130,7 +132,7 @@ class NotesTests(unittest.TestCase):
         )
         self.source.write_bytes(text.encode())
         self.assertEqual(0, self.run_notes("--output", "notes.md")[0])
-        expected = entry_for(text, "1.2.0", profile="vue-like") + "\n"
+        expected = entry_for(text, "1.2.0", profile="conventional-changelog") + "\n"
         self.assertEqual(expected.encode(), (self.root / "notes.md").read_bytes())
 
     def test_zipapp_uses_the_same_configured_validation_and_export(self) -> None:
@@ -143,7 +145,7 @@ class NotesTests(unittest.TestCase):
         command = [sys.executable, str(artifact), "notes", "v1.2.0", "--output", "notes.md"]
         result = subprocess.run(command, cwd=self.root, capture_output=True, text=True, check=False)
         self.assertEqual(0, result.returncode, result.stderr)
-        expected = (entry_for(VALID, "1.2.0", profile="vue-like") + "\n").encode()
+        expected = (entry_for(VALID, "1.2.0", profile="conventional-changelog") + "\n").encode()
         self.assertEqual(expected, (self.root / "notes.md").read_bytes())
         stdout_result = subprocess.run(
             command[:-2], cwd=self.root, capture_output=True, check=False

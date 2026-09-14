@@ -19,7 +19,16 @@ import traceback
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import __version__, owner, protection, publication, toolchain, update
+from . import (
+    __version__,
+    generation,
+    owner,
+    protection,
+    publication,
+    storage,
+    toolchain,
+    update,
+)
 from . import config as config_module
 from .exposure import audit
 from .overlay import manifest as manifest_module
@@ -200,13 +209,24 @@ def _notes(arguments: argparse.Namespace) -> int:
         arguments.result.error("configuration_error", error)
         print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
-    try:
-        with path.open(encoding="utf-8", newline="") as source:
-            text = source.read()
-    except (OSError, UnicodeError) as error:
-        arguments.result.error("io_error", error, path=str(path))
-        print(f"relkit notes: {path}: {error}", file=sys.stderr)
-        return 2
+    if arguments.draft:
+        # A draft is held to the profile the published entry must satisfy, so a
+        # generator that emits the wrong layout fails here rather than at release.
+        try:
+            text = generation.draft(policy, arguments.version, root=root)
+        except (generation.GenerationError, storage.StorageError) as error:
+            arguments.result.error("generation_error", error)
+            print(f"relkit notes: {error}", file=sys.stderr)
+            return 2
+        path = root / "<generated>"
+    else:
+        try:
+            with path.open(encoding="utf-8", newline="") as source:
+                text = source.read()
+        except (OSError, UnicodeError) as error:
+            arguments.result.error("io_error", error, path=str(path))
+            print(f"relkit notes: {path}: {error}", file=sys.stderr)
+            return 2
     profile = "strict" if arguments.strict and policy.profile == "legacy" else policy.profile
     try:
         entry = changelog_module.entry_for(
@@ -493,7 +513,13 @@ def build_parser() -> argparse.ArgumentParser:
     notes.add_argument(
         "--strict",
         action="store_true",
-        help="Reject duplicate and empty entries; does not weaken a configured Vue-like profile",
+        help="Reject duplicate and empty entries; does not weaken a configured conventional-changelog profile",
+    )
+    notes.add_argument(
+        "--draft",
+        action="store_true",
+        help="Produce an entry with the configured generator instead of reading the changelog; "
+        "review and commit it yourself, nothing is written into the changelog",
     )
     notes.set_defaults(handler=_notes)
 

@@ -211,25 +211,78 @@ class ExposureConfig:
 
 
 @dataclass(frozen=True)
+class GeneratorConfig:
+    """How a draft entry is produced. Never how a published entry is chosen."""
+
+    engine: str = ""
+    command: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
 class ChangelogConfig:
     profile: str = "legacy"
     first_version: str = ""
+    generator: GeneratorConfig | None = None
+
+
+# Only a tool this project provisions and verifies may be named instead of spelled out.
+# A short name for anything else would have to guess at the operator's environment —
+# npx or a global install, which package manager, which version — and guessing is the
+# thing this tool refuses to do everywhere else.
+GENERATOR_ENGINES = frozenset({"git-cliff"})
+# Profiles whose names described something other than the layout they validate.
+RENAMED_PROFILES = {"vue-like": "conventional-changelog"}
+
+
+def _generator(section: dict[str, object]) -> GeneratorConfig | None:
+    raw = section.get("generator")
+    if raw is None:
+        return None
+    if not isinstance(raw, dict):
+        raise ConfigError("[changelog.generator] must be a table")
+    unknown = sorted(set(raw) - {"engine", "command"})
+    if unknown:
+        raise ConfigError(f"unknown [changelog.generator] key(s): {', '.join(unknown)}")
+    if ("engine" in raw) == ("command" in raw):
+        raise ConfigError(
+            "[changelog.generator] needs exactly one of engine (a provisioned tool) or "
+            "command (an exact argv this project supplies)"
+        )
+    if "engine" in raw:
+        engine = _string(raw, "engine", "")
+        if engine not in GENERATOR_ENGINES:
+            raise ConfigError(
+                "changelog.generator.engine must be one of: "
+                f"{', '.join(sorted(GENERATOR_ENGINES))}; use command for any other tool"
+            )
+        return GeneratorConfig(engine=engine)
+    command = _strings(raw, "command")
+    if not command or not all(isinstance(word, str) and word for word in command):
+        raise ConfigError("changelog.generator.command must be a nonempty argv of nonempty strings")
+    return GeneratorConfig(command=tuple(command))
 
 
 def _changelog(raw: dict[str, object]) -> ChangelogConfig:
     section = raw.get("changelog", {})
     if not isinstance(section, dict):
         raise ConfigError("[changelog] must be a table")
-    unknown = sorted(set(section) - {"profile", "first_version"})
+    unknown = sorted(set(section) - {"profile", "first_version", "generator"})
     if unknown:
         raise ConfigError(f"unknown [changelog] key(s): {', '.join(unknown)}")
     profile = _string(section, "profile", "legacy")
+    if profile in RENAMED_PROFILES:
+        raise ConfigError(
+            f"changelog.profile {profile!r} is now {RENAMED_PROFILES[profile]!r}: a profile "
+            "names the layout it validates, not a project that happens to publish it"
+        )
     if profile not in PROFILES:
         raise ConfigError(f"changelog.profile must be one of: {', '.join(sorted(PROFILES))}")
     first_version = _string(section, "first_version", "")
     if "first_version" in section and not is_version(first_version):
         raise ConfigError("changelog.first_version must be a SemVer version or tag")
-    return ChangelogConfig(profile=profile, first_version=first_version)
+    return ChangelogConfig(
+        profile=profile, first_version=first_version, generator=_generator(section)
+    )
 
 
 @dataclass(frozen=True)

@@ -79,7 +79,7 @@ class DistributionTests(unittest.TestCase):
         # The coordinator requires the released heading to compare the actual previous
         # tag to this one. A builder that took only an unlinked heading meant no
         # project could satisfy both, including this one. Keep-a-Changelog introduces
-        # the date with a dash and the Vue-like layout parenthesises it; this
+        # the date with a dash and the conventional-changelog layout parenthesises it; this
         # repository's own changelog is written in the second form.
         builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
         link = "https://example.invalid/o/r/compare/v0.5.0...v0.6.0"

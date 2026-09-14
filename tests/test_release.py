@@ -282,7 +282,7 @@ class ReleaseFixture(unittest.TestCase):
         )
         (self.root / "relkit.toml").write_text(
             "[exposure]\ncheck_secrets = false\ncheck_links = false\n"
-            '[changelog]\nprofile = "vue-like"\nfirst_version = "1.0.0"\n'
+            '[changelog]\nprofile = "conventional-changelog"\nfirst_version = "1.0.0"\n'
             '[release]\nrepository = "example/project"\nworkflow = ".github/workflows/release.yml"\n'
             'required_jobs = ["publish"]\nversion_file = "VERSION"\nversion_pattern = "^(.+)$"\n'
             'assets = ["application.bin", "SHA256SUMS"]\nchecksum_file = "SHA256SUMS"\n'

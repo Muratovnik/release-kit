@@ -134,7 +134,9 @@ class VueLikeTests(unittest.TestCase):
             "### BREAKING CHANGES\n\nMigration instructions stay verbatim.\n\n"
             "- Replace the old setting.\n\n```toml\nnew_setting = true\n```"
         )
-        self.assertEqual(text.rstrip(), changelog.entry_for(text, "v1.2.0", profile="vue-like"))
+        self.assertEqual(
+            text.rstrip(), changelog.entry_for(text, "v1.2.0", profile="conventional-changelog")
+        )
 
     def test_manually_written_first_release_without_commit_links_is_rejected(self) -> None:
         text = self.notes(
@@ -144,7 +146,9 @@ class VueLikeTests(unittest.TestCase):
             header="## [1.2.0](https://example.invalid/releases/tag/v1.2.0) (2026-01-05)",
         )
         with self.assertRaisesRegex(changelog.ChangelogError, "commit link") as caught:
-            changelog.entry_for(text, "1.2.0", profile="vue-like", first_version="1.2.0")
+            changelog.entry_for(
+                text, "1.2.0", profile="conventional-changelog", first_version="1.2.0"
+            )
         self.assertEqual(9, caught.exception.line)
 
     def test_first_release_requires_explicit_version_not_missing_older_entries(self) -> None:
@@ -155,12 +159,16 @@ class VueLikeTests(unittest.TestCase):
                     header=f"## [1.2.0]{link} (2026-01-05)",
                 )
                 self.assertIsNotNone(
-                    changelog.entry_for(text, "1.2.0", profile="vue-like", first_version="v1.2.0")
+                    changelog.entry_for(
+                        text, "1.2.0", profile="conventional-changelog", first_version="v1.2.0"
+                    )
                 )
                 with self.assertRaisesRegex(changelog.ChangelogError, "compare"):
-                    changelog.entry_for(text, "1.2.0", profile="vue-like")
+                    changelog.entry_for(text, "1.2.0", profile="conventional-changelog")
                 with self.assertRaises(changelog.ChangelogError):
-                    changelog.entry_for(text, "1.2.0", profile="vue-like", first_version="1.0.0")
+                    changelog.entry_for(
+                        text, "1.2.0", profile="conventional-changelog", first_version="1.0.0"
+                    )
 
     def test_scope_and_pull_request_are_optional_and_both_bullet_styles_work(self) -> None:
         for bullet in ("-", "*", "+"):
@@ -169,7 +177,9 @@ class VueLikeTests(unittest.TestCase):
                     text = self.notes(
                         "### Bug Fixes\n\n" + self.CHANGE.replace("- ", bullet + " " + scope)
                     )
-                    self.assertIsNotNone(changelog.entry_for(text, "1.2.0", profile="vue-like"))
+                    self.assertIsNotNone(
+                        changelog.entry_for(text, "1.2.0", profile="conventional-changelog")
+                    )
 
     def test_closed_sections_but_both_breaking_spellings_are_supported(self) -> None:
         for section in (
@@ -184,12 +194,16 @@ class VueLikeTests(unittest.TestCase):
             with self.subTest(section=section):
                 self.assertIsNotNone(
                     changelog.entry_for(
-                        self.notes(f"### {section}\n\n{self.CHANGE}"), "1.2.0", profile="vue-like"
+                        self.notes(f"### {section}\n\n{self.CHANGE}"),
+                        "1.2.0",
+                        profile="conventional-changelog",
                     )
                 )
         with self.assertRaisesRegex(changelog.ChangelogError, "section"):
             changelog.entry_for(
-                self.notes("### Miscellaneous\n\n" + self.CHANGE), "1.2.0", profile="vue-like"
+                self.notes("### Miscellaneous\n\n" + self.CHANGE),
+                "1.2.0",
+                profile="conventional-changelog",
             )
 
     def test_missing_sections_and_changes_outside_sections_are_rejected(self) -> None:
@@ -200,7 +214,7 @@ class VueLikeTests(unittest.TestCase):
             "### Features\n\n  " + self.CHANGE,
         ):
             with self.subTest(body=body), self.assertRaises(changelog.ChangelogError):
-                changelog.entry_for(self.notes(body), "1.2.0", profile="vue-like")
+                changelog.entry_for(self.notes(body), "1.2.0", profile="conventional-changelog")
 
     def test_invalid_dates_and_compare_targets_are_rejected(self) -> None:
         for header in (
@@ -216,7 +230,7 @@ class VueLikeTests(unittest.TestCase):
                 changelog.entry_for(
                     self.notes("### Features\n\n" + self.CHANGE, header=header),
                     "1.2.0",
-                    profile="vue-like",
+                    profile="conventional-changelog",
                 )
             self.assertEqual(1, caught.exception.line)
 
@@ -242,13 +256,13 @@ class VueLikeTests(unittest.TestCase):
                 changelog.entry_for(
                     self.notes("### Features\n\n- missing trace " + evidence),
                     "1.2.0",
-                    profile="vue-like",
+                    profile="conventional-changelog",
                 )
         with self.assertRaisesRegex(changelog.ChangelogError, "commit link"):
             changelog.entry_for(
                 self.notes("### Features\n\n" + self.CHANGE + "\n- unlinked second change"),
                 "1.2.0",
-                profile="vue-like",
+                profile="conventional-changelog",
             )
 
     def test_commit_link_wrapped_to_a_continuation_line_is_rejected(self) -> None:
@@ -256,13 +270,15 @@ class VueLikeTests(unittest.TestCase):
             "### Features\n\n- a useful change\n  ([abc1234](https://example.invalid/commit/abc1234567))"
         )
         with self.assertRaisesRegex(changelog.ChangelogError, "top-level bullet line") as caught:
-            changelog.entry_for(text, "1.2.0", profile="vue-like")
+            changelog.entry_for(text, "1.2.0", profile="conventional-changelog")
         self.assertEqual(5, caught.exception.line)
 
     def test_release_candidate_versions_keep_inline_commit_links(self) -> None:
         text = self.notes("### Features\n\n" + self.CHANGE)
         text = text.replace("1.2.0", "1.2.0-rc.1")
-        self.assertIsNotNone(changelog.entry_for(text, "v1.2.0-rc.1", profile="vue-like"))
+        self.assertIsNotNone(
+            changelog.entry_for(text, "v1.2.0-rc.1", profile="conventional-changelog")
+        )
 
 
 if __name__ == "__main__":

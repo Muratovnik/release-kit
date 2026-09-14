@@ -1,0 +1,40 @@
+# git-cliff configuration producing the layout the `conventional-changelog` profile
+# validates: a heading that compares two versions, bounded section names, and a commit
+# link on the first line of every bullet. Keep those three properties when editing —
+# `relkit notes` refuses a draft that loses them, which is the point of generating it.
+#
+# Sections are ordered by the hidden sort key in each group name; `striptags` removes it.
+
+[changelog]
+body = """
+{% if version %}## [{{ version | trim_start_matches(pat="v") }}]({{ self::remote_url() }}/compare/{{ previous.version }}...{{ version }}) ({{ timestamp | date(format="%Y-%m-%d") }}){% else %}## [Unreleased]{% endif %}
+{% for group, group_commits in commits | group_by(attribute="group") %}
+### {{ group | striptags | trim }}
+
+{% for commit in group_commits -%}
+- {% if commit.scope %}**{{ commit.scope }}:** {% endif %}{{ commit.message }} ([{{ commit.id | truncate(length=7, end="") }}]({{ self::remote_url() }}/commit/{{ commit.id }}))
+{% endfor %}
+{%- endfor %}
+{%- macro remote_url() -%}
+  https://github.com/{{ remote.github.owner }}/{{ remote.github.repo }}
+{%- endmacro -%}
+"""
+trim = true
+
+[git]
+conventional_commits = true
+filter_unconventional = true
+filter_commits = true
+# Only the types a reader of a release is looking for. Everything else is work on the
+# project, not a change to it, which is why the convention leaves it out.
+commit_parsers = [
+    { message = "^feat", group = "<!-- 1 -->Features" },
+    { message = "^fix", group = "<!-- 2 -->Bug Fixes" },
+    { message = "^perf", group = "<!-- 3 -->Performance Improvements" },
+    { message = "^revert", group = "<!-- 4 -->Reverts" },
+    { message = ".*", skip = true },
+]
+
+[remote.github]
+owner = "example-owner"
+repo = "example-project"
