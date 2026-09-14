@@ -17,7 +17,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 GATES = (
-    ["-m", "unittest", "discover", "-s", "tests", "-p", "test_*.py"],
+    # Same discovery, same tests, spread over processes; see tools/parallel_tests.py.
+    ["tools/parallel_tests.py"],
     ["-m", "ruff", "check", "src", "tests", "tools"],
     ["-m", "ruff", "format", "--check", "src", "tests", "tools"],
 )

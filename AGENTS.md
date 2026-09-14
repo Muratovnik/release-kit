@@ -85,6 +85,13 @@ source import path and a canonical temporary directory. This matters on hosts
 where the system temporary path contains a link. The base suite deliberately
 excludes optional SDK integration discovery; it cannot qualify the MCP adapter.
 
+Discovery is the stdlib's, but the tests run across processes through
+`tools/parallel_tests.py`, because the suite is dominated by integration tests that
+each build a real repository. Every discovered test still runs; only the scheduling
+changed. Use `python tools/parallel_tests.py --jobs 1` to reproduce a result
+sequentially, and keep new tests independent of execution order — a test that needs
+a neighbour to run first is a defect in the test, not a reason to serialize the gate.
+
 Before a joint CLI/plugin distribution, provision uv explicitly and run:
 
 ```text
