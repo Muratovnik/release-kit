@@ -6,12 +6,13 @@ betterleaks_config = ".gitleaks.toml"
 # not adoption debt and does not turn off the independent secret scanner.
 exclude = ["tests/*"]
 
-# Entries are generated from the commits of each released range, so every bullet
-# carries the commit it describes. 0.2.1 is the first entry and has no predecessor
-# to compare against.
+# One entry per published release, generated from the commits of its range, so every
+# bullet carries the commit it describes. A version that was never tagged has nothing a
+# compare link could resolve to, so its commits sit in the release that shipped them.
+# 0.6.0 is the first release and has no predecessor tag.
 [changelog]
 profile = "vue-like"
-first_version = "0.2.1"
+first_version = "0.6.0"
 
 # Build and qualify locally; GitHub is an explicit delivery adapter. This names
 # the tool's own publisher, never a project it guards. No hosted runner is needed.

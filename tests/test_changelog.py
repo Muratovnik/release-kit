@@ -1,8 +1,13 @@
 from __future__ import annotations
 
+import re
 import unittest
+from pathlib import Path
 
+from releasekit import config
 from releasekit.release import changelog
+
+ROOT = Path(__file__).resolve().parents[1]
 
 SAMPLE = """# Changelog
 
@@ -262,3 +267,34 @@ class VueLikeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OwnChangelogTests(unittest.TestCase):
+    """The profile validates only the entry being released, so nothing else checked these.
+
+    A rewrite gave every historical heading a compare link between commit ids, which
+    reads fine and resolves on the host but is not what the layout accepts. The release
+    passed because its own entry was well formed; `notes` for any older version failed.
+    """
+
+    def setUp(self):
+        self.settings = config.load(ROOT)
+        self.changelog = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+        self.versions = re.findall(
+            r"^## \[([0-9]+\.[0-9]+\.[0-9]+)\]", self.changelog, re.MULTILINE
+        )
+
+    def test_every_entry_satisfies_the_declared_profile(self):
+        self.assertTrue(self.versions)
+        for version in self.versions:
+            with self.subTest(version=version):
+                entry = changelog.entry_for(
+                    self.changelog,
+                    version,
+                    profile=self.settings.changelog.profile,
+                    first_version=self.settings.changelog.first_version,
+                )
+                self.assertIsNotNone(entry)
+
+    def test_the_declared_first_version_is_the_oldest_entry(self):
+        self.assertEqual(self.settings.changelog.first_version, self.versions[-1])
