@@ -7,7 +7,7 @@ from test_release import FakeGitHub, ReleaseFixture
 
 from releasekit import config
 from releasekit.release import coordinator
-from releasekit.release.backend import GitHub, Pending
+from releasekit.release.backend import GitHub, Pending, ReleaseError
 
 
 class LocalGitHub(FakeGitHub):
@@ -18,6 +18,9 @@ class LocalGitHub(FakeGitHub):
         self.remote_release = None
         self.uploaded = set()
         self.create_calls = self.publish_calls = 0
+        # GitHub's releases list is eventually consistent; this withholds a created
+        # draft from it the way the real one did, twice, in this project's own runs.
+        self.stale_list = False
         self.upload_calls = []
         self.lose = ""
 
@@ -27,19 +30,32 @@ class LocalGitHub(FakeGitHub):
         if path == "/immutable-releases":
             return {"enabled": self.immutable}
         releases = self.published + ([self.remote_release] if self.remote_release else [])
+        listed = self.published if self.stale_list else releases
         if path.startswith("/releases/tags/"):
             return next(
                 (r for r in releases if not r["draft"] and r["tag_name"] == path.rsplit("/", 1)[1]),
                 None,
             )
         if path == "/releases?per_page=100":
-            return [releases]
+            return [listed]
+        if path.startswith("/git/ref/tags/"):
+            tag = path.rsplit("/", 1)[1]
+            return {"object": {"sha": self.fixture.runner.git("rev-parse", f"refs/tags/{tag}")}}
+        if path.startswith("/releases/") and path.rsplit("/", 1)[1].isdigit():
+            identifier = path.rsplit("/", 1)[1]
+            # The list is deliberately not consulted: reading a release by its own id
+            # is what makes creation observable before the list has caught up.
+            return next((r for r in releases if r.get("id") == int(identifier)), None)
         return super().api(path, **kwargs)
 
     release = GitHub.release
+    release_by_id = GitHub.release_by_id
+    tag_object = GitHub.tag_object
 
-    def create_draft(self, tag, sha, title, notes):
+    def create_draft(self, tag, sha, title, notes, *, tag_oid):
         self.create_calls += 1
+        if self.tag_object(tag) != tag_oid:
+            raise ReleaseError(f"{tag} does not resolve to {tag_oid}")
         self.remote_release = {
             "id": 21,
             "tag_name": tag,
@@ -53,6 +69,7 @@ class LocalGitHub(FakeGitHub):
         if self.lose == "create":
             self.lose = ""
             raise Pending("lost create response")
+        return self.remote_release
 
     def upload(self, tag, path):
         self.fixture.assertEqual(self.fixture.payloads[path.name], path.read_bytes())
@@ -117,6 +134,22 @@ class LocalFixture(ReleaseFixture):
 
 
 class LocalReleaseTests(LocalFixture):
+    def test_a_draft_absent_from_a_stale_list_is_still_published(self):
+        """Two publications of this project were lost here, and neither was a defect.
+
+        `gh release create` reported nothing a caller could address, so the run went
+        looking for the draft it had just written in the releases list — which had not
+        caught up — and refused an ownership check it could not answer. Creation now
+        returns the release, so the draft is read by its own id and the list is never
+        consulted for it. Every ownership condition still applies to what comes back.
+        """
+        value = self.prepare()
+        self.github.stale_list = True
+        code, output = self.publish(plan_hash=coordinator.fingerprint(value))
+        self.assertEqual(0, code, output)
+        self.assertEqual(1, self.github.create_calls)
+        self.assertEqual(1, self.github.publish_calls)
+
     def test_prepare_publish_verify_without_actions_or_payment_capabilities(self):
         value = self.prepare()
         self.assertEqual("github", value["settings"]["publisher"])

@@ -122,6 +122,14 @@ class FakeGitHub:
             "body": self.fixture.notes + self.body_suffix,
         }
 
+    def release_by_id(self, identifier):
+        """These fixtures publish one tag, so the id resolves through the same synthesis."""
+        for release in self.published:
+            if release.get("id") == identifier:
+                return release
+        found = self.release("v1.0.0")
+        return found if found and found.get("id") == identifier else None
+
     def release_attestation(self, tag):
         if not self.attestation:
             raise ReleaseError(f"attestation for {tag} could not be verified: no attestations")
@@ -1073,17 +1081,50 @@ class BackendTests(unittest.TestCase):
         ):
             github.release("v1.0.0")
 
-    def test_local_delivery_commands_require_existing_tag_and_never_clobber(self):
+    def test_creation_verifies_the_tag_and_returns_the_release_it_created(self):
+        # `gh release create` reported nothing addressable, so the draft had to be found
+        # again in a list that had not caught up. Creating through the API answers with
+        # the release, and the tag is checked against the object this run pushed —
+        # stricter than `--verify-tag`, which only asked whether some tag existed.
+        runner = Runner(Path("."))
+        github = GitHub(runner, "example/project")
+        with tempfile.TemporaryDirectory() as temporary:
+            notes = Path(temporary) / "release-notes.md"
+            notes.write_text("## [1.0.0] (2026-01-01)\n", encoding="utf-8")
+            created = {"id": 7, "tag_name": "v1.0.0", "draft": True}
+            answers = [
+                json.dumps({"object": {"sha": "b" * 40}}),
+                json.dumps(created),
+            ]
+            with patch.object(runner, "call", side_effect=answers) as call:
+                self.assertEqual(
+                    created,
+                    github.create_draft("v1.0.0", "a" * 40, "owned draft", notes, tag_oid="b" * 40),
+                )
+            reference, creation = [item.args[0] for item in call.call_args_list]
+            self.assertIn("repos/example/project/git/ref/tags/v1.0.0", reference)
+            self.assertEqual("POST", creation[creation.index("--method") + 1])
+            self.assertIn("repos/example/project/releases", creation)
+            request = Path(creation[creation.index("--input") + 1])
+            self.assertEqual(notes.name + ".request.json", request.name)
+            # The request file is the caller's scratch, not a file left behind.
+            self.assertFalse(request.exists())
+
+            with (
+                patch.object(
+                    runner, "call", return_value=json.dumps({"object": {"sha": "c" * 40}})
+                ),
+                self.assertRaisesRegex(ReleaseError, "refusing to create a release"),
+            ):
+                github.create_draft("v1.0.0", "a" * 40, "owned draft", notes, tag_oid="b" * 40)
+
+    def test_local_delivery_commands_never_clobber(self):
         runner = Runner(Path("."))
         github = GitHub(runner, "example/project")
         with patch.object(runner, "call", return_value="") as call:
-            github.create_draft("v1.0.0", "a" * 40, "owned draft", Path("notes.md"))
             github.upload("v1.0.0", Path("application.bin"))
             github.publish("v1.0.0")
-        create, upload, publish = [item.args[0] for item in call.call_args_list]
-        self.assertIn("--verify-tag", create)
-        self.assertIn("--draft", create)
-        self.assertEqual("a" * 40, create[create.index("--target") + 1])
+        upload, publish = [item.args[0] for item in call.call_args_list]
         self.assertNotIn("--clobber", upload)
         self.assertIn("--draft=false", publish)
 

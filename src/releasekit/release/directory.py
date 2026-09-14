@@ -58,6 +58,14 @@ class Directory:
             if re.fullmatch(r"v\d+\.\d+\.\d+", p.name)
         ]
 
+    def release_by_id(self, identifier):
+        """A directory is read straight from disk, so nothing here can lag behind a write.
+
+        The identifier is honoured anyway, so a caller that recorded one keeps checking
+        the same publication rather than whichever one now sits under the tag.
+        """
+        return next((r for r in self.releases() if r["id"] == identifier), None)
+
     def locate(self, release_id):
         for release in self.releases():
             if release["id"] == release_id:

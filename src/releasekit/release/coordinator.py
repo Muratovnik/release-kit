@@ -809,7 +809,10 @@ def _reconcile(runner: Runner, github: GitHub, state: dict) -> tuple[bool, dict 
             raise ReleaseError(
                 "planned publication branch is missing or its advancement cannot be proven"
             )
-    published = github.release(value["tag"])
+    # Once this run knows the release it created, read that resource rather than
+    # searching a list that may not have caught up with the write.
+    identifier = state.get("release_id")
+    published = github.release_by_id(identifier) if identifier else github.release(value["tag"])
     if published is not None:
         if not pushed or published["tag_name"] != value["tag"]:
             raise ReleaseError("release exists without this run's verified pushed tag")

@@ -98,16 +98,26 @@ class GitHub:
     def __init__(self, runner: Runner, repository: str):
         self.runner, self.repository = runner, repository
 
-    def api(self, suffix: str = "", *, optional: bool = False, pages: bool = False):
+    def api(
+        self,
+        suffix: str = "",
+        *,
+        optional: bool = False,
+        pages: bool = False,
+        method: str = "GET",
+        payload: Path | None = None,
+    ):
         args = [
             "gh",
             "api",
             "--hostname",
             "github.com",
             "--method",
-            "GET",
+            method,
             f"repos/{self.repository}{suffix}",
         ]
+        if payload is not None:
+            args += ["--input", str(payload)]
         if pages:
             args += ["--paginate", "--slurp"]
         try:
@@ -134,6 +144,19 @@ class GitHub:
             )
         return matching[0] if matching else None
 
+    def release_by_id(self, identifier: int):
+        """Read the exact resource this run created.
+
+        The releases list is eventually consistent, so a draft created a moment ago can
+        be missing from it; reading the release by its own id is not. Every ownership
+        condition still applies to whatever this returns.
+        """
+        return self.api(f"/releases/{int(identifier)}", optional=True)
+
+    def tag_object(self, tag: str) -> str | None:
+        reference = self.api(f"/git/ref/tags/{quote(tag, safe='')}", optional=True)
+        return (reference or {}).get("object", {}).get("sha")
+
     def identity(self):
         return self.api()
 
@@ -146,25 +169,42 @@ class GitHub:
                 "enable immutable releases before publishing; no tag was created (this check needs repository administration read access)"
             )
 
-    def create_draft(self, tag, sha, title, notes):
-        self.runner.call(
-            [
-                "gh",
-                "release",
-                "create",
-                tag,
-                "--repo",
-                self.repository,
-                "--draft",
-                "--verify-tag",
-                "--target",
-                sha,
-                "--title",
-                title,
-                "--notes-file",
-                str(notes),
-            ]
+    def create_draft(self, tag, sha, title, notes: Path, *, tag_oid: str) -> dict:
+        """Create the draft and keep the server's answer, which names what it created.
+
+        `gh release create` reports nothing a caller can address, so this used to be
+        followed by a search of the releases list for the draft that had just been
+        written — a list that had not caught up, which cost two publications a full
+        run. Creating through the API returns the release itself, id included.
+
+        The API creates a missing tag from `target_commitish`, which `--verify-tag`
+        used to prevent. The tag is therefore checked here against the object this run
+        pushed: existence alone would not prove it is the same tag.
+        """
+        observed = self.tag_object(tag)
+        if observed != tag_oid:
+            raise ReleaseError(
+                f"{tag} resolves to {observed or 'nothing'}, not to {tag_oid} pushed by this "
+                "run; refusing to create a release that would define the tag instead"
+            )
+        request = notes.with_name(notes.name + ".request.json")
+        request.write_text(
+            json.dumps(
+                {
+                    "tag_name": tag,
+                    "target_commitish": sha,
+                    "name": title,
+                    "body": notes.read_text(encoding="utf-8"),
+                    "draft": True,
+                    "prerelease": False,
+                }
+            ),
+            encoding="utf-8",
         )
+        try:
+            return self.api("/releases", method="POST", payload=request)
+        finally:
+            request.unlink(missing_ok=True)
 
     def upload(self, tag, path):
         # Never clobber: a resumed upload must reconcile the existing asset first.

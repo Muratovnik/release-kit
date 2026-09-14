@@ -163,9 +163,11 @@ def prepare(runner, store, value, no_download, result):
 
 def _draft(store, state):
     value = state["plan"]
-    release = store.release(value["tag"])
+    identifier = state.get("release_id")
+    release = store.release_by_id(identifier) if identifier else store.release(value["tag"])
     if (
         not release
+        or release.get("tag_name") != value["tag"]
         or not release["draft"]
         or release["prerelease"]
         or not state.get("draft_intent")
@@ -207,7 +209,15 @@ def publish(runner, store, state, path, workspace, *, verify_only=False):
             notes = workspace.path / "release-notes.md"
             notes.write_text(value["notes"], encoding="utf-8", newline="\n")
             workspace.remember(notes)
-            store.create_draft(value["tag"], value["sha"], state["draft_title"], notes)
+            created = store.create_draft(
+                value["tag"],
+                value["sha"],
+                state["draft_title"],
+                notes,
+                tag_oid=state["tag_oid"],
+            )
+            state["release_id"] = created["id"]
+            coordinator._save(path, state)
         release = _draft(store, state)
         state["release_id"] = release["id"]
         state["publication"] = "draft"
