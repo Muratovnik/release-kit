@@ -197,9 +197,12 @@ def check_environment(root: Path, state: Path, workspace: Path):
 def clean_success(workspace: Path, identity) -> bool:
     """Delete only this run's newly allocated fixtures, never caches or input assets.
 
-    Phase outputs have fixed, task-owned roots. Unexpected top-level data or leftover
-    process scratch retains the run for inspection. Tests use disposable projects;
-    this is not protection against hostile concurrent writers inside those projects.
+    Phase outputs have fixed, task-owned roots, and unexpected top-level data retains
+    the run for inspection. `tmp` is not such data: it exists only to be the child
+    processes' TMP, and this is called solely on success, where a failure's
+    diagnostics are kept by the caller instead. Requiring it to be empty retained
+    every run, because `uv` always leaves its cache lock there. Tests use disposable
+    projects; this is not protection against hostile concurrent writers inside them.
     """
     from releasekit import storage
 
@@ -208,15 +211,13 @@ def clean_success(workspace: Path, identity) -> bool:
     owned = {"assets", "onboarding space", "plugin space", "tmp"}
     if {p.name for p in workspace.iterdir()} - owned:
         return False
-    if any((workspace / "tmp").iterdir()):
-        return False
-    # Check the roots, not venv internals: rmtree unlinks internal symlinks without
+    # Check the roots, not venv internals: removal unlinks internal links without
     # following them. An aliased fixture root must never be recursively removed.
     for child in workspace.iterdir():
         storage.checked(child)
         if not child.is_dir():
             return False
-    shutil.rmtree(workspace)
+    storage.discard_tree(workspace)
     return True
 
 

@@ -112,17 +112,26 @@ class CheckLifecycleTests(unittest.TestCase):
         self.assertIn('"status": "failed"', output)
 
     def test_unknown_data_retains_successful_run_for_inspection(self):
-        for relative in ("unrecognized.txt", "tmp/leftover.txt"):
-            with self.subTest(relative=relative):
-                code, _, _ = self.invoke(
-                    "import os\nfrom pathlib import Path\n"
-                    f"(Path(os.environ['TMP']).parent/{relative!r}).write_text('do not sweep')\n"
-                )
-                self.assertEqual(0, code)
-        reports = self.reports()
-        self.assertEqual(2, len(reports))
-        self.assertTrue(all(r["cleanup"] == "retained" for r in reports))
-        self.assertTrue(all(Path(r["workspace"]).exists() for r in reports))
+        code, _, _ = self.invoke(
+            "import os\nfrom pathlib import Path\n"
+            "(Path(os.environ['TMP']).parent/'unrecognized.txt').write_text('do not sweep')\n"
+        )
+        self.assertEqual(0, code)
+        report = self.reports()[0]
+        self.assertEqual("retained", report["cleanup"])
+        self.assertTrue(Path(report["workspace"]).exists())
+
+    def test_a_successful_run_removes_the_tmp_its_child_tools_filled(self):
+        # `uv` leaves the same cache lock in TMP on every run, so requiring an empty
+        # `tmp` retained all seventeen workspaces this repository had accumulated.
+        code, _, _ = self.invoke(
+            "import os\nfrom pathlib import Path\n"
+            "(Path(os.environ['TMP'])/'uv-ea7e97d36fa7f037.lock').touch()\n"
+        )
+        self.assertEqual(0, code)
+        report = self.reports()[0]
+        self.assertEqual("removed", report["cleanup"])
+        self.assertFalse(Path(report["workspace"]).exists())
 
     def test_busy_sdk_environment_is_not_mutated_or_unlocked_by_another_run(self):
         self.assertEqual(0, self.invoke()[0])

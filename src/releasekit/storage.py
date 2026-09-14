@@ -253,6 +253,13 @@ def _discard_contents(path: Path) -> None:
             _remove(entry, directory=False)
 
 
+def discard_tree(path: Path) -> None:
+    """Remove a directory the caller owns whole, never following a link or junction."""
+    path = checked(path)
+    _discard_contents(path)
+    _remove(path, directory=True)
+
+
 # A workspace a run left behind is a diagnostic while the failure is fresh, and after
 # that it is a directory nothing will ever read again. Two weeks outlives an
 # investigation and is far longer than any run, so a live workspace is never a
