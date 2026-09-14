@@ -4,13 +4,16 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
+from . import storage
 from .exposure import rules
 
 PRIVATE_ROOT_ENV = "RELKIT_PRIVATE_ROOT"
+PRIVATE_ROOT_CONFIG = "releasekit.privateRoot"
 PRIVATE_VALUES_FILE = ".publication-private-values"
 MANIFEST_FILE = "install.conf.yaml"
 SEMANTIC_POLICY_FILE = ".publication-owner.toml"
@@ -124,20 +127,74 @@ class OwnerPolicy:
         return answer
 
 
+def _configured_private_root(public_root: Path) -> str | None:
+    """Read one value from this checkout's private, non-included Git config."""
+    if not os.path.lexists(public_root / ".git"):
+        return None
+    environment = dict(os.environ)
+    for name in storage.GIT_LOCATION_OVERRIDES:
+        environment.pop(name, None)
+    try:
+        result = subprocess.run(
+            [
+                "git",
+                "config",
+                "--local",
+                "--no-includes",
+                "--null",
+                "--get-all",
+                PRIVATE_ROOT_CONFIG,
+            ],
+            cwd=public_root,
+            check=False,
+            capture_output=True,
+            encoding="utf-8",
+            errors="strict",
+            env=environment,
+            timeout=30,
+        )
+    except (OSError, subprocess.TimeoutExpired, UnicodeError) as error:
+        raise OwnerPolicyError(
+            "repository-local owner policy configuration could not be read"
+        ) from error
+    if result.returncode == 1:
+        return None
+    if result.returncode:
+        raise OwnerPolicyError("repository-local owner policy configuration could not be read")
+    if not result.stdout.endswith("\0"):
+        raise OwnerPolicyError(
+            "repository-local owner policy configuration returned malformed data"
+        )
+    values = result.stdout[:-1].split("\0")
+    if len(values) != 1 or not values[0].strip():
+        raise OwnerPolicyError(
+            f"repository-local {PRIVATE_ROOT_CONFIG} must have exactly one non-empty value"
+        )
+    value = values[0].strip()
+    if "\n" in value or "\r" in value:
+        raise OwnerPolicyError(f"repository-local {PRIVATE_ROOT_CONFIG} must be a single-line path")
+    return value
+
+
 def discover(public_root: Path) -> OwnerPolicy:
-    """Resolve the private sibling, with an environment override for unusual layouts."""
+    """Resolve an explicit, repository-local, or conventional owner-policy root."""
     override = os.environ.get(PRIVATE_ROOT_ENV, "").strip()
     if override:
         candidate = Path(override).expanduser()
         private_root = (
             candidate if candidate.is_absolute() else public_root.parent / candidate
         ).resolve()
+        selected_by = PRIVATE_ROOT_ENV
+    elif configured := _configured_private_root(public_root):
+        candidate = Path(configured).expanduser()
+        private_root = (candidate if candidate.is_absolute() else public_root / candidate).resolve()
+        selected_by = f"repository-local {PRIVATE_ROOT_CONFIG}"
     else:
         private_root = (public_root.parent / f"{public_root.name}-private").resolve()
+        selected_by = "the sibling convention"
     if not private_root.is_dir():
         raise OwnerPolicyError(
-            f"private owner root is unavailable: {private_root}; "
-            f"place it beside the public checkout or set {PRIVATE_ROOT_ENV}"
+            f"private owner root selected by {selected_by} is unavailable: {private_root}"
         )
     return OwnerPolicy(
         root=private_root,

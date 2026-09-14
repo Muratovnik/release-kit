@@ -142,10 +142,36 @@ platform pins, cache integrity and explicit executable overrides, read
 
 Private topology, exact forbidden values, owner workflows and personal-data
 expressions do not belong in public configuration. Owner mode discovers
-`../<checkout-name>-private` by convention or the directory explicitly selected by
-`RELKIT_PRIVATE_ROOT`. This root owns `.publication-private-values` and optionally
-an `install.conf.yaml` link manifest. Exact values may include workspace names,
-private namespaces, record identifiers and path fragments; do not publish the list.
+the policy root in this order:
+
+1. A non-empty `RELKIT_PRIVATE_ROOT`. A relative value keeps the original
+   compatibility behavior and resolves from the public checkout's parent.
+2. The public repository's single `releasekit.privateRoot` value from local Git
+   configuration. A relative value resolves from the public checkout root.
+3. The conventional `../<checkout-name>-private` sibling.
+
+CLI owner and overlay commands, the installed owner guard, coordinator owner audits
+and MCP owner requests all use this same selection order.
+
+Set the persistent repository choice without creating a tracked project file:
+
+```text
+git config --local releasekit.privateRoot "<absolute-owner-policy-path>"
+```
+
+Global and system Git configuration and included files are not policy sources.
+An absent local key permits the sibling fallback. Duplicate, empty, malformed or
+unreadable local values refuse the owner check, as does a configured directory that
+is missing; an invalid configured choice is never replaced by the sibling fallback.
+For a non-Git root, local configuration lookup is skipped and the environment and
+sibling choices keep working without Git.
+Linked worktrees share repository-local configuration, so use an absolute path when
+all worktrees must select the same policy. A relative local value is deliberately
+resolved against each worktree's own public root.
+
+The selected root owns `.publication-private-values` and optionally an
+`install.conf.yaml` link manifest. Exact values may include workspace names, private
+namespaces, record identifiers and path fragments; do not publish the list.
 
 The same root may contain `.publication-owner.toml`:
 

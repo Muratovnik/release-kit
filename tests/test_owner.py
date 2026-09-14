@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -11,6 +12,26 @@ from releasekit import owner, protection
 
 
 class OwnerPolicyTests(unittest.TestCase):
+    def setUp(self) -> None:
+        override = patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""})
+        override.start()
+        self.addCleanup(override.stop)
+
+    @staticmethod
+    def _git(root: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+        return subprocess.run(
+            ["git", *arguments],
+            cwd=root,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+    @classmethod
+    def _repository(cls, root: Path) -> None:
+        root.mkdir()
+        cls._git(root, "init", "-q")
+
     def test_the_default_policy_is_the_sibling_private_repository(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             parent = Path(temporary)
@@ -22,7 +43,12 @@ class OwnerPolicyTests(unittest.TestCase):
                 "# private\n\n InternalService \n", encoding="utf-8"
             )
 
-            policy = owner.discover(public)
+            with patch.object(
+                owner.subprocess,
+                "run",
+                side_effect=AssertionError("non-Git discovery must not invoke Git"),
+            ):
+                policy = owner.discover(public)
             self.assertEqual(private.resolve(), policy.root)
             self.assertEqual(("InternalService",), policy.values())
 
@@ -49,8 +75,313 @@ class OwnerPolicyTests(unittest.TestCase):
             (private / ".publication-private-values").write_text(
                 "InternalService\n", encoding="utf-8"
             )
-            with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: str(private)}):
+            with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: private.name}):
                 self.assertEqual(private.resolve(), owner.discover(public).root)
+
+    def test_a_nonempty_environment_override_precedes_the_local_setting(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            configured = parent / "configured-policy"
+            overridden = parent / "override-policy"
+            self._repository(public)
+            configured.mkdir()
+            overridden.mkdir()
+            self._git(
+                public,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                str(configured),
+            )
+
+            with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: str(overridden)}):
+                policy = owner.discover(public)
+
+        self.assertEqual(overridden.resolve(), policy.root)
+
+    def test_repository_local_settings_are_isolated_and_relative_to_each_root(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            first = parent / "first-public"
+            second = parent / "second-public"
+            first_private = parent / "first-policy"
+            second_private = parent / "second-policy"
+            self._repository(first)
+            self._repository(second)
+            first_private.mkdir()
+            second_private.mkdir()
+            self._git(
+                first,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                "../first-policy",
+            )
+            self._git(
+                second,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                "../second-policy",
+            )
+
+            with patch.dict(
+                os.environ,
+                {
+                    owner.PRIVATE_ROOT_ENV: "",
+                    "GIT_DIR": str(second / ".git"),
+                    "GIT_WORK_TREE": str(second),
+                },
+            ):
+                first_policy = owner.discover(first)
+            with patch.dict(
+                os.environ,
+                {
+                    owner.PRIVATE_ROOT_ENV: "",
+                    "GIT_DIR": str(first / ".git"),
+                    "GIT_WORK_TREE": str(first),
+                },
+            ):
+                second_policy = owner.discover(second)
+
+            self.assertFalse((first_private / ".git").exists())
+            self.assertFalse((second_private / ".git").exists())
+            self.assertEqual("", self._git(first, "status", "--short").stdout)
+            self.assertEqual("", self._git(second, "status", "--short").stdout)
+
+        self.assertEqual(first_private.resolve(), first_policy.root)
+        self.assertEqual(second_private.resolve(), second_policy.root)
+        self.assertNotEqual(first_policy.root, second_policy.root)
+
+    def test_an_absent_local_setting_falls_back_to_the_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            sibling = parent / "example-private"
+            self._repository(public)
+            sibling.mkdir()
+
+            with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}):
+                policy = owner.discover(public)
+
+        self.assertEqual(sibling.resolve(), policy.root)
+
+    def test_global_and_included_settings_are_ignored(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            sibling = parent / "example-private"
+            global_private = parent / "global-policy"
+            system_private = parent / "system-policy"
+            included_private = parent / "included-policy"
+            global_config = parent / "global.gitconfig"
+            system_config = parent / "system.gitconfig"
+            included_config = parent / "included.gitconfig"
+            self._repository(public)
+            sibling.mkdir()
+            global_private.mkdir()
+            system_private.mkdir()
+            included_private.mkdir()
+            self._git(
+                public,
+                "config",
+                "--file",
+                str(global_config),
+                owner.PRIVATE_ROOT_CONFIG,
+                str(global_private),
+            )
+            self._git(
+                public,
+                "config",
+                "--file",
+                str(system_config),
+                owner.PRIVATE_ROOT_CONFIG,
+                str(system_private),
+            )
+            self._git(
+                public,
+                "config",
+                "--file",
+                str(included_config),
+                owner.PRIVATE_ROOT_CONFIG,
+                str(included_private),
+            )
+            self._git(public, "config", "--local", "include.path", str(included_config))
+            environment = {
+                owner.PRIVATE_ROOT_ENV: "",
+                "GIT_CONFIG_COUNT": "1",
+                "GIT_CONFIG_GLOBAL": str(global_config),
+                "GIT_CONFIG_KEY_0": owner.PRIVATE_ROOT_CONFIG,
+                "GIT_CONFIG_SYSTEM": str(system_config),
+                "GIT_CONFIG_VALUE_0": str(global_private),
+            }
+
+            with patch.dict(os.environ, environment):
+                policy = owner.discover(public)
+
+        self.assertEqual(sibling.resolve(), policy.root)
+
+    def test_duplicate_and_empty_local_settings_fail_closed(self) -> None:
+        for case in ("duplicate", "empty"):
+            with self.subTest(case=case), tempfile.TemporaryDirectory() as temporary:
+                parent = Path(temporary)
+                public = parent / "example"
+                sibling = parent / "example-private"
+                self._repository(public)
+                sibling.mkdir()
+                values = ("../first-policy", "../second-policy") if case == "duplicate" else ("",)
+                for value in values:
+                    self._git(
+                        public,
+                        "config",
+                        "--local",
+                        "--add",
+                        owner.PRIVATE_ROOT_CONFIG,
+                        value,
+                    )
+
+                with (
+                    patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}),
+                    self.assertRaisesRegex(owner.OwnerPolicyError, "exactly one non-empty value"),
+                ):
+                    owner.discover(public)
+
+    def test_a_multiline_local_setting_is_rejected_as_malformed(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            sibling = parent / "example-private"
+            self._repository(public)
+            sibling.mkdir()
+            self._git(
+                public,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                "owner\npolicy",
+            )
+
+            with (
+                patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}),
+                self.assertRaisesRegex(owner.OwnerPolicyError, "single-line path"),
+            ):
+                owner.discover(public)
+
+    def test_a_local_config_read_error_is_generic_and_does_not_fall_back(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            sibling = parent / "example-private"
+            self._repository(public)
+            sibling.mkdir()
+            failed = subprocess.CompletedProcess(
+                args=["git"],
+                returncode=128,
+                stdout="",
+                stderr="fatal: detail from a private configuration path",
+            )
+
+            with (
+                patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}),
+                patch.object(owner.subprocess, "run", return_value=failed),
+                self.assertRaises(owner.OwnerPolicyError) as raised,
+            ):
+                owner.discover(public)
+
+        self.assertEqual(
+            "repository-local owner policy configuration could not be read",
+            str(raised.exception),
+        )
+
+    def test_a_configured_missing_policy_does_not_fall_back_to_the_sibling(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            sibling = parent / "example-private"
+            self._repository(public)
+            sibling.mkdir()
+            self._git(
+                public,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                "../missing-policy",
+            )
+
+            with (
+                patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}),
+                self.assertRaisesRegex(owner.OwnerPolicyError, "missing-policy"),
+            ):
+                owner.discover(public)
+
+    def test_an_absolute_local_setting_is_shared_by_linked_worktrees(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            linked = parent / "example-linked"
+            private = parent / "owner-policy"
+            self._repository(public)
+            private.mkdir()
+            (public / "seed.txt").write_text("example\n", encoding="utf-8")
+            self._git(public, "config", "user.name", "Example Maintainer")
+            self._git(public, "config", "user.email", "maintainer@example.invalid")
+            self._git(public, "add", "seed.txt")
+            self._git(public, "commit", "-qm", "chore: seed fixture")
+            self._git(
+                public,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                str(private),
+            )
+            self._git(public, "worktree", "add", "--detach", str(linked))
+
+            with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}):
+                public_policy = owner.discover(public)
+                linked_policy = owner.discover(linked)
+
+        self.assertEqual(private.resolve(), public_policy.root)
+        self.assertEqual(private.resolve(), linked_policy.root)
+
+    def test_a_fresh_process_resolves_the_project_setting_from_an_unrelated_cwd(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            parent = Path(temporary)
+            public = parent / "example"
+            private = parent / "owner-policy"
+            unrelated = parent / "ordinary-folder"
+            self._repository(public)
+            private.mkdir()
+            unrelated.mkdir()
+            self._git(
+                public,
+                "config",
+                "--local",
+                owner.PRIVATE_ROOT_CONFIG,
+                str(private),
+            )
+            environment = dict(os.environ)
+            environment[owner.PRIVATE_ROOT_ENV] = ""
+            environment["PYTHONPATH"] = str(Path(__file__).resolve().parents[1] / "src")
+            program = (
+                "import sys\n"
+                "from pathlib import Path\n"
+                "from releasekit import owner\n"
+                "print(owner.discover(Path(sys.argv[1])).root)\n"
+            )
+
+            completed = subprocess.run(
+                [sys.executable, "-c", program, str(public)],
+                cwd=unrelated,
+                env=environment,
+                check=False,
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        self.assertEqual(str(private.resolve()), completed.stdout.strip())
 
     def test_a_typed_private_policy_carries_workflows_and_patterns(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

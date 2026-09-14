@@ -18,7 +18,7 @@ from mcp import Client, StdioServerParameters
 from mcp.shared.exceptions import MCPError
 from mcp.types import ElicitResult
 
-from releasekit import __version__, distribution
+from releasekit import __version__, distribution, owner
 from releasekit_mcp.bridge import Bridge
 from releasekit_mcp.projects import Projects
 
@@ -83,6 +83,31 @@ class Fixture(unittest.TestCase):
 
 
 class StdioTests(Fixture):
+    def test_owner_exposure_uses_the_bound_projects_local_policy_setting(self):
+        private_directory = tempfile.TemporaryDirectory(
+            prefix="mcp owner policy ", dir=self.root.parent
+        )
+        self.addCleanup(private_directory.cleanup)
+        private = Path(private_directory.name)
+        (private / owner.PRIVATE_VALUES_FILE).write_text(
+            "synthetic-private-token\n", encoding="utf-8"
+        )
+        self.git(
+            "config",
+            "--local",
+            owner.PRIVATE_ROOT_CONFIG,
+            str(private),
+        )
+
+        async def scenario():
+            async with self.client() as client:
+                result = await client.call_tool("relkit_exposure", {"request": {"owner": True}})
+                self.assertFalse(result.is_error, result)
+                self.assertEqual(0, result.structured_content["result"]["exit_code"])
+
+        with patch.dict(os.environ, {owner.PRIVATE_ROOT_ENV: ""}):
+            self.run_async(scenario)
+
     def test_notes_preserves_prerelease_and_unreleased_cli_support(self):
         (self.root / "CHANGELOG.md").write_text(
             "## [Unreleased]\n\nUpcoming notes.\n\n## [1.1.0-rc.1+build]\n\nCandidate notes.\n"

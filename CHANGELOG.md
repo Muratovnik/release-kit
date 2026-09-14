@@ -2,6 +2,16 @@
 
 ## [Unreleased]
 
+## [0.23.0](https://github.com/Muratovnik/release-kit/compare/v0.22.0...v0.23.0) - 2026-09-13
+
+### Added
+
+- Owner policy can live in an ordinary private folder selected by the repository-local
+  Git setting `releasekit.privateRoot`. CLI, Git hooks, release coordination and MCP
+  use the same project-specific selection without publishing the path. Explicit
+  environment overrides and the conventional private sibling remain supported.
+  Invalid local settings fail closed instead of silently selecting another policy.
+
 ## [0.22.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.22.0) - 2026-09-13
 
 ### Added
