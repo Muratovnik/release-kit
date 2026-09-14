@@ -216,6 +216,21 @@ def atomic_json(path: Path, value: object) -> None:
         checked(temporary).unlink(missing_ok=True)
 
 
+def _remove(path: Path, *, directory: bool) -> None:
+    """Remove one entry, clearing the read-only bit Windows refuses to unlink through.
+
+    A run that built a Git repository left its object files read-only, which is how
+    Git writes them, and on Windows that is enough for `unlink` to answer WinError 5.
+    The bit is cleared on the entry being removed, never on anything it points at.
+    """
+    action = path.rmdir if directory else path.unlink
+    try:
+        action()
+    except PermissionError:
+        path.chmod(stat.S_IWRITE)
+        action()
+
+
 def _discard_contents(path: Path) -> None:
     """Empty a directory this run owns whole, never following a link or junction.
 
@@ -230,12 +245,12 @@ def _discard_contents(path: Path) -> None:
         if stat.S_ISLNK(info.st_mode):
             entry.unlink()
         elif attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-            entry.rmdir() if attributes & stat.FILE_ATTRIBUTE_DIRECTORY else entry.unlink()
+            _remove(entry, directory=bool(attributes & stat.FILE_ATTRIBUTE_DIRECTORY))
         elif stat.S_ISDIR(info.st_mode):
             _discard_contents(entry)
-            entry.rmdir()
+            _remove(entry, directory=True)
         else:
-            entry.unlink()
+            _remove(entry, directory=False)
 
 
 # A workspace a run left behind is a diagnostic while the failure is fresh, and after
@@ -283,9 +298,9 @@ def prune_temporaries(parent: Path, *, now: float | None = None) -> list[Path]:
                 continue
             if stat.S_ISDIR(info.st_mode):
                 _discard_contents(entry)
-                entry.rmdir()
+                _remove(entry, directory=True)
             else:
-                entry.unlink()
+                _remove(entry, directory=False)
         except OSError:
             # A workspace still held open is simply not removed; the run matters more.
             continue
@@ -355,7 +370,7 @@ class Workspace:
                 # A replaced directory is a different one; only what this run made is ours.
                 if item.is_dir() and identity(item) == expected:
                     _discard_contents(item)
-                    item.rmdir()
+                    _remove(item, directory=True)
         for relative, expected in self.files.items():
             item = inside(self.path, self.path / relative)
             if item.is_file() and (digest(item), identity(item)) == expected:

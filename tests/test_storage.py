@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import stat
 import subprocess
 import tempfile
 import time
@@ -243,6 +244,21 @@ class StorageTests(unittest.TestCase):
             raise ValueError("the release failed")
         kept = workspace.path / "project-temp/evidence.log"
         self.assertEqual("why the run failed", kept.read_text())
+
+    def test_discarding_scratch_removes_the_read_only_objects_git_writes(self):
+        workspace = storage.Workspace(self.root)
+        scratch = workspace.path / "project-temp"
+        scratch.mkdir()
+        workspace.scratch(scratch)
+        # A run that builds a repository leaves its objects read-only, and Windows
+        # answers WinError 5 to unlink; this abandoned 1.1 GB of half-removed trees.
+        objects = scratch / "fixture/.git/objects/3f"
+        objects.mkdir(parents=True)
+        blob = objects / "b54f0add26184b0c8879ff994903ba5ec319a1"
+        blob.write_bytes(b"git object")
+        blob.chmod(stat.S_IREAD)
+        self.assertTrue(workspace.cleanup(discard_scratch=True))
+        self.assertFalse(workspace.path.exists())
 
     def test_discarding_scratch_removes_a_link_and_never_its_target(self):
         other = self.root.parent / "outside"

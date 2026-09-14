@@ -362,9 +362,17 @@ junctions and hard-linked service paths cannot be swept as generic scratch data.
 Success removes disposable downloads and snapshots but keeps the compact receipt
 and detailed log required for repeat verification. Errors retain those diagnostics
 and any data that cannot safely be removed; the command reports the directory.
-Project-produced unknown scratch files are deliberately retained rather than
-claimed retroactively. Project commands should clean their own outputs. Logs may
-contain private command output and must be reviewed before sharing.
+The directory handed to project commands as their `{temp}` is declared disposable
+before they run, so a run that raises nothing discards it together with whatever
+those commands left inside; a failed run keeps it as a diagnostic. Unknown files
+anywhere else are still never claimed retroactively. Project commands should
+clean their own outputs. Logs may contain private command output and must be
+reviewed before sharing.
+
+Workspaces a run leaves behind are aged out when a later run starts, after
+fourteen days by default. `RELKIT_TEMPORARY_RETENTION_DAYS` changes that window
+and a negative value disables it. Receipts, logs and rollback backups live beside
+`tmp/` rather than inside it and are never aged out.
 
 Exit codes: `0` published and verified (cleanup can separately report retained
 files); `1` a recorded run failed a check; `2` invalid request/preconditions;
