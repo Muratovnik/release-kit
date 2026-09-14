@@ -2,6 +2,17 @@
 
 ## [Unreleased]
 
+## [0.23.2](https://github.com/Muratovnik/release-kit/compare/v0.23.1...v0.23.2) - 2026-09-14
+
+### Fixed
+
+- Writing a receipt no longer loses to a transient Windows refusal. Moments after the
+  bytes are flushed and closed, a scanner opening the file it has just seen created is
+  enough for the rename to answer with an access error; publishing 0.23.1 hit exactly
+  that, after the publication itself had already happened, leaving the release without
+  its local record. The rename is retried briefly, and a destination something
+  genuinely holds still fails with the same error it did before.
+
 ## [0.23.1](https://github.com/Muratovnik/release-kit/compare/v0.23.0...v0.23.1) - 2026-09-14
 
 ### Changed

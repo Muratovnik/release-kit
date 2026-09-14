@@ -1,6 +1,6 @@
 [project]
 name = "release-kit-plugin-runtime"
-version = "0.23.1"
+version = "0.23.2"
 license = "MIT"
 authors = [{name = "Nikolai Muratov", email = "el.muratovnik@gmail.com"}]
 requires-python = ">=3.11"
