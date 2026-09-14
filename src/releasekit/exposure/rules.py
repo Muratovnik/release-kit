@@ -15,7 +15,9 @@ import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from fnmatch import fnmatch
+from functools import lru_cache
 from pathlib import PurePosixPath
+from typing import NamedTuple
 
 HOME_DIRECTORY = "home-directory"
 ESCAPES_REPOSITORY = "escapes-repository"
@@ -142,11 +144,50 @@ WHITESPACE = re.compile(r"\s+")
 
 
 def _normalized(text: str) -> str:
-    return "".join(
-        character
-        for character in unicodedata.normalize("NFKC", text)
-        if unicodedata.category(character) != "Cf"
-    )
+    # ASCII is already in NFKC form and holds no format characters: the Cf category
+    # starts at U+00AD, and ASCII controls are Cc. Most scanned bytes are ASCII, and
+    # the general path below walks every character, so this decides the scan's cost.
+    if text.isascii():
+        return text
+    normalized = unicodedata.normalize("NFKC", text)
+    if not any(unicodedata.category(character) == "Cf" for character in normalized):
+        return normalized
+    return "".join(character for character in normalized if unicodedata.category(character) != "Cf")
+
+
+class _Prepared(NamedTuple):
+    """One file's text in the three forms the rules compare against.
+
+    Building these costs a pass over the whole file, and every declared name, owner
+    workflow and provider used to trigger another one. They do not depend on what is
+    being searched for, so they are built once per text and handed around.
+    """
+
+    normalized: str
+    folded: str
+    collapsed: str
+
+
+def _prepare(text: str) -> _Prepared:
+    normalized = _normalized(text)
+    folded = normalized.casefold()
+    return _Prepared(normalized, folded, WHITESPACE.sub(" ", folded))
+
+
+@lru_cache(maxsize=4096)
+def _normalized_value(value: str) -> str:
+    """Policy values and paths are short and repeat for every file; normalize once."""
+    return _normalized(value)
+
+
+@lru_cache(maxsize=4096)
+def _folded_value(value: str) -> str:
+    return _normalized_value(value).casefold()
+
+
+@lru_cache(maxsize=4096)
+def _collapsed_value(value: str) -> str:
+    return WHITESPACE.sub(" ", _folded_value(value))
 
 
 INTERNAL_PLANNING_PATTERNS = (
@@ -183,16 +224,17 @@ MACHINE_OBSERVATION_PATTERNS = (
 )
 
 
-def contains_wrapped_declared_name(text: str, names: Sequence[str]) -> bool:
-    """Whether whitespace wrapping hides a declared value from raw matching."""
-    folded = _normalized(text).casefold()
-    normalized = WHITESPACE.sub(" ", folded)
+def _wrapped_declared_name(prepared: _Prepared, names: Sequence[str]) -> bool:
     return any(
-        _normalized(name).casefold() not in folded
-        and WHITESPACE.sub(" ", _normalized(name).casefold()) in normalized
+        _folded_value(name) not in prepared.folded and _collapsed_value(name) in prepared.collapsed
         for name in names
         if len(name.split()) > 1
     )
+
+
+def contains_wrapped_declared_name(text: str, names: Sequence[str]) -> bool:
+    """Whether whitespace wrapping hides a declared value from raw matching."""
+    return _wrapped_declared_name(_prepare(text), names)
 
 
 def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
@@ -204,10 +246,33 @@ def _contains_declared_name(text: str, names: Sequence[str]) -> bool:
     Collapsing whitespace preserves word boundaries and does not turn separated
     tokens into a match.
     """
-    folded = _normalized(text).casefold()
-    return any(_normalized(name).casefold() in folded for name in names) or (
-        contains_wrapped_declared_name(text, names)
+    return _declared_name(_prepare(text), names)
+
+
+def _declared_name(prepared: _Prepared, names: Sequence[str]) -> bool:
+    return any(_folded_value(name) in prepared.folded for name in names) or (
+        _wrapped_declared_name(prepared, names)
     )
+
+
+def _provider_surface(
+    prepared: _Prepared,
+    *,
+    relative_path: str,
+    providers: dict[str, Sequence[str]],
+) -> str:
+    # The public configuration is the declaration of the provider contract, not a
+    # product surface that consumes provider data. Requiring adopters to allow the
+    # configuration path would make every valid declaration reject itself.
+    normalized_path = _normalized_value(relative_path)
+    if normalized_path == "relkit.toml":
+        return ""
+    for provider, surfaces in providers.items():
+        if _declared_name(prepared, (provider,)) and not any(
+            fnmatch(normalized_path, _normalized_value(surface)) for surface in surfaces
+        ):
+            return f"provider {provider} is outside its declared surfaces"
+    return ""
 
 
 def provider_surface_finding(
@@ -216,18 +281,7 @@ def provider_surface_finding(
     relative_path: str,
     providers: dict[str, Sequence[str]],
 ) -> str:
-    # The public configuration is the declaration of the provider contract, not a
-    # product surface that consumes provider data. Requiring adopters to allow the
-    # configuration path would make every valid declaration reject itself.
-    normalized_path = _normalized(relative_path)
-    if normalized_path == "relkit.toml":
-        return ""
-    for provider, surfaces in providers.items():
-        if _contains_declared_name(text, (provider,)) and not any(
-            fnmatch(normalized_path, _normalized(surface)) for surface in surfaces
-        ):
-            return f"provider {provider} is outside its declared surfaces"
-    return ""
+    return _provider_surface(_prepare(text), relative_path=relative_path, providers=providers)
 
 
 def text_findings(
@@ -244,9 +298,11 @@ def text_findings(
     providers: dict[str, Sequence[str]] | None = None,
 ) -> dict[str, str]:
     """Return stable finding kinds with non-sensitive explanations."""
-    allowed = DEFAULT_ALLOWED_USERS | {_normalized(user).casefold() for user in allowed_users}
+    allowed = DEFAULT_ALLOWED_USERS | {_folded_value(user) for user in allowed_users}
     found: dict[str, str] = {}
-    searchable = _normalized(text)
+    # One pass over the file, reused by every declared name, workflow and provider.
+    prepared = _prepare(text)
+    searchable = prepared.normalized
     path_text = searchable.replace("\\/", "/")
     for pattern in (
         WINDOWS_USER_ROOT,
@@ -276,9 +332,9 @@ def text_findings(
         ):
             found[ESCAPES_REPOSITORY] = ""
 
-    if _contains_declared_name(searchable, names):
+    if _declared_name(prepared, names):
         found[DECLARED_NAME] = ""
-    if _contains_declared_name(searchable, owner_workflows):
+    if _declared_name(prepared, owner_workflows):
         found[OWNER_WORKFLOW] = "declared by the private owner policy"
     for pattern in private_patterns:
         if re.search(pattern.expression, searchable):
@@ -296,8 +352,8 @@ def text_findings(
     ):
         found[MACHINE_OBSERVATION] = "observation about the owner's workstation"
 
-    if detail := provider_surface_finding(
-        searchable, relative_path=relative_path, providers=providers or {}
+    if detail := _provider_surface(
+        prepared, relative_path=relative_path, providers=providers or {}
     ):
         found[PROVIDER_SURFACE] = detail
     return found
