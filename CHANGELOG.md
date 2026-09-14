@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.23.1](https://github.com/Muratovnik/release-kit/compare/v0.23.0...v0.23.1) - 2026-09-14
+
+### Changed
+
+- The publication audit does noticeably less repeated work on every repository it
+  guards. Each scanned text is normalized once per file instead of once per rule,
+  both engines are provisioned at the same time, and a path already inspected in
+  one run is not inspected again. Verdicts, finding kinds and JSON output are
+  unchanged; this is the same audit, faster.
+
+### Security
+
+- Each engine executable now carries its own pinned SHA-256, checked on every run.
+  The expected value is stated in the tool rather than recomputed from the archive
+  being verified, so a cached engine is checked against the pin instead of against
+  an expectation derived from the same download. A cached run no longer unpacks the
+  archive to learn what it should already know.
+
 ## [0.23.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.23.0) - 2026-09-14
 
 ### Added
