@@ -24,6 +24,59 @@ def process_path(path):
     return "\\\\?\\" + value
 
 
+# The Windows DLL loader resolves a compiled extension against MAX_PATH even when
+# the volume and the process both allow long paths, so a deeply installed runtime
+# imports nothing. The extended prefix never reaches the loader and cannot start a
+# process, so the only in-package remedy is the volume's 8.3 alias for the same
+# directory. Leave the payload where it was installed; alias the path, not the data.
+LOADER_LIMIT = 260
+# "\Lib\site-packages\" and the longest compiled file name the lock installs.
+RUNTIME_LEAF = 70
+
+
+def alias_path(path):
+    """Return the 8.3 alias of the longest existing ancestor, with the rest appended."""
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetShortPathNameW.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    kernel32.GetShortPathNameW.restype = wintypes.DWORD
+    tail = []
+    current = Path(path)
+    while True:
+        if current.exists():
+            buffer = ctypes.create_unicode_buffer(32768)
+            size = kernel32.GetShortPathNameW(str(current), buffer, len(buffer))
+            # 8.3 aliases are a per-volume option; without them the caller must refuse.
+            if size and size < len(buffer):
+                return Path(buffer.value).joinpath(*reversed(tail))
+            return None
+        if current.parent == current:
+            return None
+        tail.append(current.name)
+        current = current.parent
+
+
+def loadable_base(root, virtualenv):
+    """Choose the base uv receives so compiled imports stay inside the loader limit."""
+    if sys.platform != "win32" or len(str(virtualenv)) + RUNTIME_LEAF <= LOADER_LIMIT:
+        return root
+    alias = alias_path(root)
+    if alias is not None:
+        relocated = alias / virtualenv.relative_to(root)
+        if len(str(relocated)) + RUNTIME_LEAF <= LOADER_LIMIT:
+            return alias
+    raise ValueError(
+        "the runtime path is too long for the Windows DLL loader; "
+        "reinstall the plugin into a shorter directory"
+    )
+
+
+def relocate(base, root, path):
+    return path if base == root else base / path.relative_to(root)
+
+
 @contextmanager
 def initialization_lock(path):
     """Serialize receipt publication; the OS releases the lock after a crash.
@@ -101,18 +154,19 @@ def main(argv=None):
     temporary = storage.inside(ROOT, runtime / "tmp")
     cache = storage.inside(ROOT, runtime / "cache")
     virtualenv = storage.inside(ROOT, runtime / "venv")
+    base = loadable_base(ROOT, virtualenv)
     environment = storage.environment(temporary)
     for key in list(environment):
         if key.startswith("UV_") or key in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH"):
             del environment[key]
     environment.update(
-        UV_CACHE_DIR=process_path(cache),
-        UV_PROJECT_ENVIRONMENT=process_path(virtualenv),
+        UV_CACHE_DIR=process_path(relocate(base, ROOT, cache)),
+        UV_PROJECT_ENVIRONMENT=process_path(relocate(base, ROOT, virtualenv)),
         UV_PYTHON_DOWNLOADS="never",
         UV_LINK_MODE="copy",
     )
     for key in ("TMP", "TEMP", "TMPDIR"):
-        environment[key] = process_path(temporary)
+        environment[key] = process_path(relocate(base, ROOT, temporary))
     options = [
         "--locked",
         "--no-config",
@@ -121,7 +175,7 @@ def main(argv=None):
         "--no-python-downloads",
         "--no-build",
         "--project",
-        process_path(ROOT),
+        process_path(base),
         "--python",
         sys.executable,
     ]
@@ -136,7 +190,7 @@ def main(argv=None):
             runtime.mkdir()
             storage.atomic_json(runtime / "owner.json", expected)
         temporary.mkdir(exist_ok=True)
-        synced = subprocess.call([uv, "sync", "--inexact", *options], cwd=ROOT, env=environment)
+        synced = subprocess.call([uv, "sync", "--inexact", *options], cwd=base, env=environment)
         if synced:
             return synced
     return subprocess.call(
@@ -146,9 +200,9 @@ def main(argv=None):
             "--no-sync",
             *options,
             "python",
-            str(ROOT / "scripts/serve.py"),
+            str(relocate(base, ROOT, ROOT / "scripts/serve.py")),
         ],
-        cwd=ROOT,
+        cwd=base,
         env=environment,
     )
 

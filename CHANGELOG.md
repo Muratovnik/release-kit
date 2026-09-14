@@ -12,6 +12,15 @@
   environment overrides and the conventional private sibling remain supported.
   Invalid local settings fail closed instead of silently selecting another policy.
 
+### Fixed
+
+- The packaged plugin starts from deeply installed directories on Windows. Compiled
+  dependencies now load through the volume's short path alias for the same directory,
+  because the DLL loader keeps the `MAX_PATH` limit even where long paths are enabled
+  and the extended prefix never reaches it. A runtime path that cannot be shortened is
+  refused before any dependency is installed, naming the reason instead of failing
+  later with a DLL load error.
+
 ## [0.22.0](https://github.com/Muratovnik/release-kit/compare/v0.21.1...v0.22.0) - 2026-09-13
 
 ### Added

@@ -121,7 +121,12 @@ lock before running, so multiple clients can remain connected independently.
 A missing or mismatched receipt in an existing `.runtime/` still refuses startup;
 install a fresh complete package instead of claiming that directory. Windows
 runtime paths use the extended path format so nested caches and installed wheels
-can exceed the legacy path limit without changing global system settings.
+can exceed the legacy path limit without changing global system settings. The DLL
+loader keeps that limit regardless of the extended prefix or an enabled long-path
+policy, so a deeply installed runtime loads its compiled dependencies through the
+volume's short path alias for the same directory. The payload stays where it was
+installed; only the path spelling changes. Where the volume supplies no alias,
+startup refuses with the reason before installing anything.
 
 In a fresh client session, verify the release-kit skill and tools are discovered,
 including `relkit_project`, `relkit_sync`, `relkit_audit` and `relkit_release`.
@@ -212,6 +217,7 @@ Native elicitation must reach the human and must not be auto-approved.
 | `python` or `uv` not found | Check PATH in the environment that launches the client, not only a different terminal |
 | Hash/version mismatch | Reinstall the complete reviewed version into a fresh path; do not edit manifest versions or inventory to suppress the error |
 | Runtime ownership/lock drift | Preserve the old directory and diagnostics; install into a fresh explicitly approved writable location |
+| Runtime path too long for the DLL loader | Reinstall into a shorter directory; no extended prefix or long-path policy lifts this Windows loader limit, and the short path alias is unavailable on volumes that disable it |
 | Downloads fail | Check dependency-host access; do not relax the lock or enable source builds as a workaround |
 | Old version persists | Reload/restart the client and check component versions; creating a new task alone does not restart the MCP process |
 | Project inspection refuses | Check canonical root, normal `.git`, tracked policy/projection and supported version; do not bind a parent/sibling instead |

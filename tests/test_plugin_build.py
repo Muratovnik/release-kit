@@ -37,6 +37,46 @@ class PluginBuildTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual("/example/cache", launcher["process_path"]("/example/cache"))
 
+    def test_deep_windows_runtime_uses_a_short_alias_for_compiled_imports(self):
+        # A real installation hit this: uv installed the packages and the server
+        # then failed with "DLL load failed while importing _cffi_backend".
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        namespace = launcher["loadable_base"].__globals__
+        root = Path(tempfile.gettempdir()) / ("deep plugin " * 12).strip() / "release-kit"
+        virtualenv = root / ".runtime" / "venv"
+        alias = Path(tempfile.gettempdir()) / "DEEPPL~1" / "RELEAS~1"
+        limit = launcher["LOADER_LIMIT"] - launcher["RUNTIME_LEAF"]
+        self.assertGreater(len(str(virtualenv)), limit)
+        with patch.object(sys, "platform", "win32"):
+            with patch.dict(namespace, {"alias_path": lambda path: alias}):
+                base = launcher["loadable_base"](root, virtualenv)
+                self.assertEqual(alias, base)
+                relocated = launcher["relocate"](base, root, virtualenv)
+                self.assertLessEqual(len(str(relocated)), limit)
+                self.assertEqual(virtualenv.relative_to(root), relocated.relative_to(base))
+            # An alias the volume cannot supply must refuse before installing anything.
+            for unavailable in (lambda path: None, lambda path: root):
+                with (
+                    patch.dict(namespace, {"alias_path": unavailable}),
+                    self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"),
+                ):
+                    launcher["loadable_base"](root, virtualenv)
+            # A path the loader already accepts keeps the installed location verbatim.
+            shallow = Path(tempfile.gettempdir()) / "release-kit"
+            self.assertEqual(shallow, launcher["loadable_base"](shallow, shallow / ".runtime/venv"))
+
+    @unittest.skipUnless(sys.platform == "win32", "8.3 aliases are a Windows volume feature")
+    def test_windows_alias_resolves_to_the_same_installed_directory(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        with tempfile.TemporaryDirectory(prefix="alias probe ") as temporary:
+            nested = Path(temporary) / "plugin space" / "release-kit"
+            nested.mkdir(parents=True)
+            alias = launcher["alias_path"](nested / ".runtime" / "venv")
+            if alias is None:
+                self.skipTest("this volume does not create 8.3 aliases")
+            self.assertLess(len(str(alias)), len(str(nested / ".runtime" / "venv")))
+            self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
+
     def test_concurrent_cold_launch_waits_for_runtime_receipt(self):
         with tempfile.TemporaryDirectory(prefix="cold plugin ") as temporary:
             folder = Path(temporary)
