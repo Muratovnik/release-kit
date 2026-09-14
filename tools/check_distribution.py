@@ -17,6 +17,7 @@ import sys
 import tempfile
 from pathlib import Path
 
+import smoke
 from smoke import inventory
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -81,6 +82,19 @@ def package_checks(root: Path, workspace: Path, uv: str, version: str, assets: P
                 str(assets / "relkit.pyz"),
                 "--work-dir",
                 str(workspace / "onboarding space"),
+            ],
+        ),
+        (
+            "wheel-install",
+            [
+                sys.executable,
+                str(root / "tools/smoke_wheel.py"),
+                "--wheel",
+                str(assets / smoke.WHEEL.format(version=version)),
+                "--version",
+                version,
+                "--work-dir",
+                str(workspace / "wheel install"),
             ],
         ),
         (

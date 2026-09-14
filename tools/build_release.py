@@ -8,6 +8,7 @@ import zipfile
 from pathlib import Path
 
 from build_plugin import ROOT, build_plugin
+from build_wheel import build as build_wheel
 
 from releasekit import distribution, storage
 
@@ -77,6 +78,7 @@ def build_release(output: Path, *, allow_divergent: bool = False):
         (output / "relkit.pyz.sha256").write_bytes(
             archive.read("release-kit/tools/relkit.pyz.sha256")
         )
+    build_wheel(output)
     receipt = {
         "schema": 1,
         "version": artifact.version,

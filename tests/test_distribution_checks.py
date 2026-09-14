@@ -114,7 +114,9 @@ class GateTests(unittest.TestCase):
             check_distribution.package_checks(root, scratch, "uv", "1.2.3", scratch / "assets")
         )
         self.assertEqual({"base", "mcp"}, set(source))
-        self.assertEqual({"cli-smoke", "onboarding", "plugin-stdio"}, set(packages))
+        self.assertEqual(
+            {"cli-smoke", "onboarding", "wheel-install", "plugin-stdio"}, set(packages)
+        )
         mcp = source["mcp"]
         self.assertIn("--locked", mcp)
         self.assertIn("--no-python-downloads", mcp)
@@ -126,7 +128,10 @@ class GateTests(unittest.TestCase):
         commands = check_distribution.package_checks(
             Path("source"), Path("scratch"), "uv", "1.2.3", assets
         )
-        self.assertEqual(["cli-smoke", "onboarding", "plugin-stdio"], [n for n, _ in commands])
+        self.assertEqual(
+            ["cli-smoke", "onboarding", "wheel-install", "plugin-stdio"],
+            [n for n, _ in commands],
+        )
         self.assertIn(str(assets / "relkit.pyz"), dict(commands)["onboarding"])
         self.assertIn(str(assets / "release-kit-plugin.zip"), dict(commands)["plugin-stdio"])
 

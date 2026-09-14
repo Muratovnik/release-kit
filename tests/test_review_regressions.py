@@ -48,11 +48,18 @@ class ReleaseSetTests(unittest.TestCase):
                     {"version": VERSION, "files": {"tools/relkit.pyz": smoke.digest(payload)}}
                 ),
             )
+        # The wheel is part of the published set; its contents are irrelevant here,
+        # because these regressions are about the set and its declared digests.
+        (self.assets / self.wheel).write_bytes(b"synthetic wheel bytes")
         self.reseal()
         self.original = {path.name: path.read_bytes() for path in self.assets.iterdir()}
 
+    @property
+    def wheel(self) -> str:
+        return smoke.WHEEL.format(version=VERSION)
+
     def reseal(self):
-        for name in (smoke.CLI, smoke.PLUGIN):
+        for name in (smoke.CLI, smoke.PLUGIN, self.wheel):
             digest = smoke.digest((self.assets / name).read_bytes())
             (self.assets / (name + ".sha256")).write_text(f"{digest}  {name}\n", encoding="utf-8")
         self.receipt = {
@@ -60,7 +67,7 @@ class ReleaseSetTests(unittest.TestCase):
             "version": VERSION,
             "files": {
                 name: smoke.digest((self.assets / name).read_bytes())
-                for name in smoke.ASSETS - {smoke.RECEIPT}
+                for name in smoke.expected_assets(VERSION) - {smoke.RECEIPT}
             },
         }
         self.write_receipt()
@@ -76,7 +83,7 @@ class ReleaseSetTests(unittest.TestCase):
     def test_complete_set_runs_real_synthetic_zipapp(self):
         self.assertEqual([], smoke.smoke(self.assets, self.root, VERSION))
         hashes = smoke.inventory(self.assets, VERSION)
-        self.assertEqual(smoke.ASSETS, set(hashes))
+        self.assertEqual(smoke.expected_assets(VERSION), set(hashes))
 
     def test_empty_or_partial_receipt_never_selects_its_own_coverage(self):
         for files in ({}, {smoke.CLI: self.receipt["files"][smoke.CLI]}):
@@ -263,7 +270,8 @@ class CandidateWiringTests(unittest.TestCase):
         assets = Path("separate candidate/assets")
         commands = check_distribution.package_checks(ROOT, Path("scratch"), "uv", VERSION, assets)
         self.assertEqual(
-            ["cli-smoke", "onboarding", "plugin-stdio"], [name for name, _ in commands]
+            ["cli-smoke", "onboarding", "wheel-install", "plugin-stdio"],
+            [name for name, _ in commands],
         )
         self.assertIn(str(assets / smoke.CLI), dict(commands)["onboarding"])
         self.assertIn(str(assets / smoke.PLUGIN), dict(commands)["plugin-stdio"])

@@ -24,10 +24,17 @@ CLI = "relkit.pyz"
 MANIFEST = "relkit.pyz.sha256"
 PLUGIN = "release-kit-plugin.zip"
 RECEIPT = "release.json"
+WHEEL = "release_kit-{version}-py3-none-any.whl"
 ENTRY = "release-kit/tools/relkit.pyz"
 INVENTORY = "release-kit/package.json"
-# This distribution's contract, independent of the receipt under inspection.
-ASSETS = frozenset({CLI, MANIFEST, PLUGIN, PLUGIN + ".sha256", RECEIPT})
+# This distribution's contract, independent of the receipt under inspection. The
+# wheel carries the version in its name, so the set is a function of the version.
+FIXED = frozenset({CLI, MANIFEST, PLUGIN, PLUGIN + ".sha256", RECEIPT})
+
+
+def expected_assets(version: str) -> frozenset[str]:
+    wheel = WHEEL.format(version=version)
+    return FIXED | {wheel, wheel + ".sha256"}
 
 
 class SmokeError(RuntimeError):
@@ -48,20 +55,21 @@ def _unique_object(pairs):
 
 
 def inventory(assets: Path, version: str) -> dict[str, str]:
-    """Require all five ordinary files and complete, consistent hash declarations."""
+    """Require every ordinary file and complete, consistent hash declarations."""
+    wanted = expected_assets(version)
     observed = {path.name for path in assets.iterdir()}
-    if observed != ASSETS:
+    if observed != wanted:
         raise SmokeError(
-            f"release asset set differs: missing={sorted(ASSETS - observed)}, "
-            f"unexpected={sorted(observed - ASSETS)}"
+            f"release asset set differs: missing={sorted(wanted - observed)}, "
+            f"unexpected={sorted(observed - wanted)}"
         )
     hashes = {}
-    for name in sorted(ASSETS):
+    for name in sorted(wanted):
         path = assets / name
         if not stat.S_ISREG(path.lstat().st_mode):
             raise SmokeError(f"release asset must be an ordinary file: {name}")
         hashes[name] = digest(path.read_bytes())
-    for name in (CLI, PLUGIN):
+    for name in (CLI, PLUGIN, WHEEL.format(version=version)):
         sidecar = name + ".sha256"
         words = (assets / sidecar).read_text(encoding="utf-8").split()
         if len(words) != 2 or words[0] != hashes[name] or words[1] not in (name, "*" + name):
@@ -77,7 +85,7 @@ def inventory(assets: Path, version: str) -> dict[str, str]:
     ):
         raise SmokeError(f"{RECEIPT} must declare schema 1 and version {version}")
     files = receipt.get("files")
-    if not isinstance(files, dict) or set(files) != ASSETS - {RECEIPT}:
+    if not isinstance(files, dict) or set(files) != wanted - {RECEIPT}:
         raise SmokeError(f"{RECEIPT} must cover every other release asset exactly once")
     for name, expected in files.items():
         if (

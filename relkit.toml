@@ -28,6 +28,8 @@ assets = [
     "relkit.pyz.sha256",
     "release-kit-plugin.zip",
     "release-kit-plugin.zip.sha256",
+    "release_kit-{version}-py3-none-any.whl",
+    "release_kit-{version}-py3-none-any.whl.sha256",
     "release.json",
 ]
 # Source checks do not qualify a throwaway build as the release candidate.

@@ -1243,7 +1243,11 @@ class SelfHostingTests(unittest.TestCase):
                 for name in ("local-releases.md", "release-coordinator.md"):
                     self.assertIn("release-kit/docs/" + name, files)
 
-        self.assertEqual(sorted(self.release.assets), produced)
+        # Asset names may be templates; the wheel carries the version in its name.
+        declared = [
+            name.format(version=__version__, tag=f"v{__version__}") for name in self.release.assets
+        ]
+        self.assertEqual(sorted(declared), produced)
 
     def test_the_version_file_and_changelog_describe_exactly_this_version(self) -> None:
         observed = re.findall(
