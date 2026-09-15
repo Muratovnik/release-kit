@@ -138,6 +138,7 @@ class HistoryScopeTests(unittest.TestCase):
                 patch.object(publication.audit, "scan", return_value=Report()),
                 patch.object(publication.audit, "worktree_changes", return_value=("?? notes.md",)),
                 patch.object(publication.audit, "history_failures", return_value=[]) as history,
+                patch.object(publication.toolchain, "prepare"),
                 patch.object(publication.engines, "betterleaks", return_value=0),
                 patch.object(publication.engines, "lychee", return_value=0),
                 redirect_stdout(StringIO()),
@@ -201,6 +202,10 @@ class SemanticWiringTests(unittest.TestCase):
                 patch.object(publication.audit, "worktree_changes", return_value=()),
                 patch.object(publication.audit, "history_failures", return_value=[]) as history,
                 patch.object(publication.protection, "problem", return_value=None),
+                # Provisioning is not what this test is about, and leaving it real made
+                # the verdict depend on whether a cache outside the project happened to
+                # be populated: the suite passed here and failed inside the release check.
+                patch.object(publication.toolchain, "prepare"),
                 patch.object(publication.engines, "betterleaks", return_value=0),
                 patch.object(publication.engines, "lychee", return_value=0),
             ):
