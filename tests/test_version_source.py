@@ -103,17 +103,43 @@ class VersionSourceTests(unittest.TestCase):
             self.assertTrue(set_version.relock(self.root, "9.9.9"))
         self.assertIn("review the lock diff", printed.getvalue())
 
-    def test_the_readme_installs_the_current_version(self):
+    def test_every_readme_installs_the_current_version(self):
         """A quick start that pins an old release installs an old tool.
 
         The README stated v0.21.1 while v0.23.2 was published, so anyone following it
         got a CLI three releases behind. Nothing noticed, because nothing compared the
-        two. Every release reference in the README is now the declared version.
+        two. A translated quick start installs the same way, so this holds every README
+        to the declared version rather than only the English page.
         """
-        readme = (ROOT / "README.md").read_text(encoding="utf-8")
-        referenced = set(re.findall(r"(?:\bv|release_kit-)([0-9]+\.[0-9]+\.[0-9]+)", readme))
-        self.assertTrue(referenced, "the README names no release to install")
-        self.assertEqual({distribution.source_version(DECLARATION)}, referenced)
+        declared = distribution.source_version(DECLARATION)
+        for path in set_version.readmes(ROOT):
+            with self.subTest(readme=path.name):
+                text = path.read_text(encoding="utf-8")
+                found = set(re.findall(r"(?:\bv|release_kit-)([0-9]+\.[0-9]+\.[0-9]+)", text))
+                self.assertTrue(found, "this README names no release to install")
+                self.assertEqual({declared}, found)
+
+    def test_a_translation_is_retargeted_with_the_page_it_translates(self):
+        # A translation that keeps the previous release installs an old tool just as
+        # effectively as the English page did, and nobody reads it in review.
+        pinned = b"uv tool install .../v0.1.0/release_kit-0.1.0-py3-none-any.whl\n"
+        for name in ("README.md", "README.ru.md", "README.zh-CN.md"):
+            (self.root / name).write_bytes(pinned)
+        written = [
+            path.name
+            for path in set_version.readmes(self.root)
+            if set_version.retarget_readme(path, "9.9.9")
+        ]
+        self.assertEqual(["README.md", "README.ru.md", "README.zh-CN.md"], sorted(written))
+        for name in written:
+            retargeted = (self.root / name).read_bytes()
+            self.assertIn(b"/v9.9.9/release_kit-9.9.9-py3-none-any.whl", retargeted)
+
+    def test_a_canonical_readme_naming_no_release_refuses(self):
+        path = self.root / "README.md"
+        path.write_bytes(b"this page forgot to say what to install\n")
+        with self.assertRaisesRegex(SystemExit, "names no release"):
+            set_version.retarget_readme(path, "9.9.9")
 
     def test_package_metadata_declares_no_second_version(self):
         project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]

@@ -28,7 +28,7 @@ from releasekit import distribution, plugin
 DECLARED = re.compile(rb'(?m)^(__version__ = ")[^"]+(")$')
 MANIFEST = re.compile(rb'(?m)^(\s*"version": ")[^"]+(",?)$')
 PROJECT = re.compile(rb'(?m)^(version = ")[^"]+(")$')
-# The README installs a specific release, so its references are the version too.
+# A README installs a specific release, so its references are the version too.
 # Unlike the carriers above there are several of them and they must all move,
 # which is why they are rewritten by a separate pass rather than by `rewrite`.
 RELEASE_REFERENCE = re.compile(rb"(\bv|release_kit-)([0-9]+\.[0-9]+\.[0-9]+)")
@@ -64,14 +64,23 @@ def rewrite(path: Path, pattern: re.Pattern[bytes], version: str) -> bool:
     return True
 
 
-def retarget_readme(root: Path, version: str) -> bool:
-    """Point every release reference in the README at the version being declared."""
-    path = root / "README.md"
+def readmes(root: Path) -> tuple[Path, ...]:
+    """Every README, found rather than listed.
+
+    A translated quick start installs a release exactly as the English one does, so a
+    translation left behind pins an old tool. Discovering the pages means adding a
+    language cannot forget this step; naming them would have to be remembered.
+    """
+    return tuple(sorted(root.glob("README*.md")))
+
+
+def retarget_readme(path: Path, version: str) -> bool:
+    """Point every release reference in one README at the version being declared."""
     original = path.read_bytes()
     replaced, count = RELEASE_REFERENCE.subn(
         lambda match: match.group(1) + version.encode(), original
     )
-    if not count:
+    if not count and path.name == "README.md":
         raise SystemExit("set-version: the README names no release to install")
     if replaced == original:
         return False
@@ -148,8 +157,7 @@ def main(argv: list[str] | None = None) -> int:
     if shutil.which("uv") is None:
         raise SystemExit("set-version: uv is required to regenerate the plugin lock")
     written = [path for path, pattern in carriers(ROOT) if rewrite(path, pattern, version)]
-    if retarget_readme(ROOT, version):
-        written.append(ROOT / "README.md")
+    written.extend(path for path in readmes(ROOT) if retarget_readme(path, version))
     if relock(ROOT, version):
         written.append(plugin_root(ROOT) / "uv.lock")
     if distribution.source_version(declaration(ROOT).read_text(encoding="utf-8")) != version:
