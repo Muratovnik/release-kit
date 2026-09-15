@@ -42,11 +42,27 @@ DOCUMENTS = (
     "examples/audit/.gitignore",
     "examples/plugin-marketplace.json",
 )
-SOURCE_DOCUMENTS = ("CONTRIBUTING.md", "docs/distribution.md", "docs/publication-review.md")
+# Pages that stay in the repository. A relative link to one of them would resolve to
+# nothing inside an installed package, so it is rewritten to this release instead.
+# Translations belong here: the packaged README offers them, but a client reading these
+# documents reads the English ones, and carrying six more pages would only grow the zip.
+SOURCE_DOCUMENTS = (
+    "CONTRIBUTING.md",
+    "docs/distribution.md",
+    "docs/publication-review.md",
+    "README.ru.md",
+    "README.zh-CN.md",
+    "docs/ru/README.md",
+    "docs/ru/audit.md",
+    "docs/ru/updates.md",
+    "docs/zh-CN/README.md",
+    "docs/zh-CN/audit.md",
+    "docs/zh-CN/updates.md",
+)
 
 
 def document_bytes(name: str, payload: bytes, version: str) -> bytes:
-    """Link source-only maintainer pages to this release, preserving anchors."""
+    """Link pages that stay in the source tree to this release, preserving anchors."""
     if not name.endswith(".md"):
         return payload
     text = payload.decode("utf-8")

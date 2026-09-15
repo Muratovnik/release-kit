@@ -53,6 +53,22 @@ class PackageReaderTests(unittest.TestCase):
                 prefix = f"https://github.com/Muratovnik/release-kit/blob/v{__version__}/"
                 readme = archive.read("release-kit/README.md").decode()
                 self.assertIn(prefix + "CONTRIBUTING.md", readme)
+                for name in (
+                    "README.ru.md",
+                    "README.zh-CN.md",
+                    "docs/ru/README.md",
+                    "docs/ru/audit.md",
+                    "docs/ru/updates.md",
+                    "docs/zh-CN/README.md",
+                    "docs/zh-CN/audit.md",
+                    "docs/zh-CN/updates.md",
+                ):
+                    # The packaged README offers these languages without packaging them,
+                    # so each offer has to point at the release rather than at a
+                    # neighbouring file the archive does not contain.
+                    with self.subTest(translation=name):
+                        self.assertNotIn("release-kit/" + name, archive.namelist())
+                        self.assertIn(prefix + name, readme)
                 plugin = archive.read("release-kit/docs/plugin.md").decode()
                 self.assertIn(prefix + "docs/distribution.md#integrity-and-trust", plugin)
                 self.assertIn(prefix + "CONTRIBUTING.md#checks", plugin)

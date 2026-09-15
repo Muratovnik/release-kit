@@ -5,6 +5,8 @@
 [![Python](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/downloads/)
 [![Downloads](https://img.shields.io/github/downloads/Muratovnik/release-kit/total?label=downloads)](https://github.com/Muratovnik/release-kit/releases)
 
+**English** · [Русский](README.ru.md) · [简体中文](README.zh-CN.md)
+
 Check a Git repository before you publish it. One command runs secret scanning,
 Markdown link checks and the file and history rules a project declares for itself.
 It can also prepare release files, deliver them to a directory or GitHub, and verify
@@ -181,6 +183,18 @@ before adopting the gate.
 | Use an agent-facing plugin | [Install and use the plugin](docs/plugin.md) |
 | Integrate another local MCP client | [Standalone MCP](docs/mcp.md) |
 | Consume machine-readable results | [CLI JSON contract](docs/cli-json.md) |
+
+## Documentation in other languages
+
+English is canonical. A translation covers adopting the gate — install, first check,
+audit policy, updates and recovery — and ships with the same release. Integration
+surfaces and maintainer documents exist in English only, and command output, rule
+names and configuration keys are never translated.
+
+| Language | Guides |
+| --- | --- |
+| Русский | [Обзор](README.ru.md) · [Политика аудита](docs/ru/audit.md) · [Обновления](docs/ru/updates.md) · [Указатель](docs/ru/README.md) |
+| 简体中文 | [概览](README.zh-CN.md) · [审计策略](docs/zh-CN/audit.md) · [更新](docs/zh-CN/updates.md) · [索引](docs/zh-CN/README.md) |
 
 ## Troubleshooting
 
