@@ -25,12 +25,28 @@ class GeneratorConfigTests(unittest.TestCase):
     def policy(self, payload: str):
         return config.load(written(self.root, payload)).changelog
 
-    def test_a_renamed_profile_says_what_it_is_now_called(self):
-        # It named a project that publishes the layout, not the layout. Anyone whose
-        # configuration predates the rename should be told the new name, not the list.
-        with self.assertRaises(config.ConfigError) as refusal:
-            self.policy('[changelog]\nprofile = "vue-like"\n')
-        self.assertIn("conventional-changelog", str(refusal.exception))
+    def test_a_renamed_profile_is_accepted_and_says_what_it_is_now_called(self):
+        """Refusing the former name stranded every project still using it.
+
+        The installed CLI could not read the new name and the candidate could not read
+        the old one, so neither the configuration nor the tool could move first and
+        `update` rolled itself back. The name is mapped to the current profile, and the
+        project is told to change it rather than being stopped.
+        """
+        policy = self.policy('[changelog]\nprofile = "vue-like"\n')
+        self.assertEqual("conventional-changelog", policy.profile)
+        self.assertEqual("vue-like", policy.deprecated_profile)
+        notice = config.renamed_profile_notice("vue-like")
+        self.assertIn("conventional-changelog", notice)
+        self.assertIn("vue-like", notice)
+
+    def test_a_current_profile_is_not_reported_as_deprecated(self):
+        self.assertEqual("", self.policy('[changelog]\nprofile = "strict"\n').deprecated_profile)
+
+    def test_a_profile_that_was_never_a_name_is_still_refused(self):
+        # Compatibility with one former name is not permission to invent others.
+        with self.assertRaisesRegex(config.ConfigError, "must be one of"):
+            self.policy('[changelog]\nprofile = "angular"\n')
 
     def test_an_engine_is_recorded_and_an_unknown_one_is_refused(self):
         policy = self.policy(

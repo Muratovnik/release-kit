@@ -24,6 +24,12 @@ and `--output` paths are based on that root; `--root` selects another root.
 an existing `conventional-changelog` profile. A malformed policy is an error, not a fallback.
 Opt in explicitly; `cliff.toml` or generated-looking text does not enable a profile.
 
+`conventional-changelog` was called `vue-like` before 0.25.0. The former name is still
+accepted and validates identically; `audit` reports it and names the current one. Change
+it at your convenience. Refusing it instead, as 0.25.0 and 0.26.0 did, left a project no
+way to move: the installed CLI could not read the new name and the candidate could not
+read the old one, so `update` failed its own post-update audit and rolled back.
+
 ```toml
 [changelog]
 profile = "conventional-changelog"

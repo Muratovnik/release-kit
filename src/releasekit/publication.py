@@ -93,6 +93,13 @@ def run(
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
+    if settings.changelog.deprecated_profile:
+        # Said on the command a project runs daily, so the rename is noticed long before
+        # anything depends on it, rather than at the moment someone cuts a release.
+        notice = config_module.renamed_profile_notice(settings.changelog.deprecated_profile)
+        result.warnings.append({"code": "deprecated_changelog_profile", "message": notice})
+        print(f"relkit audit: {notice}")
+
     try:
         report = audit.scan(
             root,

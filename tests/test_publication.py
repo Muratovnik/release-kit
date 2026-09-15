@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from releasekit import cli, config, owner, publication
 from releasekit.exposure.audit import Report
+from releasekit.result import Result
 
 
 class StagedPolicyTests(unittest.TestCase):
@@ -253,6 +254,77 @@ class SemanticWiringTests(unittest.TestCase):
 
         self.assertEqual(2, result)
         self.assertIn("also declared as owner workflow", stderr.getvalue())
+
+
+class RenamedProfileTests(unittest.TestCase):
+    """A rename must not lock an adopter out of the release that performs it."""
+
+    def project(self, root: Path, profile: str) -> None:
+        subprocess.run(["git", "init", "-q", str(root)], check=True)
+        (root / "relkit.toml").write_text(
+            "[exposure]\ncheck_secrets = false\ncheck_links = false\n\n"
+            f'[changelog]\nprofile = "{profile}"\n',
+            encoding="utf-8",
+        )
+        subprocess.run(["git", "add", "."], cwd=root, check=True)
+
+    def test_a_project_on_the_former_profile_name_still_audits(self):
+        """`update` runs the candidate's audit and rolls back when it fails.
+
+        While the former name was refused, a project using it could not reach any
+        release that knows the new one: the installed tool could not read the new name
+        either, so neither side could move first. The audit passes and says what to fix.
+        """
+        with tempfile.TemporaryDirectory(prefix="renamed profile ") as temporary:
+            root = Path(temporary)
+            self.project(root, "vue-like")
+            printed = StringIO()
+            with redirect_stdout(printed), redirect_stderr(StringIO()):
+                exit_code = cli.main(["audit", "--root", str(root), "--no-download"])
+        self.assertEqual(0, exit_code)
+        self.assertIn("conventional-changelog", printed.getvalue())
+
+    def test_the_notice_reaches_the_structured_result(self):
+        # Automation reads warnings, not the console, so a rename nobody can parse is a
+        # rename nobody acts on until a release fails.
+        with tempfile.TemporaryDirectory(prefix="renamed profile ") as temporary:
+            root = Path(temporary)
+            self.project(root, "vue-like")
+            outcome = Result()
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                exit_code = publication.run(
+                    root,
+                    history=False,
+                    staged=False,
+                    strict=False,
+                    owner_mode=False,
+                    require_overlay=False,
+                    allow_download=False,
+                    result=outcome,
+                )
+        self.assertEqual(0, exit_code)
+        self.assertEqual(
+            ["deprecated_changelog_profile"], [item["code"] for item in outcome.warnings]
+        )
+
+    def test_a_current_profile_warns_about_nothing(self):
+        with tempfile.TemporaryDirectory(prefix="current profile ") as temporary:
+            root = Path(temporary)
+            self.project(root, "conventional-changelog")
+            outcome = Result()
+            with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+                exit_code = publication.run(
+                    root,
+                    history=False,
+                    staged=False,
+                    strict=False,
+                    owner_mode=False,
+                    require_overlay=False,
+                    allow_download=False,
+                    result=outcome,
+                )
+        self.assertEqual(0, exit_code)
+        self.assertEqual([], outcome.warnings)
 
 
 if __name__ == "__main__":

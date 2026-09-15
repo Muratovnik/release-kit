@@ -223,6 +223,9 @@ class ChangelogConfig:
     profile: str = "legacy"
     first_version: str = ""
     generator: GeneratorConfig | None = None
+    # The name the project actually wrote, when that name has since been renamed. The
+    # profile above is already the current one, so nothing downstream has to know.
+    deprecated_profile: str = ""
 
 
 # Only a tool this project provisions and verifies may be named instead of spelled out.
@@ -232,6 +235,22 @@ class ChangelogConfig:
 GENERATOR_ENGINES = frozenset({"git-cliff"})
 # Profiles whose names described something other than the layout they validate.
 RENAMED_PROFILES = {"vue-like": "conventional-changelog"}
+
+
+def renamed_profile_notice(old: str) -> str:
+    """What to tell a project still naming a profile by its former name.
+
+    Refusing the old name closed this tool's own upgrade path. The installed CLI cannot
+    read the new name, so the configuration cannot be fixed first; the candidate CLI
+    could not read the old one, so `update` failed its post-update audit and rolled
+    back. Every adopter on the former name was stranded between two releases. The name
+    is therefore accepted and mapped, and the project is told to move on.
+    """
+    return (
+        f"changelog.profile {old!r} is the former name of {RENAMED_PROFILES[old]!r} and is "
+        "accepted for compatibility; a profile names the layout it validates, not a project "
+        f"that happens to publish it. Set profile = {RENAMED_PROFILES[old]!r} in relkit.toml"
+    )
 
 
 def _generator(section: dict[str, object]) -> GeneratorConfig | None:
@@ -270,18 +289,19 @@ def _changelog(raw: dict[str, object]) -> ChangelogConfig:
     if unknown:
         raise ConfigError(f"unknown [changelog] key(s): {', '.join(unknown)}")
     profile = _string(section, "profile", "legacy")
+    deprecated = ""
     if profile in RENAMED_PROFILES:
-        raise ConfigError(
-            f"changelog.profile {profile!r} is now {RENAMED_PROFILES[profile]!r}: a profile "
-            "names the layout it validates, not a project that happens to publish it"
-        )
+        deprecated, profile = profile, RENAMED_PROFILES[profile]
     if profile not in PROFILES:
         raise ConfigError(f"changelog.profile must be one of: {', '.join(sorted(PROFILES))}")
     first_version = _string(section, "first_version", "")
     if "first_version" in section and not is_version(first_version):
         raise ConfigError("changelog.first_version must be a SemVer version or tag")
     return ChangelogConfig(
-        profile=profile, first_version=first_version, generator=_generator(section)
+        profile=profile,
+        first_version=first_version,
+        generator=_generator(section),
+        deprecated_profile=deprecated,
     )
 
 
