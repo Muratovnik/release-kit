@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.26.1](https://github.com/Muratovnik/release-kit/compare/v0.26.0...v0.26.1) (2026-09-15)
+
+### Highlights
+
+0.25.0 renamed the `vue-like` changelog profile and refused the old name, which closed
+this tool's own upgrade path: the installed CLI could not read the new name, so a project
+could not fix its configuration first, and the candidate could not read the old one, so
+`update` failed its post-update audit and rolled itself back. Any project still naming the
+former profile was held between two releases. The name is accepted again and mapped to
+`conventional-changelog`, which is what it always meant; `audit` reports it and names the
+current one.
+
+The documentation is now also published in Russian and Simplified Chinese, covering
+install, first check, audit policy and updates. English remains canonical.
+
+### Bug Fixes
+
+- **changelog:** accept the former profile name instead of stranding its users ([0aa7684](https://github.com/Muratovnik/release-kit/commit/0aa768424a2f5e4ce292fa94bac290db9d658b26))
+
 ## [0.26.0](https://github.com/Muratovnik/release-kit/compare/v0.25.0...v0.26.0) (2026-09-14)
 
 ### Highlights
