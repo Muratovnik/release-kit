@@ -40,6 +40,37 @@ remote nor `gh` is needed for directory delivery. Omit `repository` and `branch`
 An absent publisher selects directory delivery unless a legacy workflow was
 explicitly configured; old workflow configurations keep their original publisher.
 
+## Releases without files
+
+A library that is consumed from its Git tag, such as a skill collection or a
+configuration set, has nothing to package. Declare an empty asset set:
+
+```toml
+[release]
+publisher = "github"
+repository = "example/skills"
+version_file = "VERSION"
+version_pattern = '^([0-9]+\.[0-9]+\.[0-9]+)$'
+assets = []
+checks = [["{python}", "tools/check.py", "--all"]]
+smoke = [["{python}", "tools/check.py"]]
+smoke_platforms = ["linux", "darwin", "win32"]
+```
+
+`build` and `checksum_file` must then be absent: there is no file set to produce
+or to list. Everything else is unchanged. The release is the annotated tag, the
+committed changelog entry and the source tree at that tag. Smoke runs from the
+exact Git-free snapshot of that tree, so it proves the tree works without a
+checkout, ignored files or a build step; `{assets}` names an empty directory.
+The candidate receipt records an empty file set, directory delivery writes the
+manifest and an empty `assets/`, and GitHub delivery creates and publishes the
+release without an upload. Verification refuses a file that appears later in
+either destination.
+
+For GitHub delivery the immutable-release check binds only the tag object, since
+the signed attestation lists no assets. That path is covered by the isolated
+fixtures; no live publication of a release without files has been recorded here.
+
 ## Commands
 
 ```bash

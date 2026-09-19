@@ -477,12 +477,24 @@ def required_provenance(value: dict) -> bool:
     return bool(value["settings"].get("require_provenance", True))
 
 
+NO_FILES = (
+    "No files are published: the annotated tag, the committed notes and the source tree "
+    "at that tag are the release, and smoke runs from that exact snapshot."
+)
+
+
 def caveats(value: dict) -> list[str]:
     """Operator-facing limits of this plan that the JSON alone does not spell out."""
+    files = bool(value["assets"])
     if settings.local(value["settings"]):
         return [
-            "Build, checks and smoke run locally; no hosted CI or paid build-provenance service is required.",
-            "The exact prepared files are verified before publication; local checks cover only this host.",
+            ("Build, checks and smoke run locally" if files else "Checks and smoke run locally")
+            + "; no hosted CI or paid build-provenance service is required.",
+            (
+                "The exact prepared files are verified before publication; local checks cover only this host."
+                if files
+                else NO_FILES + " Local checks cover only this host."
+            ),
             "Directory delivery is portable and needs no hosting account. GitHub delivery is an optional adapter with immutable-release signature verification.",
         ]
     jobs = value.get("workflow_jobs") or {}
@@ -491,6 +503,11 @@ def caveats(value: dict) -> list[str]:
             f"CI must publish exactly the {len(value['assets'])} planned asset(s); the set is "
             "checked against GitHub's signed release attestation only after the immutable "
             "release exists, and cannot be corrected afterwards"
+        )
+        if files
+        else (
+            "CI must publish an immutable release with no assets; GitHub's signed release "
+            "attestation is checked to bind only the tag object, after the release exists"
         )
     ]
     if value["settings"].get("candidate_jobs"):
@@ -517,18 +534,19 @@ def caveats(value: dict) -> list[str]:
             "workflow jobs outside required_jobs do not gate publication: "
             + ", ".join(jobs["optional"])
         )
-    lines.append(
-        (
+    if not files:
+        lines.append(NO_FILES)
+    elif required_provenance(value):
+        lines.append(
             "CI must produce build-provenance attestations for every planned asset; a "
             "repository that cannot fails after the tag exists"
         )
-        if required_provenance(value)
-        else (
+    else:
+        lines.append(
             "build provenance is not verified for this release: the published set and its "
             "digests still come from GitHub's signed release attestation, but nothing proves "
             "which workflow run produced those bytes"
         )
-    )
     lines.append(
         f"local checks run on {value.get('host', 'this host')} only; a green local run "
         "is not the CI platform matrix"
@@ -551,7 +569,11 @@ def described_plan(value: dict) -> dict:
                 else "atomic exact-ref push (needs --publish)"
             ),
             (
-                "publish the prepared files with the selected adapter"
+                (
+                    "publish the prepared files with the selected adapter"
+                    if value["assets"]
+                    else "publish the tag and notes with the selected adapter"
+                )
                 if settings.local(value["settings"])
                 else "observe tag CI; CI alone publishes"
             ),
@@ -560,7 +582,11 @@ def described_plan(value: dict) -> dict:
                 if value["settings"].get("publisher") == "directory"
                 else "verify immutable release, notes, assets, signatures"
             ),
-            "smoke downloaded files from pinned source",
+            (
+                "smoke downloaded files from pinned source"
+                if value["assets"]
+                else "smoke the pinned source snapshot"
+            ),
             "cleanup inventoried temporary files",
         ],
         "caveats": caveats(value),
@@ -601,12 +627,19 @@ def show_plan(value: dict, *, human: bool = False) -> None:
     else:
         print(json.dumps(described, indent=2, sort_keys=True))
     # The JSON is data; this block is what an operator must read before --publish.
-    print(
-        f"relkit release: exact asset set for {value['tag']} ({len(value['assets'])} file(s)):",
-        file=sys.stderr,
-    )
-    for name in value["assets"]:
-        print(f"  {name}", file=sys.stderr)
+    if value["assets"]:
+        print(
+            f"relkit release: exact asset set for {value['tag']} ({len(value['assets'])} file(s)):",
+            file=sys.stderr,
+        )
+        for name in value["assets"]:
+            print(f"  {name}", file=sys.stderr)
+    else:
+        print(
+            f"relkit release: {value['tag']} publishes no files; the annotated tag, the "
+            "committed notes and the source tree at that tag are the release",
+            file=sys.stderr,
+        )
     for line in described["caveats"]:
         print(f"relkit release: note: {line}", file=sys.stderr)
 
@@ -1365,6 +1398,9 @@ def _verify(
     _save(path, state)
     directory = workspace.path / "assets"
     directory.mkdir()
+    # Inventoried now: with no files to download nothing below would record it,
+    # and cleanup would then report this run's own empty directory as retained.
+    workspace.remember(directory)
     for asset in identity["assets"]:
         destination = directory / asset["name"]
         github.download(asset, destination)
@@ -1393,7 +1429,12 @@ def _verify(
         )
     _stage(path, state, "publication-verification", "passed")
     snapshot = _snapshot(runner, value, workspace)
-    print("relkit release: downloaded-application smoke from pinned source", flush=True)
+    print(
+        "relkit release: downloaded-application smoke from pinned source"
+        if identity["assets"]
+        else "relkit release: smoke from pinned source",
+        flush=True,
+    )
     _stage(path, state, "application-smoke")
     _commands(
         runner,

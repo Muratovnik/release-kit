@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import json
+import unittest
 from unittest.mock import patch
 
 from test_release import FakeGitHub, ReleaseFixture
 
 from releasekit import config
-from releasekit.release import coordinator
+from releasekit.release import coordinator, settings
 from releasekit.release.backend import GitHub, Pending, ReleaseError
 
 
@@ -132,6 +133,25 @@ class LocalFixture(ReleaseFixture):
         with patch.object(coordinator, "_audit"):
             return self.invoke(**kwargs)
 
+    def tag_only(self):
+        """The project publishes no files: the tag, its notes and the tree are the release."""
+        policy = self.root / "relkit.toml"
+        text = policy.read_text(encoding="utf-8")
+        text = text.replace('assets = ["application.bin", "SHA256SUMS"]\n', "assets = []\n")
+        text = text.replace('checksum_file = "SHA256SUMS"\n', "")
+        text = text.replace('build = [["{python}", "build.py", "{assets}"]]\n', "")
+        policy.write_text(text, encoding="utf-8")
+        (self.root / "build.py").unlink()
+        (self.root / "smoke.py").write_text(
+            "import os, sys\nfrom pathlib import Path\n"
+            "assert Path('VERSION').read_text().strip() == '1.0.0'\n"
+            "assert not Path('.git').exists()\n"
+            "assert os.listdir(sys.argv[1]) == []\n",
+            encoding="utf-8",
+        )
+        self.payloads = {}
+        self.commit()
+
 
 class LocalReleaseTests(LocalFixture):
     def test_a_draft_absent_from_a_stale_list_is_still_published(self):
@@ -256,7 +276,7 @@ class LocalReleaseTests(LocalFixture):
                     config.load(self.root)
 
 
-class DirectoryReleaseTests(LocalFixture):
+class DirectoryFixture(LocalFixture):
     def setUp(self):
         super().setUp()
         path = self.root / "relkit.toml"
@@ -275,6 +295,8 @@ class DirectoryReleaseTests(LocalFixture):
 
         self.runner.call = offline
 
+
+class DirectoryReleaseTests(DirectoryFixture):
     def test_offline_prepare_export_verify_and_next_without_hosting_or_remote(self):
         from releasekit.result import Result
 
@@ -330,3 +352,122 @@ class DirectoryReleaseTests(LocalFixture):
         self.commit()
         code, output = self.invoke("plan", publish=False)
         self.assertEqual(0, code, output)
+
+
+class TagOnlyGitHubReleaseTests(LocalFixture):
+    def setUp(self):
+        super().setUp()
+        self.tag_only()
+
+    def test_a_release_without_files_is_created_published_and_verified(self):
+        value = self.prepare()
+        self.assertEqual([], value["assets"])
+        self.assertEqual([], value["candidate"]["files"])
+        code, output = self.publish(plan_hash=coordinator.fingerprint(value))
+        self.assertEqual(0, code, output)
+        self.assertIn("acceptance=accepted", output)
+        self.assertIn("cleanup=passed", output)
+        self.assertEqual(1, self.github.create_calls)
+        self.assertEqual([], self.github.upload_calls)
+        self.assertEqual(1, self.github.publish_calls)
+        self.assertEqual(1, self.github.signatures_checked)
+        self.assertEqual(1, self.runner.pushes)
+        code, output = self.invoke("verify", publish=False)
+        self.assertEqual(0, code, output)
+
+    def test_a_file_someone_attached_afterwards_fails_verification(self):
+        value = self.prepare()
+        self.assertEqual(0, self.publish(plan_hash=coordinator.fingerprint(value))[0])
+        self.github.assets = lambda _release_id: [
+            {
+                "id": 41,
+                "name": "smuggled.bin",
+                "size": 8,
+                "digest": "sha256:" + "0" * 64,
+                "state": "uploaded",
+            }
+        ]
+        code, output = self.invoke("verify", publish=False)
+        self.assertNotEqual(0, code)
+        self.assertIn("planned exact file set", output)
+
+    def test_plan_says_that_no_files_are_published(self):
+        code, output = self.invoke("plan", publish=False)
+        self.assertEqual(0, code, output)
+        described = self.plan_json(output)
+        self.assertEqual([], described["assets"])
+        self.assertIn("publish the tag and notes with the selected adapter", described["actions"])
+        self.assertIn("smoke the pinned source snapshot", described["actions"])
+        self.assertTrue(any("No files are published" in line for line in described["caveats"]))
+        notes = output.split("\nrelkit release:", 1)[1]
+        self.assertIn("v1.0.0 publishes no files", notes)
+        self.assertNotIn("exact asset set", notes)
+
+
+class TagOnlyDirectoryReleaseTests(DirectoryFixture):
+    def setUp(self):
+        super().setUp()
+        self.tag_only()
+
+    def test_offline_release_without_files_exports_the_manifest_and_an_empty_set(self):
+        from releasekit.result import Result
+
+        with patch.object(coordinator, "_audit"):
+            code, output = self.invoke("prepare", publish=False)
+            self.assertEqual(0, code, output)
+            self.assertNotIn("retained", output)
+            code, output = self.invoke()
+        self.assertEqual(0, code, output)
+        self.assertIn("tag=local", output)
+        self.assertIn("acceptance=accepted", output)
+        self.assertIn("cleanup=passed", output)
+        self.assertEqual("v1.0.0", self.runner.git("tag", "--list"))
+        folder = self.root / ".cache/releases/v1.0.0"
+        self.assertEqual({"assets", "relkit-release.json"}, {p.name for p in folder.iterdir()})
+        self.assertEqual([], list((folder / "assets").iterdir()))
+        manifest = json.loads((folder / "relkit-release.json").read_text(encoding="utf-8"))
+        self.assertEqual([], manifest["files"])
+        self.assertEqual(self.sha, manifest["sha"])
+        self.assertEqual(self.notes, manifest["notes"])
+        code, output = self.invoke("verify", publish=False)
+        self.assertEqual(0, code, output)
+        result = Result()
+        code = coordinator.run(
+            self.root, "next", "", bump="minor", runner=self.runner, result=result
+        )
+        self.assertEqual(0, code)
+        self.assertEqual("v1.1.0", result.data["next"]["tag"])
+        (folder / "assets/stray.bin").write_bytes(b"stray")
+        code, output = self.invoke("verify", publish=False)
+        self.assertNotEqual(0, code)
+        self.assertIn("exact configured asset set", output)
+
+
+TAG_ONLY = {
+    "version_file": "VERSION",
+    "version_pattern": "^(.+)$",
+    "assets": [],
+    "checks": [["{python}", "check.py"]],
+    "smoke": [["{python}", "smoke.py", "{assets}"]],
+    "smoke_platforms": ["linux", "darwin", "win32"],
+}
+
+
+class TagOnlySettingsTests(unittest.TestCase):
+    def test_an_empty_asset_set_needs_no_build_and_no_checksum_manifest(self):
+        value = settings.parse(dict(TAG_ONLY))
+        self.assertEqual([], value.assets)
+        self.assertEqual([], value.build)
+        self.assertEqual("directory", value.publisher)
+
+    def test_a_build_or_checksum_file_without_assets_is_refused(self):
+        for extra in (
+            {"build": [["{python}", "build.py", "{assets}"]]},
+            {"checksum_file": "SHA256SUMS"},
+        ):
+            with self.subTest(extra=extra), self.assertRaises(ValueError):
+                settings.parse({**TAG_ONLY, **extra})
+
+    def test_a_local_release_with_files_still_needs_a_build(self):
+        with self.assertRaisesRegex(ValueError, "release.build"):
+            settings.parse({**TAG_ONLY, "assets": ["application.zip"]})

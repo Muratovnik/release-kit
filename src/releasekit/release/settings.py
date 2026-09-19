@@ -138,11 +138,22 @@ def parse(raw: object) -> Settings:
         items = getattr(value, key)
         if (
             not isinstance(items, list)
-            or not items
+            or (not items and key != "assets")
             or not all(isinstance(item, str) and item.strip() == item and item for item in items)
             or len(items) != len(set(items))
         ):
-            raise ValueError(f"release.{key} must be a nonempty list of unique strings")
+            raise ValueError(
+                "release.assets must be a list of unique strings; empty publishes no files"
+                if key == "assets"
+                else f"release.{key} must be a nonempty list of unique strings"
+            )
+    # A release without files publishes the annotated tag, the committed notes and
+    # the source tree at that tag. Nothing is built, so a build command would have
+    # no output to produce and a checksum manifest would have nothing to list.
+    if not value.assets and value.build:
+        raise SettingsError("release.build must be empty when release.assets is empty")
+    if not value.assets and value.checksum_file:
+        raise SettingsError("release.checksum_file needs a nonempty release.assets")
     if set(value.smoke_platforms) - {"linux", "darwin", "win32"}:
         raise ValueError("release.smoke_platforms supports linux, darwin, win32")
     for template in value.assets + ([value.checksum_file] if value.checksum_file else []):
@@ -153,7 +164,7 @@ def parse(raw: object) -> Settings:
             filename(template.format(version="1.2.3", tag="v1.2.3"))
         except (KeyError, IndexError) as error:
             raise ValueError("invalid release asset template") from error
-    for key in ("checks", "smoke") + (() if hosted else ("build",)):
+    for key in ("checks", "smoke") + (() if hosted or not value.assets else ("build",)):
         commands = getattr(value, key)
         if (
             not isinstance(commands, list)

@@ -110,7 +110,9 @@ trust boundary, not an operating-system sandbox.
 
 `version_pattern` must have exactly one capture and match exactly one requested
 version. Asset templates support only `{version}` and `{tag}` and must expand to
-distinct portable filenames. `checksum_file` is optional: GitHub SHA-256 asset
+distinct portable filenames; an empty list declares a
+[release without files](local-releases.md#releases-without-files), which has no
+`build` and no `checksum_file`. Otherwise `checksum_file` is optional: GitHub SHA-256 asset
 digests are always checked; a declared manifest additionally must contain exactly
 one standard `SHA256  filename` or `SHA256 *filename` line for every other asset.
 

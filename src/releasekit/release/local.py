@@ -103,9 +103,14 @@ def prepare(runner, store, value, no_download, result):
                 coordinator._local_checks(runner, value, workspace, no_download)
                 snapshot = coordinator._snapshot(runner, value, workspace)
                 directory.parent.mkdir(parents=True)
-                coordinator._commands(
-                    runner, value["settings"]["build"], value, snapshot, directory, temporary
-                )
+                if value["settings"]["build"]:
+                    coordinator._commands(
+                        runner, value["settings"]["build"], value, snapshot, directory, temporary
+                    )
+                else:
+                    # A release without files: the inventory below still records
+                    # that this exact, empty set is what gets published.
+                    directory.mkdir()
                 files = candidate.inventory(value, directory)
                 coordinator._commands(
                     runner, value["settings"]["smoke"], value, snapshot, directory, temporary
