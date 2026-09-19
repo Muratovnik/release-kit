@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.28.0](https://github.com/Muratovnik/release-kit/compare/v0.27.1...v0.28.0) (2026-09-19)
+
+### Highlights
+
+A local release took about twelve minutes, and five of them were a second pass:
+`run` repeated the source checks and both audits that `prepare` had just run. The
+repetition is deliberate, because a check result is never reused across
+invocations; a commit does not identify the dependencies, tools, hooks or owner
+policy a later process runs under. `run --prepare` keeps that rule without the
+second pass: it prepares the candidate inside the invocation that publishes it, so
+nothing runs between the gate and the tag. Review the hash `plan` prints before a
+candidate exists, then run once. A `resume` is a new invocation and runs the gate
+again; the Actions adapter refuses the flag, since its candidate comes from CI.
+
+### Features
+
+- **release:** prepare and publish in one invocation with run --prepare ([01545a9](https://github.com/Muratovnik/release-kit/commit/01545a9b0fd1af270e0dcef306f423718d4a5a3a))
+
 ## [0.27.1](https://github.com/Muratovnik/release-kit/compare/v0.27.0...v0.27.1) (2026-09-19)
 
 ### Highlights

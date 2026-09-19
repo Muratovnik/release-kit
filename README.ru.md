@@ -64,7 +64,7 @@ python -c "import glob,hashlib,pathlib,subprocess,sys; w=glob.glob('.cache/relki
 Чтобы установить без `gh`, назовите релиз в URL:
 
 ```text
-uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.27.1/release_kit-0.27.1-py3-none-any.whl
+uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.28.0/release_kit-0.28.0-py3-none-any.whl
 ```
 
 Эта единственная команда не может сказать `latest`: имя файла wheel обязано нести свою
