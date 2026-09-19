@@ -35,10 +35,12 @@ def guarded_inputs(policy: config_module.Config) -> list[str]:
     relatives = [config_module.CONFIG_NAME, PROJECTION_PATH]
     if policy.exposure.check_secrets:
         relatives.append(policy.exposure.betterleaks_config)
-    if policy.release is not None:
+    if policy.release is not None and policy.release.workflow:
         # The tag workflow is the file that actually publishes. A changed upload
         # step must be reviewed against the declared exact asset set before a
-        # push, not discovered after the immutable release exists.
+        # push, not discovered after the immutable release exists. A local
+        # publisher has no workflow: the coordinator delivers the prepared files
+        # itself, and an empty name would pin the repository root instead.
         relatives.append(policy.release.workflow)
     return list(dict.fromkeys(relatives))
 

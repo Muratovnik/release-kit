@@ -616,6 +616,32 @@ class ProtectionTests(unittest.TestCase):
             protection.install(root)
             self.assertIsNone(protection.problem(root))
 
+    def test_guard_pins_no_workflow_for_a_local_publisher(self) -> None:
+        # Field case: a skill library adopted `publisher = "github"`, which has no
+        # workflow, and every guard command refused with "guarded publication
+        # input is unavailable" naming the repository root, because the empty
+        # workflow name had been pinned as `root / ""`. The pre-push guard then
+        # blocked the very push that carried the configuration.
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            (root / "relkit.toml").write_text(
+                "[exposure]\n"
+                '[release]\npublisher = "github"\nrepository = "example/project"\n'
+                'version_file = "VERSION"\nversion_pattern = "^(.+)$"\n'
+                'assets = []\nchecks = [["python", "check.py"]]\n'
+                'smoke = [["python", "smoke.py"]]\nsmoke_platforms = ["linux", "darwin", "win32"]\n',
+                encoding="utf-8",
+            )
+
+            protection.install(root)
+
+            self.assertIsNone(protection.problem(root))
+            pinned = protection.recorded_digests(root)
+            self.assertIn("relkit.toml", pinned)
+            self.assertNotIn("", pinned)
+            self.assertTrue(all((root / relative).is_file() for relative in pinned), pinned)
+
     def test_check_reports_a_hooks_path_git_cannot_run_instead_of_installed(self) -> None:
         # Field hypothesis: core.hooksPath pointing at a missing directory leaves a
         # byte-perfect guard inert; check and install must say so, not "installed".
