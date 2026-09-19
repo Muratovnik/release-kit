@@ -619,6 +619,12 @@ def show_plan(value: dict, *, human: bool = False) -> None:
                 + ("" if settings.local(value["settings"]) else " --ci-run ID")
                 + ", then plan again"
             )
+            if settings.local(value["settings"]):
+                print(
+                    f"relkit release: or in one invocation: relkit release run {value['tag']} "
+                    f"--publish --prepare --plan-hash {described['plan_sha256']} "
+                    f'--root "{value["root"]}"'
+                )
         else:
             print(
                 f"relkit release: next: relkit release run {value['tag']} --publish "
@@ -711,6 +717,7 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
                 "process_cleanup",
                 "stage",
                 "stages",
+                "preparation",
                 "ci",
                 "release_id",
                 "artifacts",
@@ -994,6 +1001,7 @@ def _prepare(
     path: Path,
     workspace: storage.Workspace,
     no_download: bool,
+    checked: bool = False,
 ) -> None:
     value = state["plan"]
     release = settings.parse(value["settings"])
@@ -1028,7 +1036,17 @@ def _prepare(
         from . import local
 
         local.load(runner, value)
-        _local_checks(runner, value, workspace, no_download, path, state)
+        if checked:
+            # The gate ran in this same invocation, inside the preparation that
+            # produced this candidate, and nothing else has run since. Only the
+            # cheap drift checks it ends with are repeated before the tag.
+            clean(runner, value["sha"])
+            if release.require_guard and (problem := protection.problem(runner.root)):
+                raise ReleaseError(f"protect check failed: {problem}")
+            for name in ("local-checks", "worktree-audit", "history-audit"):
+                _stage(path, state, name, "passed")
+        else:
+            _local_checks(runner, value, workspace, no_download, path, state)
         local.load(runner, value)
         github.preflight()
     else:
@@ -1591,6 +1609,33 @@ def _archive_abandoned(runner: Runner, path: Path, tag: str) -> Path | None:
     return target
 
 
+def _prepare_and_bind(runner, github, version, plan_hash, no_download, result):
+    """Prepare the candidate inside the invocation that publishes it.
+
+    A check result is never reused across invocations: a commit does not identify
+    the dependencies, tools, hooks or owner policy a later process runs under.
+    Inside one process nothing runs between the gate and the tag but this code, so
+    the rule holds without a second pass. The reviewed hash is the one `plan` prints
+    before a candidate exists; the candidate is bound to that plan afterwards.
+    """
+    from . import local
+
+    base = plan(runner, version, github=github, candidate_receipt=False)
+    if not settings.local(base["settings"]):
+        raise ReleaseError(
+            "--prepare runs the local gate once and publishes; the Actions adapter "
+            "prepares from CI with release prepare --ci-run ID"
+        )
+    if plan_hash and fingerprint(base) != plan_hash:
+        raise ReleaseError("reviewed plan is stale; plan again before publishing")
+    store = publisher(runner, settings.parse(base["settings"]), github)
+    local.prepare(runner, store, base, no_download, result)
+    value = plan(runner, version, github=github)
+    if local._base(value) != base or not value.get("candidate"):
+        raise ReleaseError("release plan changed during preparation")
+    return value
+
+
 def run(
     root: Path,
     action: str,
@@ -1604,6 +1649,7 @@ def run(
     no_download: bool = False,
     accept_ci_attempt: int = 0,
     reason: str = "",
+    prepare_here: bool = False,
     runner: Runner | None = None,
     github: GitHub | None = None,
     result: Result | None = None,
@@ -1635,6 +1681,7 @@ def run(
                 or reason
                 or ci_run
                 or assets
+                or prepare_here
             ):
                 raise ReleaseError("release next accepts only --bump and --root")
             policy = config.load(root)
@@ -1662,6 +1709,8 @@ def run(
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")
         if reason and action != "abandon":
             raise ReleaseError("--reason is accepted only by release abandon")
+        if prepare_here and action != "run":
+            raise ReleaseError("--prepare is accepted only by release run")
         if action == "verify" and (publish or no_download):
             raise ReleaseError("verify never publishes; --publish/--no-download are not accepted")
         if action == "abandon":
@@ -1777,17 +1826,20 @@ def run(
                     )
                 result.data["archived_receipt"] = str(archived)
                 print(f"relkit release: archived the abandoned attempt receipt: {archived}")
-            value = plan(runner, version, github=github)
-            if (
-                value["settings"].get("candidate_jobs") or settings.local(value["settings"])
-            ) and not value.get("candidate"):
-                raise ReleaseError(
-                    "no matching prepared candidate; run release prepare VERSION"
-                    + ("" if settings.local(value["settings"]) else " --ci-run ID")
-                    + ", then review plan again"
-                )
-            if plan_hash and fingerprint(value) != plan_hash:
-                raise ReleaseError("reviewed plan is stale; plan again before publishing")
+            if prepare_here:
+                value = _prepare_and_bind(runner, github, version, plan_hash, no_download, result)
+            else:
+                value = plan(runner, version, github=github)
+                if (
+                    value["settings"].get("candidate_jobs") or settings.local(value["settings"])
+                ) and not value.get("candidate"):
+                    raise ReleaseError(
+                        "no matching prepared candidate; run release prepare VERSION"
+                        + ("" if settings.local(value["settings"]) else " --ci-run ID")
+                        + ", then review plan again"
+                    )
+                if plan_hash and fingerprint(value) != plan_hash:
+                    raise ReleaseError("reviewed plan is stale; plan again before publishing")
             state = {
                 "schema": 1,
                 "plan": value,
@@ -1796,6 +1848,11 @@ def run(
                 "verification": "not-run",
                 "cleanup": "not-run",
             }
+            if prepare_here:
+                state["preparation"] = {
+                    "invocation": "same",
+                    "attempt": value["candidate"]["attempt"],
+                }
             _save(state_path, state)
         if action in {"resume", "verify"} and plan_hash and plan_hash != fingerprint(value):
             raise ReleaseError("supplied plan hash differs from the saved plan")
@@ -1830,7 +1887,9 @@ def run(
         state["temporary"] = str(workspace.path)
         _save(state_path, state)
         if not pushed and action != "verify":
-            _prepare(runner, github, state, state_path, workspace, no_download)
+            _prepare(
+                runner, github, state, state_path, workspace, no_download, checked=prepare_here
+            )
         deadline = time.monotonic() + value["settings"]["timeout"]
         if settings.local(value["settings"]):
             from . import local

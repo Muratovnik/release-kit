@@ -90,6 +90,24 @@ prepared bytes, creates the annotated local tag and publishes those exact bytes.
 It does not rebuild at publication time. Use `resume VERSION --publish` after an
 interruption; it reconciles the saved destination before advancing.
 
+### One invocation
+
+```bash
+relkit release plan 1.0.0
+relkit release run 1.0.0 --publish --prepare --plan-hash REVIEWED
+```
+
+`run --prepare` prepares the candidate and publishes it in one process, so the
+checks, both audits, the build and the smoke run once. A check result is never
+reused across invocations, because a commit does not identify the dependencies,
+tools, hooks or owner policy a later process runs under; inside one invocation
+nothing runs between the gate and the tag, so that rule is kept without a second
+pass. The hash to review is the one `plan` prints before a candidate exists; the
+candidate is bound to the plan after preparation, and its receipt is written as
+usual. The run receipt records `preparation.invocation = "same"`. A `resume`
+after an interruption is a new invocation and runs the gate again before the tag.
+The Actions adapter refuses the flag; its candidate comes from CI.
+
 Directory delivery writes `VERSION/assets/` and `VERSION/relkit-release.json`
 below the destination, staging the complete set before a directory rename.
 The portable manifest contains version, source SHA, tag object, notes and digests;

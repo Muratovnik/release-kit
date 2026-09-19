@@ -471,3 +471,76 @@ class TagOnlySettingsTests(unittest.TestCase):
     def test_a_local_release_with_files_still_needs_a_build(self):
         with self.assertRaisesRegex(ValueError, "release.build"):
             settings.parse({**TAG_ONLY, "assets": ["application.zip"]})
+
+
+class OneInvocationReleaseTests(LocalFixture):
+    def test_run_with_prepare_publishes_in_one_invocation_and_runs_the_gate_once(self):
+        base = coordinator.plan(self.runner, "1.0.0", github=self.github, candidate_receipt=False)
+        self.assertNotIn("candidate", base)
+        with (
+            patch.object(coordinator, "_audit") as audit,
+            patch.object(coordinator, "_local_checks", wraps=coordinator._local_checks) as gate,
+        ):
+            code, output = self.invoke(prepare_here=True, plan_hash=coordinator.fingerprint(base))
+        self.assertEqual(0, code, output)
+        self.assertEqual(1, gate.call_count)
+        self.assertEqual(2, audit.call_count)
+        self.assertIn("acceptance=accepted", output)
+        self.assertIn("cleanup=passed", output)
+        self.assertEqual(1, self.github.create_calls)
+        self.assertEqual(1, self.github.publish_calls)
+        self.assertEqual(1, self.runner.pushes)
+        receipt = self.receipt()
+        self.assertEqual("same", receipt["preparation"]["invocation"])
+        self.assertEqual(receipt["plan"]["candidate"]["attempt"], receipt["preparation"]["attempt"])
+        self.assertEqual("passed", receipt["stages"]["local-checks"])
+        self.assertTrue((self.root / ".git/relkit/candidates/v1.0.0/ready.json").exists())
+        code, output = self.invoke("verify", publish=False)
+        self.assertEqual(0, code, output)
+
+    def test_a_stale_hash_stops_before_any_preparation(self):
+        code, output = self.invoke(prepare_here=True, plan_hash="0" * 64)
+        self.assertNotEqual(0, code)
+        self.assertIn("stale", output)
+        self.assertFalse((self.root / ".git/relkit/candidates").exists())
+        self.assertEqual("", self.runner.git("tag", "--list"))
+
+    def test_resume_is_a_new_invocation_and_reruns_the_gate_before_the_tag(self):
+        with (
+            patch.object(coordinator, "_audit"),
+            patch.object(coordinator, "_local_checks", wraps=coordinator._local_checks) as gate,
+        ):
+            with patch.object(coordinator, "_owned_tag", side_effect=ReleaseError("interrupted")):
+                code, output = self.invoke(prepare_here=True)
+            self.assertNotEqual(0, code)
+            self.assertEqual(1, gate.call_count)
+            self.assertEqual("", self.runner.git("tag", "--list"))
+            self.assertEqual("same", self.receipt()["preparation"]["invocation"])
+            code, output = self.invoke(action="resume")
+            self.assertEqual(0, code, output)
+            self.assertEqual(2, gate.call_count)
+        self.assertEqual(1, self.github.create_calls)
+        self.assertEqual(1, self.github.publish_calls)
+
+    def test_prepare_flag_is_accepted_only_by_run(self):
+        for action in ("resume", "verify", "plan", "prepare", "status"):
+            with self.subTest(action=action):
+                code, output = self.invoke(action, publish=action == "resume", prepare_here=True)
+                self.assertNotEqual(0, code)
+                self.assertIn("--prepare is accepted only by release run", output)
+        self.assertFalse((self.root / ".git/relkit/candidates").exists())
+
+    def test_plan_names_the_one_invocation_command_before_a_candidate_exists(self):
+        code, output = self.invoke("plan", publish=False, human=True)
+        self.assertEqual(0, code, output)
+        self.assertIn("relkit release prepare v1.0.0, then plan again", output)
+        self.assertIn("run v1.0.0 --publish --prepare --plan-hash", output)
+
+
+class OneInvocationHostedRefusalTests(ReleaseFixture):
+    def test_the_actions_adapter_refuses_to_prepare_inside_run(self):
+        code, output = self.invoke(prepare_here=True)
+        self.assertNotEqual(0, code)
+        self.assertIn("Actions adapter", output)
+        self.assertEqual("", self.runner.git("tag", "--list"))
+        self.assertEqual(0, self.runner.pushes)

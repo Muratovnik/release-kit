@@ -111,8 +111,9 @@ publisher fields in older receipts retain their original Actions semantics.
 `release run/resume` returns `data.release` once a run is recorded. It includes
 `observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded
 tool version, complete plan, CI identity, artifacts, stage/stages, publication,
-verification, cleanup, verification time/platform, local-change flag and retained
-scratch. Unknown fields are `null`. A publication may exist while verification
+verification, cleanup, verification time/platform, local-change flag, retained
+scratch and, when `run --prepare` made the candidate, `preparation`. Unknown fields
+are `null`. A publication may exist while verification
 fails; retained cleanup is independent of both.
 
 `release abandon` records `outcome.status = "abandoned"`, reason and time in the

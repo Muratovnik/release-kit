@@ -16,7 +16,7 @@ from releasekit.result import Result
 
 
 class ReleaseCleanupTests(ReleaseFixture):
-    def fail_command(self, runner, github, state, path, workspace, no_download):
+    def fail_command(self, runner, github, state, path, workspace, no_download, checked=False):
         marker = workspace.path / "owned-evidence"
         marker.write_text("retain this exact evidence", encoding="utf-8")
         workspace.remember(marker)

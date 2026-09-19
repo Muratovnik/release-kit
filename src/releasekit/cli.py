@@ -316,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="Prepare and deliver a release locally or through an explicit hosting adapter.",
         description="Choose a number with next --bump patch|minor|major. For candidate-enabled projects, "
         "run prepare VERSION locally; only the Actions adapter needs --ci-run ID. "
-        "Review plan VERSION, then run VERSION --publish. After interruption, "
+        "Review plan VERSION, then run VERSION --publish, or run VERSION --publish --prepare "
+        "to prepare and publish in one invocation. After interruption, "
         "use status VERSION (saved local facts) and resume VERSION --publish. "
         "Use verify VERSION to download and smoke-test an existing publication without pushing. "
         "Abandon closes an unpublished attempt with --reason; it never deletes tags.",
@@ -361,6 +362,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Forbid audit engine downloads (release assets still download)",
     )
+    release.add_argument(
+        "--prepare",
+        action="store_true",
+        help="Run only: prepare the candidate in this same invocation and publish it, "
+        "so the local gate runs once",
+    )
     release.set_defaults(
         handler=lambda arguments: coordinator.run(
             Path(arguments.root),
@@ -372,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
             assets=arguments.assets,
             plan_hash=arguments.plan_hash,
             no_download=arguments.no_download,
+            prepare_here=arguments.prepare,
             accept_ci_attempt=arguments.accept_ci_attempt,
             reason=arguments.reason,
             result=arguments.result,
