@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.27.0](https://github.com/Muratovnik/release-kit/compare/v0.26.1...v0.27.0) (2026-09-19)
+
+### Highlights
+
+A library consumed straight from its Git tag, such as a skill collection, has
+nothing to package, yet the coordinator demanded an asset set and a build to
+produce it, so such projects released by hand and without a receipt. `assets = []`
+now declares a release without files: `build` and `checksum_file` must be absent,
+checks and smoke still run, smoke from the Git-free snapshot of the tagged tree,
+and both delivery adapters publish the tag and notes with an empty file set. The
+GitHub path is covered by the isolated fixtures; no live publication of such a
+release has been recorded yet.
+
+### Features
+
+- **release:** publish a release without files when assets is empty ([6ca3977](https://github.com/Muratovnik/release-kit/commit/6ca39773b2a5cd0b1ab9871780f7c8e2f4322bec))
+
 ## [0.26.1](https://github.com/Muratovnik/release-kit/compare/v0.26.0...v0.26.1) (2026-09-15)
 
 ### Highlights

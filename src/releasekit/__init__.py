@@ -1,3 +1,3 @@
 """Release-cycle and publication-exposure gates for any repository."""
 
-__version__ = "0.26.1"
+__version__ = "0.27.0"
