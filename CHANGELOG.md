@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.27.1](https://github.com/Muratovnik/release-kit/compare/v0.27.0...v0.27.1) (2026-09-19)
+
+### Highlights
+
+A project that adopted the local coordinator with `require_guard = true` could not
+push: the guard pinned the release workflow whenever `[release]` existed, and a
+local publisher has none, so the empty name resolved to the repository root and
+every guard command refused with "guarded publication input is unavailable". The
+workflow is now pinned only when one is configured, which is what the documentation
+already said. A project on 0.21.1 through 0.27.0 with a local publisher and the
+guard should update its projection and re-pin with `relkit protect install`.
+
+### Bug Fixes
+
+- **protect:** pin no workflow for a local publisher instead of the repository root ([8794f45](https://github.com/Muratovnik/release-kit/commit/8794f45b9eaef53721f7308ba87e89c830fa9ec3))
+
 ## [0.27.0](https://github.com/Muratovnik/release-kit/compare/v0.26.1...v0.27.0) (2026-09-19)
 
 ### Highlights
