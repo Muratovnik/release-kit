@@ -124,6 +124,7 @@ def run(
             inspect_archives=settings.exposure.inspect_archives,
             include_candidates=settings.exposure.include_candidates and not staged,
             staged=staged,
+            hosted_ci_mode=settings.exposure.hosted_ci,
         )
     except RuntimeError as error:
         result.error("check_error", error)

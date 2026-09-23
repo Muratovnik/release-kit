@@ -636,6 +636,63 @@ class SemanticPublicationTests(unittest.TestCase):
         self.assertIn("provider-surface", report.failures[0])
 
 
+UNGUARDED_WORKFLOW = "on: push\njobs:\n  check:\n    runs-on: ubuntu-latest\n"
+GUARDED_WORKFLOW = (
+    "on: push\njobs:\n  check:\n"
+    "    if: ${{ github.event.repository && !github.event.repository.private }}\n"
+    "    runs-on: ubuntu-latest\n"
+)
+
+
+class HostedCiTests(unittest.TestCase):
+    def test_public_only_hosted_ci_requires_every_workflow_job_to_skip_in_private(
+        self,
+    ) -> None:
+        # A private repository that runs no hosted jobs got a red run on every push,
+        # because its jobs were requested and then refused; readers took it for a defect.
+        with _repository(
+            {
+                ".github/workflows/ci.yml": UNGUARDED_WORKFLOW,
+                ".github/workflows/guarded.yml": GUARDED_WORKFLOW,
+                ".github/workflows/fragments/ignored.yml": UNGUARDED_WORKFLOW,
+            }
+        ) as name:
+            undeclared = audit.scan(Path(name))
+            declared = audit.scan(Path(name), hosted_ci_mode="public-only")
+
+        self.assertTrue(undeclared.ok, undeclared.failures)
+        self.assertEqual(
+            [".github/workflows/ci.yml: hosted-ci (job 'check' can start in a private repository)"],
+            declared.failures,
+        )
+
+    def test_the_staged_verdict_reads_the_workflow_from_the_index(self) -> None:
+        with _repository({".github/workflows/ci.yml": GUARDED_WORKFLOW}) as name:
+            root = Path(name)
+            (root / ".github/workflows/ci.yml").write_text(UNGUARDED_WORKFLOW, encoding="utf-8")
+            staged = audit.scan(root, hosted_ci_mode="public-only", staged=True)
+            worktree = audit.scan(root, hosted_ci_mode="public-only")
+
+        self.assertTrue(staged.ok, staged.failures)
+        self.assertFalse(worktree.ok)
+
+    def test_audit_reads_hosted_ci_from_the_public_policy(self) -> None:
+        policy = (
+            '[exposure]\ncheck_secrets = false\ncheck_links = false\nhosted_ci = "public-only"\n'
+        )
+        with (
+            _repository(
+                {"relkit.toml": policy, ".github/workflows/ci.yml": UNGUARDED_WORKFLOW}
+            ) as name,
+            redirect_stdout(io.StringIO()) as output,
+            redirect_stderr(io.StringIO()) as errors,
+        ):
+            result = cli.main(["audit", "--root", name, "--no-download"])
+
+        self.assertEqual(1, result)
+        self.assertIn("hosted-ci", output.getvalue() + errors.getvalue())
+
+
 class ProvenanceTests(unittest.TestCase):
     def test_required_fixture_provenance_must_be_declared(self) -> None:
         with _repository({"tests/generated/data.json": "{}\n"}) as name:

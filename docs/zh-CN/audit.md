@@ -70,6 +70,25 @@ allowed_surfaces = ["src/*", "docs/*", "tests/provider/*"]
 都必须在列表中。它适用于没有其他人写入的历史。任何外部贡献者的 pull request，以及任何在
 托管平台以自身身份提交的测试合并上运行的 pull request 检查，都会因此失败。
 
+### 私有仓库中的托管 CI
+
+不为私有仓库运行作业的托管平台，仍会为每次推送创建运行，然后拒绝启动其中的作业，于是
+每个提交都显示失败，而这其实是已配置的状态。`hosted_ci = "public-only"` 声明这一状态，
+此时审计要求 `.github/workflows/*.yml` 中的每个作业，在事件无法证明仓库是公开的情况下
+跳过自身：
+
+```yaml
+jobs:
+  check:
+    if: ${{ github.event.repository && !github.event.repository.private }}
+```
+
+两个合取项缺一不可，它们可以与其他以 `&&` 连接的条件并列，但不能放在 `||` 之后。定时
+事件不携带仓库信息，而托管平台采用宽松比较，因此单独的 `!github.event.repository.private`
+在那里为真，会被拒绝。带有该条件的作业会被跳过而不是失败。仓库公开后，它会在除定时之外
+的所有事件上重新启动。审计无法读取其结构的作业，例如流式映射或合并键，会以 `hosted-ci`
+失败而不是通过。只检查当前工作树。
+
 默认配置启用密钥与链接检查。常规的 `.betterleaks.toml` 在所维护的默认规则之上扩展：
 
 ```toml

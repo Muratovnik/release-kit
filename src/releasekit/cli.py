@@ -95,6 +95,7 @@ def _exposure(arguments: argparse.Namespace) -> int:
             provenance=settings.exposure.provenance,
             inspect_archives=settings.exposure.inspect_archives,
             include_candidates=settings.exposure.include_candidates,
+            hosted_ci_mode=settings.exposure.hosted_ci,
         )
     except RuntimeError as error:
         arguments.result.error("check_error", error)

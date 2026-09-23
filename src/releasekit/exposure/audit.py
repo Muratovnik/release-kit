@@ -28,7 +28,7 @@ from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
 
-from . import rules
+from . import hosted_ci, rules
 
 PNG_METADATA = "png-metadata"
 PNG_METADATA_CHUNKS = frozenset({b"eXIf", b"iTXt", b"tEXt", b"zTXt"})
@@ -1172,6 +1172,7 @@ def scan(
     include_candidates: bool = True,
     staged: bool = False,
     paths: Sequence[str] | None = None,
+    hosted_ci_mode: str = "",
 ) -> Report:
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
@@ -1291,6 +1292,14 @@ def scan(
                     forbid_png_metadata=forbid_png_metadata,
                 )
             )
+            # Only the current tree: a workflow that has since been guarded or removed
+            # cannot start a job, so its history is not part of this rule.
+            if (
+                hosted_ci_mode == hosted_ci.PUBLIC_ONLY
+                and hosted_ci.is_workflow(relative)
+                and (problems := hosted_ci.unguarded_jobs(_decode_text(payload)))
+            ):
+                details[hosted_ci.HOSTED_CI] = "; ".join(problems)
         except OSError:
             report.unreadable.append(relative)
         found |= set(details)

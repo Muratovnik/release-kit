@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from . import paths
+from .exposure import hosted_ci
 from .exposure.audit import _git_bytes
 from .release import settings as release_settings
 from .release.changelog import PROFILES, is_version
@@ -27,6 +28,7 @@ EXPOSURE_KEYS = frozenset(
         "betterleaks_config",
         "allowed_identities",
         "owner_identities",
+        "hosted_ci",
         "forbid_png_metadata",
         "include_candidates",
         "forbid_ai_attribution",
@@ -192,6 +194,9 @@ class ExposureConfig:
     # The owners' own identities, in the same spelling. They scope the commit-level
     # attribution rule to the owners' commits and leave anyone else's unjudged.
     owner_identities: list[str] = field(default_factory=list)
+    # "public-only" declares that hosted jobs are not run while the repository is
+    # private, and the audit then requires every workflow job to skip itself there.
+    hosted_ci: str = ""
     # PNG fixtures are the one binary portability rule currently needed by adopters.
     # It is policy rather than secret/link parsing and is therefore kept here once.
     forbid_png_metadata: bool = False
@@ -398,6 +403,9 @@ def load(root: Path, *, required: bool = True, staged: bool = False) -> Config:
         raise ConfigError(
             "owner_identities scopes forbid_ai_attribution and has no effect without it"
         )
+    hosted_ci_mode = _string(section, "hosted_ci", "")
+    if "hosted_ci" in section and hosted_ci_mode not in hosted_ci.MODES:
+        raise ConfigError(f"hosted_ci must be one of: {', '.join(sorted(hosted_ci.MODES))}")
     try:
         release = release_settings.parse(raw["release"]) if "release" in raw else None
     except ValueError as error:
@@ -423,6 +431,7 @@ def load(root: Path, *, required: bool = True, staged: bool = False) -> Config:
             betterleaks_config=betterleaks_config,
             allowed_identities=_strings(section, "allowed_identities"),
             owner_identities=owner_identities,
+            hosted_ci=hosted_ci_mode,
             forbid_png_metadata=_boolean(section, "forbid_png_metadata", False),
             include_candidates=_boolean(section, "include_candidates", True),
             forbid_ai_attribution=_boolean(section, "forbid_ai_attribution", False),

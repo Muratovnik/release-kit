@@ -75,6 +75,28 @@ annotated tagger in the history scope must be on it. It suits a history that nob
 else writes. It fails any contributor's pull request, and any pull request check that
 runs on a test merge the host commits under its own identity.
 
+### Hosted CI in a private repository
+
+A host that runs no jobs for a private repository still creates a run for every push
+and then refuses to start its jobs, so every commit shows a failure that is really the
+configured state. `hosted_ci = "public-only"` declares that state. The audit then
+requires every job in `.github/workflows/*.yml` to skip itself unless its event proves
+the repository public:
+
+```yaml
+jobs:
+  check:
+    if: ${{ github.event.repository && !github.event.repository.private }}
+```
+
+Both conjuncts are required, and they may stand among others joined by `&&` but never
+behind `||`. A scheduled event carries no repository, and the host compares loosely,
+so a bare `!github.event.repository.private` is true there and is refused. A guarded
+job is skipped instead of failed. Once the repository is public it starts again on
+every event except a schedule. A job whose layout the audit cannot read, such as a
+flow mapping or a merge key, fails as `hosted-ci` instead of passing. Only the current
+tree is checked.
+
 The defaults enable secret/link checks. A normal `.betterleaks.toml` extends
 maintained defaults:
 

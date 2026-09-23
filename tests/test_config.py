@@ -68,6 +68,22 @@ class LoadTests(unittest.TestCase):
         self.assertTrue(settings.exposure.forbid_png_metadata)
         self.assertEqual({"a/b.json": ["home-directory"]}, settings.exposure.baseline)
 
+    def test_hosted_ci_accepts_only_a_declared_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            self.assertEqual("", config.load(root, required=False).exposure.hosted_ci)
+            (root / config.CONFIG_NAME).write_text(
+                '[exposure]\nhosted_ci = "public-only"\n', encoding="utf-8"
+            )
+            self.assertEqual("public-only", config.load(root).exposure.hosted_ci)
+            for payload in ('hosted_ci = "private"', 'hosted_ci = ""', "hosted_ci = true"):
+                with self.subTest(payload=payload):
+                    (root / config.CONFIG_NAME).write_text(
+                        f"[exposure]\n{payload}\n", encoding="utf-8"
+                    )
+                    with self.assertRaises(config.ConfigError):
+                        config.load(root)
+
     def test_owner_identities_need_the_attribution_rule_they_scope(self) -> None:
         owners = 'owner_identities = ["Example Maintainer <owner@example.invalid>"]\n'
         with tempfile.TemporaryDirectory() as name:
