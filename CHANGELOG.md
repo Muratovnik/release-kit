@@ -2,6 +2,23 @@
 
 ## [Unreleased]
 
+## [0.30.0](https://github.com/Muratovnik/release-kit/compare/v0.29.0...v0.30.0) (2026-09-23)
+
+### Highlights
+
+A private repository whose owner runs no hosted jobs showed a failed run on every
+push: the host created the run and then refused to start its jobs. That failure is
+the configured state, yet every reader took it for a defect. `hosted_ci =
+"public-only"` declares the state, and the audit then requires each workflow job to
+carry `if: ${{ github.event.repository && !github.event.repository.private }}`, so the
+run is skipped instead of refused and starts again once the repository is public.
+The repository object is part of the guard because a scheduled event carries none and
+the host compares loosely, which makes the bare private check true there.
+
+### Features
+
+- **exposure:** let a private repository declare that it runs no hosted jobs ([1ee8a9b](https://github.com/Muratovnik/release-kit/commit/1ee8a9bd1eab2357be01a52d2c0c2bcf2d370428))
+
 ## [0.29.0](https://github.com/Muratovnik/release-kit/compare/v0.28.0...v0.29.0) (2026-09-23)
 
 ### Highlights
