@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.29.0](https://github.com/Muratovnik/release-kit/compare/v0.28.0...v0.29.0) (2026-09-23)
+
+### Highlights
+
+A closed `allowed_identities` list failed every pull request check. The check runs on
+a test merge the host commits under its own identity, and an outside contributor's
+commits carry theirs. `forbid_ai_attribution` also judged every commit message, so a
+contributor who credited an agent in their own pull request failed the gate too.
+`owner_identities` declares the owners instead. The commit-level attribution rule then
+judges only the owners' commits, including an agent set as author or committer on one,
+and leaves everyone else's attribution to them; the files they add are still checked.
+To accept pull requests, replace `allowed_identities` with `owner_identities`. The
+closed list keeps its meaning for a history nobody else writes.
+
+### Features
+
+- **exposure:** judge commit attribution only in the owners' own commits ([c4121ac](https://github.com/Muratovnik/release-kit/commit/c4121aca8474bdf0644a2f78645e1c8d6b4b47c4))
+
 ## [0.28.0](https://github.com/Muratovnik/release-kit/compare/v0.27.1...v0.28.0) (2026-09-19)
 
 ### Highlights

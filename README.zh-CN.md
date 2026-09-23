@@ -59,7 +59,7 @@ python -c "import glob,hashlib,pathlib,subprocess,sys; w=glob.glob('.cache/relki
 若不使用 `gh` 安装，则需在 URL 中写明发布版本：
 
 ```text
-uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.28.0/release_kit-0.28.0-py3-none-any.whl
+uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.29.0/release_kit-0.29.0-py3-none-any.whl
 ```
 
 这条单独的命令无法写成 `latest`：wheel 的文件名必须携带自身版本，而
