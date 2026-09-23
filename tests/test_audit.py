@@ -40,6 +40,36 @@ def _commit(root: Path, message: str = "test: fixture") -> None:
     subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True)
 
 
+WRITER = ("Example Writer", "writer@example.invalid")
+CONTRIBUTOR = ("Outside Contributor", "contributor@example.invalid")
+HOST = ("Example Host", "host@example.invalid")
+AGENT = ("Codex", "agent@example.invalid")
+OWNER = "Example Writer <writer@example.invalid>"
+MACHINE_TRAILER = "Co-" + "Authored-By: " + "Clau" + "de <bot@example.invalid>"
+
+
+def _as(author: tuple[str, str], committer: tuple[str, str]) -> dict[str, str]:
+    """The environment of a commit someone other than the configured user makes."""
+    return {
+        **os.environ,
+        "GIT_AUTHOR_NAME": author[0],
+        "GIT_AUTHOR_EMAIL": author[1],
+        "GIT_COMMITTER_NAME": committer[0],
+        "GIT_COMMITTER_EMAIL": committer[1],
+    }
+
+
+def _commit_as(
+    root: Path, message: str, *, author: tuple[str, str], committer: tuple[str, str]
+) -> None:
+    subprocess.run(
+        ["git", "commit", "-q", "--allow-empty", "-m", message],
+        cwd=root,
+        check=True,
+        env=_as(author, committer),
+    )
+
+
 class ArchivePngTests(unittest.TestCase):
     def test_history_audit_checks_pngs_removed_from_the_current_tree(self):
         dirty = b"\x89PNG\r\n\x1a\n" + b"\x00\x00\x00\x00tEXt\x00\x00\x00\x00"
@@ -1040,6 +1070,104 @@ class HistoryTests(unittest.TestCase):
                 failures = audit.history_failures(root, forbid_ai_attribution=True)
 
         self.assertTrue(any("commit-message: ai-attribution" in item for item in failures))
+
+    def test_owner_identities_leave_a_contributor_pull_request_and_its_test_merge_unjudged(
+        self,
+    ) -> None:
+        # A pull request check runs on a merge the host commits as itself on top of the
+        # contributor's commits. A closed identity list failed every such check.
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            base = subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=root, check=True, capture_output=True, text=True
+            ).stdout.strip()
+            subprocess.run(["git", "switch", "-q", "-c", "contribution"], cwd=root, check=True)
+            _commit_as(
+                root,
+                f"feat: contribution\n\n{MACHINE_TRAILER}",
+                author=CONTRIBUTOR,
+                committer=CONTRIBUTOR,
+            )
+            _commit_as(root, "fix: follow-up", author=AGENT, committer=CONTRIBUTOR)
+            subprocess.run(["git", "switch", "-q", "--detach", base], cwd=root, check=True)
+            subprocess.run(
+                ["git", "merge", "-q", "--no-ff", "-m", "Merge contribution", "contribution"],
+                cwd=root,
+                check=True,
+                env=_as(CONTRIBUTOR, HOST),
+            )
+            subprocess.run(["git", "update-ref", "refs/pull/1/merge", "HEAD"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "update-ref", "refs/pull/1/head", "contribution"], cwd=root, check=True
+            )
+
+            closed = audit.history_failures(
+                root, allowed_identities=[OWNER], forbid_ai_attribution=True
+            )
+            scoped = audit.history_failures(
+                root, owner_identities=[OWNER], forbid_ai_attribution=True
+            )
+
+        self.assertTrue(any("identity is not allowed" in item for item in closed), closed)
+        self.assertTrue(any("commit-message: ai-attribution" in item for item in closed), closed)
+        self.assertEqual([], scoped)
+
+    def test_owner_identities_still_judge_the_owners_own_commits(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root, f"feat: fixture\n\n{MACHINE_TRAILER}")
+            # An agent that takes the author field instead of adding a trailer.
+            _commit_as(root, "fix: follow-up", author=AGENT, committer=WRITER)
+            # The owner applying a contributor's commit does not make its trailer theirs.
+            _commit_as(
+                root,
+                f"feat: contribution\n\n{MACHINE_TRAILER}",
+                author=CONTRIBUTOR,
+                committer=WRITER,
+            )
+            failures = audit.history_failures(
+                root, owner_identities=[OWNER], forbid_ai_attribution=True
+            )
+
+        self.assertEqual(
+            1, sum("commit-message: ai-attribution" in item for item in failures), failures
+        )
+        self.assertEqual(
+            1, sum("commit-identity: ai-attribution" in item for item in failures), failures
+        )
+
+    def test_owner_identities_that_author_no_commit_exempt_nothing(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root, f"feat: fixture\n\n{MACHINE_TRAILER}")
+            failures = audit.history_failures(
+                root,
+                owner_identities=["Example Writer <writer@example.test>"],
+                forbid_ai_attribution=True,
+            )
+
+        self.assertTrue(any("owner_identities match no commit author" in item for item in failures))
+        self.assertTrue(any("commit-message: ai-attribution" in item for item in failures))
+
+    def test_audit_reads_owner_identities_from_the_public_policy(self) -> None:
+        policy = (
+            "[exposure]\ncheck_secrets = false\ncheck_links = false\n"
+            f'forbid_ai_attribution = true\nowner_identities = ["{OWNER}"]\n'
+        )
+        with _repository({"relkit.toml": policy}) as name:
+            root = Path(name)
+            _commit(root)
+            _commit_as(
+                root,
+                f"feat: contribution\n\n{MACHINE_TRAILER}",
+                author=CONTRIBUTOR,
+                committer=CONTRIBUTOR,
+            )
+            with redirect_stdout(io.StringIO()), redirect_stderr(io.StringIO()) as diagnostics:
+                result = cli.main(["audit", "--history", "--root", str(root), "--no-download"])
+
+        self.assertEqual(0, result, diagnostics.getvalue())
 
     def test_history_checks_internal_planning_in_old_blobs(self) -> None:
         with _repository({"docs/plan.md": "card: 123\n"}) as name:

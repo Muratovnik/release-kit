@@ -21,10 +21,7 @@ private_files = ["AGENTS.local.md", ".mcp.json"]
 private_suffixes = [".local.md"]
 required_ignores = [".private", ".codex", "AGENTS.local.md", ".mcp.json"]
 allowed_users = ["example-owner"]
-allowed_identities = [
-  "Example Maintainer <maintainer@example.invalid>",
-  "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
-]
+owner_identities = ["Example Maintainer <maintainer@example.invalid>"]
 forbid_png_metadata = true
 forbid_ai_attribution = true
 forbid_internal_planning = true
@@ -55,6 +52,23 @@ allowed_surfaces = ["src/*", "docs/*", "tests/provider/*"]
 的：仅属于所有者的工作流不能被重新标注为产品供应商。被声明为 `machine-derived` 的材料
 仍然算作问题，必须在发布前替换；`anonymized` 是项目对「已完成复核」的断言，而不是自动
 匿名化的保证。
+
+### 提交身份与署名
+
+`forbid_ai_attribution` 覆盖工作树、文件历史、附注标签和提交。提交中的署名是提交者本人
+的声明，因此 `owner_identities` 以 Git 打印的 `Name <email>` 写法声明所有者，此时：
+
+- 所有者作为作者的提交，其消息和头部不得含有 AI 署名；
+- 所有者作为作者或提交者的提交，不得把 AI 工具记为作者或提交者；
+- 其他任何人的提交，包括托管平台为其 pull request 构建的测试合并，都不做署名检查。
+  他们添加的文件仍然会被检查。
+
+至少要有一个声明的身份是历史范围内某个提交的作者。否则一个拼写错误的条目就会让所有提交
+免检，所以审计会直接失败。未设置 `owner_identities` 时，消息规则检查每一个提交。
+
+`allowed_identities` 是另一种封闭列表：历史范围内的每个作者、提交者和附注标签的打标签者
+都必须在列表中。它适用于没有其他人写入的历史。任何外部贡献者的 pull request，以及任何在
+托管平台以自身身份提交的测试合并上运行的 pull request 检查，都会因此失败。
 
 默认配置启用密钥与链接检查。常规的 `.betterleaks.toml` 在所维护的默认规则之上扩展：
 

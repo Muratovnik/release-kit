@@ -22,10 +22,7 @@ private_files = ["AGENTS.local.md", ".mcp.json"]
 private_suffixes = [".local.md"]
 required_ignores = [".private", ".codex", "AGENTS.local.md", ".mcp.json"]
 allowed_users = ["example-owner"]
-allowed_identities = [
-  "Example Maintainer <maintainer@example.invalid>",
-  "dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
-]
+owner_identities = ["Example Maintainer <maintainer@example.invalid>"]
 forbid_png_metadata = true
 forbid_ai_attribution = true
 forbid_internal_planning = true
@@ -57,6 +54,26 @@ provider role vocabulary is closed: an owner-only workflow cannot be relabeled
 as a product provider. Material declared `machine-derived` remains a finding and
 must be replaced before publication; `anonymized` is the project's assertion that
 review occurred, not an automatic anonymization guarantee.
+
+### Commit identities and attribution
+
+`forbid_ai_attribution` covers the tree, file history, annotated tags and commits.
+Attribution in a commit is a statement by whoever made it, so `owner_identities`
+declares the owners in the `Name <email>` spelling Git prints, and then:
+
+- a commit an owner authored carries no AI attribution in its message or headers;
+- a commit an owner authored or committed names no AI tool as author or committer;
+- commits by anyone else, including the test merge a host builds for their pull
+  request, are not judged for attribution. The files they add still are.
+
+At least one declared identity must author a commit in the history scope. A misspelt
+entry would otherwise exempt every commit, so the audit fails instead. Without
+`owner_identities`, the message rule judges every commit.
+
+`allowed_identities` is a different, closed list: every author, committer and
+annotated tagger in the history scope must be on it. It suits a history that nobody
+else writes. It fails any contributor's pull request, and any pull request check that
+runs on a test merge the host commits under its own identity.
 
 The defaults enable secret/link checks. A normal `.betterleaks.toml` extends
 maintained defaults:

@@ -214,6 +214,15 @@ AI_ATTRIBUTION_PATTERNS = (
         rf"(?:with|by|using)\s+{AI_VENDOR}\b"
     ),
 )
+# Git records a commit's author and committer outside its message, so the trailer
+# patterns never see an agent that was set as either one.
+AI_IDENTITY = re.compile(rf"(?i)\b{AI_VENDOR}\b")
+
+
+def is_ai_identity(identity: str) -> bool:
+    """Whether a Git ``Name <email>`` identity names an AI tool or coding agent."""
+    return AI_IDENTITY.search(_normalized(identity)) is not None
+
 
 MACHINE_OBSERVATION_PATTERNS = (
     re.compile(r"(?i)\bon\s+(?:this|my|our)\s+workstation\b"),

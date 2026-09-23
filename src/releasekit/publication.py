@@ -149,6 +149,7 @@ def run(
                     forbidden_suffixes=settings.exposure.forbidden_suffixes,
                     allowed_users=settings.exposure.allowed_users,
                     allowed_identities=settings.exposure.allowed_identities,
+                    owner_identities=settings.exposure.owner_identities,
                     exclude=settings.exposure.exclude,
                     forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
                     forbid_internal_planning=settings.exposure.forbid_internal_planning,

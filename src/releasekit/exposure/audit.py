@@ -23,7 +23,7 @@ import struct
 import subprocess
 import zipfile
 from collections import Counter
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -647,6 +647,7 @@ def _commit_metadata_failures(
     forbid_ai_attribution: bool,
     forbid_internal_planning: bool,
     forbid_machine_observations: bool,
+    attribution_exempt: Collection[str] = frozenset(),
 ) -> list[str]:
     """Inspect raw commit headers, including embedded merge-tag metadata."""
     failures: list[str] = []
@@ -668,7 +669,7 @@ def _commit_metadata_failures(
                 owner_workflows=owner_workflows,
                 private_patterns=private_patterns,
                 allowed_users=allowed_users,
-                forbid_ai_attribution=forbid_ai_attribution,
+                forbid_ai_attribution=forbid_ai_attribution and object_id not in attribution_exempt,
                 forbid_internal_planning=forbid_internal_planning,
                 forbid_machine_observations=forbid_machine_observations,
             ) & {
@@ -1359,6 +1360,7 @@ def history_failures(
     forbidden_suffixes: Sequence[str] = (),
     allowed_users: Sequence[str] = (),
     allowed_identities: Sequence[str] = (),
+    owner_identities: Sequence[str] = (),
     exclude: Sequence[str] = (),
     forbid_ai_attribution: bool = False,
     forbid_internal_planning: bool = False,
@@ -1369,7 +1371,13 @@ def history_failures(
     inspect_archives: bool = True,
     forbid_png_metadata: bool = False,
 ) -> list[str]:
-    """Rules that must hold for every reachable commit before publication."""
+    """Rules that must hold for every reachable commit before publication.
+
+    ``owner_identities`` narrows the commit-level attribution rule to the owners' own
+    commits. Attribution is a statement its author makes: an owner's commit must not
+    credit an AI, while a contributor's pull request, and the merge a host synthesizes
+    to test it, carries whatever the contributor chose to state.
+    """
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
     failures = _history_precondition_failures(root)
@@ -1426,16 +1434,47 @@ def history_failures(
         )
     )
 
-    if allowed_identities:
+    # Filled only from a complete inventory, so a failed lookup exempts nothing.
+    attribution_exempt: set[str] = set()
+    if allowed_identities or owner_identities:
         allowed = set(allowed_identities)
-        identities = _git(root, ["log", *HISTORY_REFS, "--format=%an <%ae>%x1f%cn <%ce>"])
+        owners = set(owner_identities)
+        identities = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%an <%ae>%x1f%cn <%ce>"])
         if identities.returncode != 0:
             failures.append(identities.stderr.strip() or "Git history identity inventory failed")
         else:
+            exempt: set[str] = set()
+            owner_authored = False
             for record in identities.stdout.splitlines():
-                author, separator, committer = record.partition("\x1f")
-                if not separator or author not in allowed or committer not in allowed:
-                    failures.append(f"history identity is not allowed: {record}")
+                commit, _, people = record.partition("\x1f")
+                author, separator, committer = people.partition("\x1f")
+                if allowed and (not separator or author not in allowed or committer not in allowed):
+                    failures.append(f"history identity is not allowed: {people}")
+                # A record that does not parse stays judged: exempting it would fail open.
+                if not owners or not separator:
+                    continue
+                if author in owners:
+                    owner_authored = True
+                else:
+                    exempt.add(commit)
+                # An agent can take the author or committer field instead of a trailer.
+                # When an owner holds the other field, the commit is still the owner's.
+                if (
+                    forbid_ai_attribution
+                    and owners & {author, committer}
+                    and any(rules.is_ai_identity(person) for person in (author, committer))
+                ):
+                    failures.append(
+                        f"history {commit[:12]}: commit-identity: {rules.AI_ATTRIBUTION}"
+                    )
+            if owners and not owner_authored:
+                # A misspelt identity would silently exempt every commit.
+                failures.append(
+                    "history owner_identities match no commit author, so the attribution "
+                    "rule would judge no commit"
+                )
+            else:
+                attribution_exempt = exempt
 
     messages = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%B%x1e"])
     if messages.returncode != 0:
@@ -1451,7 +1490,7 @@ def history_failures(
                 owner_workflows=owner_workflows,
                 private_patterns=private_patterns,
                 allowed_users=allowed_users,
-                forbid_ai_attribution=forbid_ai_attribution,
+                forbid_ai_attribution=forbid_ai_attribution and commit not in attribution_exempt,
                 forbid_internal_planning=forbid_internal_planning,
                 forbid_machine_observations=forbid_machine_observations,
             ) & {
@@ -1482,6 +1521,7 @@ def history_failures(
             forbid_ai_attribution=forbid_ai_attribution,
             forbid_internal_planning=forbid_internal_planning,
             forbid_machine_observations=forbid_machine_observations,
+            attribution_exempt=attribution_exempt,
         )
     )
     patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]

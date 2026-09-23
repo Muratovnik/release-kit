@@ -26,6 +26,7 @@ EXPOSURE_KEYS = frozenset(
         "check_links",
         "betterleaks_config",
         "allowed_identities",
+        "owner_identities",
         "forbid_png_metadata",
         "include_candidates",
         "forbid_ai_attribution",
@@ -185,8 +186,12 @@ class ExposureConfig:
     check_links: bool = True
     betterleaks_config: str = ".betterleaks.toml"
     # Full-history publication checks also constrain Git identities. Entries use the
-    # stable ``Name <email>`` spelling printed by Git.
+    # stable ``Name <email>`` spelling printed by Git. This list is closed: every
+    # author, committer and tagger must be on it, contributors and hosts included.
     allowed_identities: list[str] = field(default_factory=list)
+    # The owners' own identities, in the same spelling. They scope the commit-level
+    # attribution rule to the owners' commits and leave anyone else's unjudged.
+    owner_identities: list[str] = field(default_factory=list)
     # PNG fixtures are the one binary portability rule currently needed by adopters.
     # It is policy rather than secret/link parsing and is therefore kept here once.
     forbid_png_metadata: bool = False
@@ -388,6 +393,11 @@ def load(root: Path, *, required: bool = True, staged: bool = False) -> Config:
         _string(section, "betterleaks_config", ".betterleaks.toml"),
         "betterleaks_config",
     )
+    owner_identities = _strings(section, "owner_identities")
+    if owner_identities and not _boolean(section, "forbid_ai_attribution", False):
+        raise ConfigError(
+            "owner_identities scopes forbid_ai_attribution and has no effect without it"
+        )
     try:
         release = release_settings.parse(raw["release"]) if "release" in raw else None
     except ValueError as error:
@@ -412,6 +422,7 @@ def load(root: Path, *, required: bool = True, staged: bool = False) -> Config:
             check_links=_boolean(section, "check_links", True),
             betterleaks_config=betterleaks_config,
             allowed_identities=_strings(section, "allowed_identities"),
+            owner_identities=owner_identities,
             forbid_png_metadata=_boolean(section, "forbid_png_metadata", False),
             include_candidates=_boolean(section, "include_candidates", True),
             forbid_ai_attribution=_boolean(section, "forbid_ai_attribution", False),

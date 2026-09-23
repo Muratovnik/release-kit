@@ -68,6 +68,21 @@ class LoadTests(unittest.TestCase):
         self.assertTrue(settings.exposure.forbid_png_metadata)
         self.assertEqual({"a/b.json": ["home-directory"]}, settings.exposure.baseline)
 
+    def test_owner_identities_need_the_attribution_rule_they_scope(self) -> None:
+        owners = 'owner_identities = ["Example Maintainer <owner@example.invalid>"]\n'
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / config.CONFIG_NAME).write_text(
+                f"[exposure]\nforbid_ai_attribution = true\n{owners}", encoding="utf-8"
+            )
+            self.assertEqual(
+                ["Example Maintainer <owner@example.invalid>"],
+                config.load(root).exposure.owner_identities,
+            )
+            (root / config.CONFIG_NAME).write_text(f"[exposure]\n{owners}", encoding="utf-8")
+            with self.assertRaises(config.ConfigError):
+                config.load(root)
+
     def test_it_reads_semantic_provider_and_provenance_policy(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)
