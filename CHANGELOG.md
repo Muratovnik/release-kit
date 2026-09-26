@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+## [0.31.0](https://github.com/Muratovnik/release-kit/compare/v0.30.0...v0.31.0) (2026-09-26)
+
+### Highlights
+
+Every hint release-kit prints says `relkit ...`, yet a repository that pins its
+zipapp had no such command: only `python .github/relkit.pyz ...` worked, and a
+machine install would have judged the repository with a different version than its
+hooks and CI. The installed `relkit` now hands the invocation to the repository's
+pinned `.github/relkit.pyz` whenever there is one, from the repository root as the
+hooks run it, so both forms give one verdict. The pinned zipapp is repository code
+and runs unreviewed; set `RELKIT_DELEGATE=0` before running `relkit` in a checkout
+you do not trust.
+
+### Features
+
+- **cli:** run the repository's pinned projection from the installed command ([207abad](https://github.com/Muratovnik/release-kit/commit/207abadfc9dda44f1fc6f3fa596764adf4bfe854))
+
+### Bug Fixes
+
+- **cli:** run a delegated invocation from the repository root ([bd77a8e](https://github.com/Muratovnik/release-kit/commit/bd77a8ea2a6d3d7a42e96bbf61ac6dfc135c7b6a))
+
 ## [0.30.0](https://github.com/Muratovnik/release-kit/compare/v0.29.0...v0.30.0) (2026-09-23)
 
 ### Highlights
