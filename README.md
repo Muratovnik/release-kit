@@ -76,8 +76,8 @@ and `gh release verify-asset`. See [trust boundaries](docs/distribution.md#integ
 
 Inside a repository that pins `.github/relkit.pyz`, the installed `relkit` runs that
 zipapp with the same arguments, so the terminal gets the verdict the repository's
-hooks and CI get. It finds the repository through Git from any subdirectory, or from
-`--root` when one is given. The pinned zipapp is the repository's code, and it runs
+hooks and CI get. From any subdirectory it finds the repository through Git and runs
+from its root, as the hooks do; an explicit `--root` is used as given. The pinned zipapp is the repository's code, and it runs
 unreviewed, the way a Gradle wrapper does: before running `relkit` in a checkout you
 do not trust, set `RELKIT_DELEGATE=0` to keep the installed version.
 

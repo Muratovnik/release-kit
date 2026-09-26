@@ -5,7 +5,9 @@ it; its hooks and CI run those bytes. A machine-installed command answering with
 own version would give that repository a second, possibly different verdict, and
 every hint that says `relkit ...` would be wrong wherever the pinned form is used.
 So the installed command hands the whole invocation to the pinned projection when
-there is one and runs itself only when there is not.
+there is one and runs itself only when there is not. Without an explicit `--root` it
+runs the projection from the repository root, as the hooks do, because every command
+takes `.` as its repository and a subdirectory is not one.
 
 The pinned projection is repository code, and it runs without review, the way a
 Gradle wrapper does. `RELKIT_DELEGATE=0` keeps the installed version, for example to
@@ -28,15 +30,15 @@ from . import cli, protection
 ENVIRONMENT = "RELKIT_DELEGATE"
 
 
-def _root(argv: Sequence[str]) -> str:
-    """The repository an invocation names: its `--root`, else the working directory."""
+def _root(argv: Sequence[str]) -> str | None:
+    """The repository an invocation names with `--root`, if it names one."""
     options = argv[: list(argv).index("--")] if "--" in argv else argv
     for index, argument in enumerate(options):
         if argument == "--root" and index + 1 < len(options):
             return options[index + 1]
         if argument.startswith("--root="):
             return argument.removeprefix("--root=")
-    return "."
+    return None
 
 
 def pinned_projection(
@@ -45,7 +47,7 @@ def pinned_projection(
     """The projection pinned by the repository this invocation works on, if any."""
     if environment.get(ENVIRONMENT) == "0":
         return None
-    root = Path(cwd or Path.cwd()) / _root(argv)
+    root = Path(cwd or Path.cwd()) / (_root(argv) or ".")
     try:
         found = subprocess.run(
             ["git", "rev-parse", "--show-toplevel"],
@@ -66,9 +68,13 @@ def pinned_projection(
 
 
 def _run(projection: Path, argv: Sequence[str]) -> int:
+    # An explicit --root may be relative to where it was typed; otherwise the
+    # repository the projection pins is the root, however deep the shell stands.
+    repository = projection.parent.parent
+    cwd = None if _root(argv) is not None else repository
     # The interrupt reaches the child too; it decides how to stop, and killing it here
     # would cut short the cleanup it reports on.
-    process = subprocess.Popen([sys.executable, str(projection), *argv])
+    process = subprocess.Popen([sys.executable, str(projection), *argv], cwd=cwd)
     while True:
         try:
             code = process.wait()

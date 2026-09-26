@@ -71,8 +71,8 @@ uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.3
 [信任边界](docs/distribution.md#integrity-and-trust)（英文）。
 
 在固定了 `.github/relkit.pyz` 的仓库中，已安装的 `relkit` 会以相同参数运行这个 zipapp，
-因此终端得到的结论与该仓库的钩子和 CI 相同。它会从任意子目录通过 Git 找到仓库；若给出
-`--root`，则使用该仓库。被固定的 zipapp 是仓库自身的代码，运行前不经审查，就像 Gradle
+因此终端得到的结论与该仓库的钩子和 CI 相同。它会从任意子目录通过 Git 找到仓库，并像钩子
+一样从仓库根目录运行；若明确给出 `--root`，则按原样使用。被固定的 zipapp 是仓库自身的代码，运行前不经审查，就像 Gradle
 Wrapper 一样：在不信任的克隆中运行 `relkit` 之前，请设置 `RELKIT_DELEGATE=0`，以保留已
 安装的版本。
 

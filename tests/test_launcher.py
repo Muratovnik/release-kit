@@ -127,7 +127,20 @@ class InstalledCommandTests(unittest.TestCase):
         self.assertEqual(7, completed.returncode, completed.stderr)
         invocation = json.loads(record.read_text(encoding="utf-8"))
         self.assertEqual(argv, invocation["argv"])
-        # The projection resolves `--root .` itself, as `python .github/relkit.pyz` would.
+        # Every command takes `.` as its repository, so it runs where the hooks run it.
+        self.assertEqual(repository, Path(invocation["cwd"]).resolve())
+
+    def test_an_explicit_root_is_resolved_where_it_was_typed(self):
+        repository = _git_init(self.scratch / "project")
+        record = self.scratch / "record.json"
+        _projection(repository, record, code=0)
+        subdirectory = repository / "web"
+        subdirectory.mkdir()
+        argv = ["protect", "check", "--root", ".."]
+        completed = self.run_installed(argv, subdirectory)
+        self.assertEqual(0, completed.returncode, completed.stderr)
+        invocation = json.loads(record.read_text(encoding="utf-8"))
+        self.assertEqual(argv, invocation["argv"])
         self.assertEqual(subdirectory, Path(invocation["cwd"]).resolve())
 
     def test_without_a_pinned_projection_the_installed_version_answers(self):
