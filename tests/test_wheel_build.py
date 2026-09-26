@@ -63,7 +63,8 @@ class WheelBuildTests(unittest.TestCase):
         self.assertEqual("release-kit", metadata["Name"])
         self.assertEqual("MIT", metadata["License-Expression"])
         commands = members[f"release_kit-{__version__}.dist-info/entry_points.txt"].decode("utf-8")
-        self.assertIn("relkit = releasekit.cli:main", commands)
+        # The installed command hands a repository's invocation to its pinned projection.
+        self.assertIn("relkit = releasekit.launcher:main", commands)
         self.assertIn("relkit-mcp = releasekit_mcp.server:main", commands)
         # Both importable packages ship, or the MCP entry point resolves to nothing.
         self.assertIn("releasekit/cli.py", members)

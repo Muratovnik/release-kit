@@ -39,7 +39,7 @@ relkit audit: failed
 
 | 形式 | 安装方式 | 版本来源 |
 | --- | --- | --- |
-| 安装在你的机器上 | `uv tool install <wheel 地址>` | 你的机器 |
+| 安装在你的机器上 | `uv tool install <wheel 地址>` | 你的机器，除非仓库固定了 zipapp |
 | 固定在仓库中 | 提交到项目里的 zipapp | 已提交的字节 |
 | Python 项目的 dev 依赖组 | `uv add --dev "release-kit @ <wheel 地址>"` | 该项目的锁文件 |
 
@@ -70,6 +70,12 @@ uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.3
 `gh release verify` 和 `gh release verify-asset` 校验不可变的发布版本。参见
 [信任边界](docs/distribution.md#integrity-and-trust)（英文）。
 
+在固定了 `.github/relkit.pyz` 的仓库中，已安装的 `relkit` 会以相同参数运行这个 zipapp，
+因此终端得到的结论与该仓库的钩子和 CI 相同。它会从任意子目录通过 Git 找到仓库；若给出
+`--root`，则使用该仓库。被固定的 zipapp 是仓库自身的代码，运行前不经审查，就像 Gradle
+Wrapper 一样：在不信任的克隆中运行 `relkit` 之前，请设置 `RELKIT_DELEGATE=0`，以保留已
+安装的版本。
+
 ### 固定在仓库中
 
 zipapp 只需要 PATH 中有 Python，因此它适用于任何仓库，包括完全没有 Python 打包的仓库。
@@ -86,7 +92,8 @@ python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-down
 如果你不愿依赖这个前提，`gh release download --pattern 'relkit.pyz*'` 会在一次请求中把它们
 一起取回。
 
-之后以 `python .github/relkit.pyz audit` 运行。请提交该文件；每个项目各自维护一份副本，
+之后以 `python .github/relkit.pyz audit` 运行；若机器上也安装了 release-kit，也可以用
+`relkit audit`。请提交该文件；每个项目各自维护一份副本，
 更新其中一份不会更新其他项目。后续变更请走[更新指南](docs/zh-CN/updates.md)，而不是直接
 覆盖。
 

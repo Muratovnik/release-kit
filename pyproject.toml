@@ -23,7 +23,7 @@ mcp = ["mcp==2.1.1"]
 overlay-yaml = ["PyYAML==6.0.3"]
 
 [project.scripts]
-relkit = "releasekit.cli:main"
+relkit = "releasekit.launcher:main"
 relkit-mcp = "releasekit_mcp.server:main"
 
 [tool.setuptools.packages.find]

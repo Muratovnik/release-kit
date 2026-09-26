@@ -43,7 +43,7 @@ relkit audit: failed
 
 | Форма | Установка | Откуда берётся версия |
 | --- | --- | --- |
-| На вашей машине | `uv tool install <URL wheel>` | с вашей машины |
+| На вашей машине | `uv tool install <URL wheel>` | с вашей машины, если репозиторий не закрепляет zipapp |
 | Закреплена в репозитории | zipapp, закоммиченный в проект | из закоммиченных байтов |
 | Dev-группа Python-проекта | `uv add --dev "release-kit @ <URL wheel>"` | из lock-файла этого проекта |
 
@@ -77,6 +77,13 @@ uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.3
 через `gh release verify` и `gh release verify-asset`. См.
 [границы доверия](docs/distribution.md#integrity-and-trust) (English).
 
+В репозитории, который закрепляет `.github/relkit.pyz`, установленный `relkit` запускает
+этот zipapp с теми же аргументами, поэтому терминал получает тот же вердикт, что хуки и
+CI этого репозитория. Репозиторий находится через Git из любого подкаталога или по
+`--root`, если он указан. Закреплённый zipapp — код самого репозитория, и он запускается
+без проверки, как Gradle Wrapper: прежде чем запускать `relkit` в клоне, которому вы не
+доверяете, задайте `RELKIT_DELEGATE=0`, чтобы осталась установленная версия.
+
 ### Закреплена в репозитории
 
 Zipapp нужен только Python в PATH, поэтому он подходит любому репозиторию, в том числе
@@ -94,7 +101,8 @@ python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-down
 двумя загрузками не будет опубликован новый релиз. `gh release download --pattern
 'relkit.pyz*'` забирает их одним запросом, если вы предпочитаете не зависеть от этого.
 
-Запускайте как `python .github/relkit.pyz audit`. Закоммитьте файл; каждый проект ведёт
+Запускайте как `python .github/relkit.pyz audit` или как `relkit audit`, если release-kit
+установлен и на машину. Закоммитьте файл; каждый проект ведёт
 собственную копию, и обновление одной не обновляет остальные. Последующие изменения
 проходят через [руководство по обновлению](docs/ru/updates.md), а не через перезапись.
 

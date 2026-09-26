@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import zipfile
 from pathlib import Path
 
 TIMEOUT = 600
@@ -31,8 +32,9 @@ def _uv() -> str:
 
 def _environment(work: Path) -> dict[str, str]:
     """Confine every uv location, so the operator's own tools are never touched."""
+    inherited = {key: value for key, value in os.environ.items() if key != "RELKIT_DELEGATE"}
     return {
-        **os.environ,
+        **inherited,
         "UV_TOOL_DIR": str(work / "tools"),
         "UV_TOOL_BIN_DIR": str(work / "bin"),
         "UV_CACHE_DIR": str(work / "cache"),
@@ -40,10 +42,29 @@ def _environment(work: Path) -> dict[str, str]:
     }
 
 
-def _run(command: list[str], environment: dict[str, str]) -> subprocess.CompletedProcess:
+def _run(
+    command: list[str], environment: dict[str, str], cwd: Path | None = None
+) -> subprocess.CompletedProcess:
     return subprocess.run(
-        command, capture_output=True, text=True, timeout=TIMEOUT, env=environment, check=False
+        command,
+        capture_output=True,
+        text=True,
+        timeout=TIMEOUT,
+        env=environment,
+        cwd=cwd,
+        check=False,
     )
+
+
+def _pinned_repository(work: Path, marker: str) -> Path:
+    """A repository whose pinned projection answers with `marker` instead of a version."""
+    root = work / "pinned"
+    projection = root / ".github" / "relkit.pyz"
+    projection.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(projection, "w") as archive:
+        archive.writestr("__main__.py", f"print({marker!r})\n")
+    subprocess.run(["git", "init", "-q"], cwd=root, check=True, capture_output=True, timeout=60)
+    return root
 
 
 def check(wheel: Path, version: str, work: Path) -> None:
@@ -60,13 +81,24 @@ def check(wheel: Path, version: str, work: Path) -> None:
             shim = work / "bin" / (command + (".exe" if sys.platform == "win32" else ""))
             if not shim.is_file():
                 raise WheelSmokeError(f"wheel did not install the {command} command")
-        reported = _run([str(work / "bin" / "relkit"), "--version"], environment)
+        relkit = str(work / "bin" / "relkit")
+        # Its own version, whichever repository the smoke happens to be started from.
+        reported = _run([relkit, "--version"], {**environment, "RELKIT_DELEGATE": "0"})
         expected = f"release-kit {version}"
         if reported.returncode or not reported.stdout.startswith(expected):
             raise WheelSmokeError(
                 f"installed command did not report {expected!r}: {reported.stdout.strip()!r}"
             )
         print(f"wheel-smoke: installed and ran {reported.stdout.strip()}")
+        marker = "wheel-smoke pinned projection"
+        pinned = _pinned_repository(work, marker)
+        delegated = _run([relkit, "--version"], environment, cwd=pinned)
+        if delegated.returncode or delegated.stdout.strip() != marker:
+            raise WheelSmokeError(
+                "installed command did not hand the invocation to the pinned projection: "
+                f"{delegated.stdout.strip()!r}"
+            )
+        print("wheel-smoke: installed command ran the repository's pinned projection")
     finally:
         _run([uv, "tool", "uninstall", "release-kit"], environment)
 

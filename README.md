@@ -42,7 +42,7 @@ the form that matches who runs it.
 
 | Form | Install | Version comes from |
 | --- | --- | --- |
-| On your machine | `uv tool install <wheel URL>` | your machine |
+| On your machine | `uv tool install <wheel URL>` | your machine, unless the repository pins a zipapp |
 | Pinned in a repository | the zipapp, committed to the project | the committed bytes |
 | A Python project's dev group | `uv add --dev "release-kit @ <wheel URL>"` | that project's lockfile |
 
@@ -74,6 +74,13 @@ A checksum published beside a file detects corruption; it is not independent pub
 authentication. Where available, verify the immutable release with `gh release verify`
 and `gh release verify-asset`. See [trust boundaries](docs/distribution.md#integrity-and-trust).
 
+Inside a repository that pins `.github/relkit.pyz`, the installed `relkit` runs that
+zipapp with the same arguments, so the terminal gets the verdict the repository's
+hooks and CI get. It finds the repository through Git from any subdirectory, or from
+`--root` when one is given. The pinned zipapp is the repository's code, and it runs
+unreviewed, the way a Gradle wrapper does: before running `relkit` in a checkout you
+do not trust, set `RELKIT_DELEGATE=0` to keep the installed version.
+
 ### Pinned in a repository
 
 The zipapp needs only Python on PATH, so it suits any repository, including ones with
@@ -90,7 +97,8 @@ Both files must come from the same release, which `latest` gives them as long as
 release is published between the two downloads. `gh release download --pattern
 'relkit.pyz*'` fetches them in one request if you would rather not depend on that.
 
-Run it as `python .github/relkit.pyz audit`. Commit the file; each project tracks its
+Run it as `python .github/relkit.pyz audit`, or as `relkit audit` where release-kit is
+also installed on the machine. Commit the file; each project tracks its
 own copy, and updating one does not update the others. Later changes go through the
 [update guide](docs/updates.md), never an overwrite.
 
