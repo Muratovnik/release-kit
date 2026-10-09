@@ -3,10 +3,13 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import io
 import json
+import multiprocessing
 import os
 import signal
+import socket
 import subprocess
 import sys
 import tempfile
@@ -15,7 +18,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import processes
+from releasekit import processes, storage
 from releasekit.release.backend import CommandError, Pending, Runner
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -445,8 +448,44 @@ class OwnedProcessTests(unittest.TestCase):
 
     @unittest.skipIf(os.name == "nt", "POSIX writer transfer into spawned source-test workers")
     def test_spawned_source_workers_preserve_cleanup_ownership(self):
+        self._source_workers_preserve_cleanup_ownership("spawn")
+
+    @unittest.skipIf(os.name == "nt", "POSIX forkserver writer transfer")
+    def test_forkserver_source_workers_preserve_cleanup_ownership(self):
+        if "forkserver" not in multiprocessing.get_all_start_methods():
+            self.skipTest("this interpreter does not provide the forkserver start method")
+        # Distribution checks nest TMPDIR deeply. Keep this test's IPC directory
+        # short and owned; change only the generated pool launcher's tempfile cache.
+        cache = storage.inside(ROOT, ROOT / ".cache")
+        cache.mkdir(exist_ok=True)
+        with tempfile.TemporaryDirectory(prefix="mp-", dir=cache) as temporary:
+            ipc = Path(temporary).resolve()
+            # Probe the real socket operation at the same path depth as CPython's
+            # pymp-<8>/listener-<8>. Do not turn worker/transfer failures into skips.
+            with tempfile.TemporaryDirectory(prefix="pymp-", dir=ipc) as probe:
+                try:
+                    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as listener:
+                        listener.bind(str(Path(probe) / "listener-12345678"))
+                        listener.listen(1)
+                except OSError as error:
+                    unavailable = error.errno in {
+                        errno.EPERM,
+                        errno.EACCES,
+                        errno.EAFNOSUPPORT,
+                        errno.EPROTONOSUPPORT,
+                        errno.ENOSYS,
+                        errno.ENOTSUP,
+                        errno.ENAMETOOLONG,
+                    }
+                    path_limit = error.errno is None and str(error) == "AF_UNIX path too long"
+                    if unavailable or path_limit:
+                        self.skipTest(f"owned AF_UNIX socket capability/path unavailable: {error}")
+                    raise
+            self._source_workers_preserve_cleanup_ownership("forkserver", ipc=ipc)
+
+    def _source_workers_preserve_cleanup_ownership(self, method, *, ipc=None):
         source = self.checked_source()
-        suite = self.root / "spawn-tests"
+        suite = self.root / f"{method}-tests"
         suite.mkdir()
         denied, returned = self.root / "deny-cleanup", self.root / "source-returned"
         worker = (
@@ -464,7 +503,7 @@ class OwnedProcessTests(unittest.TestCase):
             "class SpawnedTests(unittest.TestCase):\n"
             " def owned(self,name,other):\n"
             f"  root=Path({str(self.root)!r})\n"
-            "  self.assertEqual('spawn',multiprocessing.get_start_method())\n"
+            f"  self.assertEqual({method!r},multiprocessing.get_start_method())\n"
             "  (root/(name+'.runner')).write_text(str(os.getpid()))\n"
             "  deadline=time.monotonic()+5\n"
             "  while not (root/(other+'.runner')).exists() and time.monotonic()<deadline:\n"
@@ -479,13 +518,16 @@ class OwnedProcessTests(unittest.TestCase):
             " def test_second(self): self.owned('second','first')\n",
             encoding="utf-8",
         )
-        parallel = self.root / "run-spawned.py"
+        parallel = self.root / f"run-{method}.py"
+        method_setup = f" multiprocessing.set_start_method({method!r},force=True)\n"
+        if ipc is not None:
+            method_setup = f" tempfile.tempdir={str(ipc)!r}\n" + method_setup
         parallel.write_text(
-            "import multiprocessing,sys\n"
+            "import multiprocessing,sys,tempfile\n"
             f"sys.path.insert(0,{str(ROOT / 'tools')!r})\n"
             "import parallel_tests\n"
             "if __name__=='__main__':\n"
-            " multiprocessing.set_start_method('spawn',force=True)\n"
+            f"{method_setup}"
             f" raise SystemExit(parallel_tests.main(['--jobs','2','--start-dir',{str(suite)!r}]))\n",
             encoding="utf-8",
         )
@@ -542,7 +584,7 @@ class OwnedProcessTests(unittest.TestCase):
                     self.assertNotEqual(
                         (self.root / "first.runner").read_text(),
                         (self.root / "second.runner").read_text(),
-                        "both independently spawned workers must execute",
+                        "both independent pool workers must execute",
                     )
                     reports = set((state / "reports").glob("*.json")) - before
                     self.assertEqual(1, len(reports))

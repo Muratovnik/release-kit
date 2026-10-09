@@ -51,13 +51,15 @@ async def _stop(process, job, lifetime=None):
                 forced = True
                 _group(process.pid, signal.SIGKILL)
         if process is not None:
-            if process.returncode is None:
+            # POSIX teardown already signals the owned group. Its exit notification
+            # can still be queued after the group disappears. Await it without
+            # treating a no-op PID kill as forced. Windows still needs the fallback
+            # for an unassigned child.
+            if job is not None and process.returncode is None:
                 try:
                     process.kill()
                 except ProcessLookupError:
                     pass
-                else:
-                    forced = job is None or forced
             with anyio.fail_after(_GRACE):
                 await process.wait()
                 if job is None:
