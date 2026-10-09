@@ -112,7 +112,7 @@ the same version are not overwritten. Plugin installation never updates a projec
 `next` requires an explicit patch/minor/major `bump` and chooses from published
 history; it does not mutate tags. `prepare` runs checks, publication audits, build
 where applicable and smoke, and writes a local candidate receipt. It does not
-tag, push, dispatch CI or publish. Actions next/prepare require project CLI 0.20.0+;
+tag, push, dispatch CI or publish. Actions next/prepare require executor 0.20.0+;
 local preparation needs 0.21.0+. Only Actions prepare accepts `ci_run` to select
 an existing run. Use 0.21.1+ for direct GitHub delivery.
 

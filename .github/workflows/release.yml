@@ -28,8 +28,25 @@ jobs:
         with:
           python-version: "3.11"
       - run: python -m pip install --disable-pip-version-check --requirement requirements-dev.txt uv
+      - name: Provision pinned engines for Windows MCP acceptance
+        if: runner.os == 'Windows'
+        shell: python
+        env:
+          PYTHONPATH: src
+        run: |
+          import os
+          from pathlib import Path
+          from releasekit import storage, toolchain
+
+          root = Path.cwd()
+          cache = storage.inside(root, root / ".cache/release-kit")
+          os.environ["RELKIT_CACHE_DIR"] = str(cache)
+          for name in toolchain.TOOLS:
+              print(toolchain.resolve(name, root=root, allow_download=True))
       # Check packages once, on the candidate below, not a throwaway build per OS.
       - run: python tools/check_distribution.py --source-only
+        env:
+          RELKIT_TEST_REAL_ENGINES: ${{ runner.os == 'Windows' && '1' || '0' }}
 
   candidate:
     needs: check

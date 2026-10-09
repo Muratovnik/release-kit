@@ -39,15 +39,19 @@ publication/privacy bypass, unintended execution or deletion, source overwrite,
 and loss of trustworthy recovery ownership; **medium** includes incorrect release
 selection, false qualification, broken recovery inspection, and unusable output;
 **low** includes presentation ambiguity. R1–R3 are requested capability expansions
-beyond the baseline contract. Other rows identify baseline defects or explicitly
-label corrections needed while integrating the expanded lifecycle. The report
-records 37 findings and capability changes. D12 records a false refusal introduced
-while integrating the expanded process-ownership checks, rather than a defect
-attributed to the original baseline.
+beyond the baseline contract; D14 extends CI coverage of an existing opt-in test.
+The remaining 34 entries cover baseline defects, issues exposed while integrating
+corrections, and test or documentation problems: 17 high, 16 medium and one low.
+Together these are 38 review items: three capability expansions, one coverage
+expansion and 34 other issues. Combined baseline/integration rows are labeled
+accordingly. D12 records a false refusal introduced while integrating the expanded
+process-ownership checks. D13 distinguishes original MCP fixtures from a source-gate
+fixture added during this review; neither is presented as another product
+vulnerability.
 
 ### Release identities and changelog
 
-| ID | Severity | Original defect | Correction and regression boundary |
+| ID | Severity | Original behavior | Correction and regression boundary |
 | --- | --- | --- | --- |
 | R1 | Capability expansion | The documented stable-only contract rejected release candidates throughout release selection, preparation and publication. | Shared strict SemVer parsing retains build identity and applies SemVer precedence. `release next --bump minor --prerelease rc` selects `rc.N` from published history. Bare `-rc` and explicit full SemVer are supported; malformed numeric identifiers and non-ASCII digits are refused. |
 | R2 | Capability expansion | Stable-only predecessor selection did not support preview channels and cumulative final releases. | GitHub and directory adapters verify the exact version, tag and prerelease channel. The stable final release compares with the preceding published stable version; previews use the preceding published preview of the same core, or the stable predecessor. Occupied unpublished tags are reported rather than skipped. |
@@ -73,7 +77,7 @@ Discriminating controls include `test_semver`, `test_release_prerelease`,
 
 ### Publication, privacy and scanner behavior
 
-| ID | Severity | Original defect | Correction and regression boundary |
+| ID | Severity | Original behavior | Correction and regression boundary |
 | --- | --- | --- | --- |
 | P1 | High | Quoted, newline-delimited Git history paths lost deleted non-ASCII paths and altered unusual names. Text-mode current-tree inventories also converted carriage returns into newlines and could omit a real file. | NUL-delimited raw inventories preserve non-ASCII text, distinct carriage-return/newline paths, leading whitespace and deleted historical paths, including current index modes, sparse flags and worktree status. |
 | P2 | High | Public refs targeting trees or blobs bypassed parts of path and mode inspection; duplicate blobs could lose additional names. | Exact tree inventories cover the configured public ref families, including non-tag refs and repeated blobs with different paths or modes. |
@@ -96,19 +100,19 @@ Implementation: [publication audit](../../src/releasekit/exposure/audit.py),
 [guard validation](../../src/releasekit/protection.py),
 [storage](../../src/releasekit/storage.py), and
 [overlay verification](../../src/releasekit/overlay/verify.py).
-An earlier publication-safety test packet passed 266 tests. After the final Lychee
+An earlier publication-safety suite passed, running 266 tests. After the final Lychee
 and carriage-return inventory corrections, the affected audit, engine and
-publication suite passed 126 tests in 21.315 seconds. Each packet explicitly
+publication suite passed, running 126 tests in 21.315 seconds. Each packet explicitly
 skipped one native Windows junction control on Linux. Cross-review reran the
 original non-tag-ref and sparse-index reproducers after correction and independently
 verified literal filename selection with the actual pinned Lychee executable.
 
 ### Process ownership, packaging and development gates
 
-| ID | Severity | Original defect | Correction and regression boundary |
+| ID | Severity | Original behavior | Correction and regression boundary |
 | --- | --- | --- | --- |
 | D1 | High | MCP cancellation and immediate termination of a nested synchronous relay could leave deeper separately owned commands alive. | Both executors relay SIGTERM through nested runners. Real timeout and cancellation controls reach three nested runners and check for writes after return. |
-| D2 | High | Disappearance of the immediate group could turn an inner cleanup failure into an apparently confirmed timeout; natural or forced relay exits could hide surviving nested work. | Inherited anonymous lifetime pipes detect surviving managed descendants even after an early ordinary exit. Abnormal cancellation and forced POSIX termination also produce `CleanupError`. MCP retains scratch with `process_cleanup_unconfirmed` and honors validated CLI cleanup refusals; recovery owners keep their state and locks. Normal cooperative cancellation remains a distinct outcome. |
+| D2 | High; baseline and lifecycle integration | Disappearance of the immediate group could turn an inner cleanup failure into an apparently confirmed timeout; natural or forced relay exits could hide surviving nested work. | Inherited anonymous lifetime pipes detect surviving managed descendants even after an early ordinary exit. Abnormal cancellation and forced POSIX termination also produce `CleanupError`. MCP retains scratch with `process_cleanup_unconfirmed` and honors validated CLI cleanup refusals; recovery owners keep their state and locks. Normal cooperative cancellation remains a distinct outcome. |
 | D3 | High | The exact-commit builder missed removed tracked inputs, untracked/ignored importable modules, and tracked links whose ignored targets changed under a clean HEAD. Ignored README/license inputs could also change wheel bytes without changing HEAD or Git status. | Strict checkout builds verify root identity and all inputs consumed by the maintained builders. Unsupported tracked symlink/gitlink modes are rejected before reading inputs. Fixed package inputs and the declared README must belong to the verified commit. Real Git controls verify refusal before output creation and preserve a valid alternate tracked README; Git-free snapshots retain their separate source-binding contract. |
 | D4 | High | A failed version update left some carriers changed; a timed-out resolver worker could overwrite a lock after rollback. | The version transaction preserves original bytes, owns resolver descendants, restores only after confirmed cleanup, and retains an explicit recovery snapshot when cleanup or restoration is uncertain. |
 | D5 | Medium | Successful distribution cleanup did not recognize its own wheel-install fixture directory. | Known phase roots include wheel installation and the new changelog smoke. Unknown roots still prevent deletion. |
@@ -119,7 +123,8 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D10 | High; lifecycle integration | A multiprocessing `spawn` worker lost ancestor lifetime descriptors. A real failed test left a child alive, but the distribution check reported ordinary failure and removed its lock. | Each worker receives a separately transferred, identity-validated writer using multiprocessing's existing descriptor transfer. The parent retains its writer through lazy spawning and pool shutdown, then checks EOF. Actual fork/spawn controls preserve the lock on uncertainty; ordinary timeouts still stop workers and release it. |
 | D11 | Low; development status | The development smoke success message described checked CLI bytes as published even when qualifying an unpublished candidate. | The success status no longer asserts publication. Validation and exit behavior are unchanged; the actual CLI smoke against the qualified candidate and scoped Ruff checks passed for this wording-only correction. |
 | D12 | Medium; lifecycle integration | The MCP executor treated a delayed asynchronous exit notification as evidence that fallback SIGKILL had terminated a live process. A cooperatively exited relay could therefore produce a false `CleanupError`. | POSIX teardown awaits the actual exit notification after signalling the owned group; the PID fallback remains only for a Windows child that may not have joined its job. The accepted exit-status set and production grace are unchanged. A real-child notification-delay regression preserves the distinction between cooperative exit and abnormal cancellation, alongside the existing SIGKILL and surviving-writer controls. |
-| D13 | Medium; development test fixtures | Ownership tests could expire their short operation or cancellation budget before the real child wrote its PID receipt. The missing receipt then failed the test before its ownership oracle could run. | The affected sleeper, nested-runner and stdio-request fixtures establish complete PID readiness before the tested timeout or cancellation. Readiness has its own bounded assertion, PID receipts are published atomically, and the existing 0.7-second/two-second operation limits and post-return ownership checks remain in force. |
+| D13 | Medium; baseline and integration test fixtures | Ownership tests started their short operation or cancellation budget without first establishing full child PID readiness. This affected baseline MCP fixtures and a sequential source-gate regression added during this review. A deadline during startup can prevent the intended ownership oracle from running. | Affected MCP and synchronous ownership fixtures establish atomic readiness before their operation clock, with a separate bounded startup assertion and a successful-readiness postcondition. Existing timeout values, expected exit statuses, live-worker/late-write checks and lock-retention assertions remain intact. Real delayed-start controls distinguish fixture startup from product cleanup. Readiness in the failed `28eff54` gate remains unrecorded. |
+| D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. The exact provisioning program and default-cache consumer passed real Linux controls, including corrupt-archive and aliased-cache refusals; native Windows execution remains outstanding. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
@@ -154,6 +159,160 @@ bypasses; they do not identify a missing payload in the original maintained layo
 
 ## Validation record
 
+### Canonical source and package qualification at b2cec0f2
+
+The complete canonical Linux checks ran against clean source commit
+`b2cec0f2fafccae396147583e75d399a508bb6dd`, Git tree
+`8fa0bc5a5c8ca905291f4aae33e083a5ae438274`, version 0.32.0. This candidate includes
+the integrated MCP exit notification correction, explicit MCP and synchronous
+fixture readiness, forkserver acceptance extension, generator diagnostics and
+generated release notes. Both native Linux x86_64 runs passed all eight phases,
+on Python 3.11.17 and Python 3.12.14. Their isolated SDK environments used MCP
+2.1.1 and AnyIO 4.14.2. Source identity and all 25 local refs were unchanged
+before and after each run. Earlier unsuccessful attempts remain separately
+recorded below; these results do not substitute for native Windows, macOS,
+forkserver or desktop-client acceptance.
+
+| Check | Linux Python 3.11 | Linux Python 3.12 |
+| --- | --- | --- |
+| Base source suite and Ruff | Passed: 762 tests including five skips, 93.940 seconds; Ruff check/format passed | Passed: 762 tests including five skips, 98.948 seconds; Ruff check/format passed |
+| MCP source/SDK suite | Passed: 76 tests including three skips, 864.447 seconds | Passed: 76 tests including three skips, 785.734 seconds |
+| Canonical working-tree test build | Passed | Passed |
+| Five actual package phases | All five passed | All five passed |
+| Before/after artifact inventory | Seven files unchanged; equal to strict-built set | Seven files unchanged; equal to strict-built set |
+| Complete eight-phase canonical distribution check | Passed, exit 0; 1108.739 seconds | Passed, exit 0; 1022.604 seconds |
+
+A separate strict build at this clean source completed with exit 0 in 1.683
+seconds, with source and refs unchanged. All seven actual files match both the
+new build receipt and the preceding `28eff54` strict set, whose build completed
+with exit 0 in 0.770 seconds. The readiness correction changed only tests and did
+not change the artifact bytes. All seven hashes in both completed canonical
+reports match these actual strict-built files. Each gate also verified that its
+artifact inventory remained unchanged after package execution.
+
+The separate strict command does not pass `--allow-divergent`. The canonical
+working-tree distribution check deliberately passes that option to its test
+build. Package results apply to the separate strict-built set only after all
+seven hashes are compared and matched. That comparison passed for both current
+runs. Their five real package phases were `cli-smoke`, `onboarding`,
+`wheel-install`, `changelog` and `plugin-stdio`.
+
+Reports `run-4bz0d9s7` (Python 3.11) and `run-ec3uiij0` (Python 3.12) identify
+these complete working-tree distribution checks. Both report successful cleanup;
+their in-run observers found the lock and workspace absent after return. Those
+immediate observations do not resolve the separate historical cross-execution
+filesystem visibility evidence below. Publication audits of this same candidate
+are recorded next. The subsequent delivery delta comprises the manual Windows
+workflow coverage extension, one compatibility wording correction in the packaged
+[optional MCP documentation](../mcp.md#release-operations-and-their-effects), and
+this report. That sentence identifies the executor, which is the bundled CLI in
+installed plugin mode, as the version-gated component for Actions next/prepare;
+it does not change the existing version threshold or runtime behavior. Runtime
+and test sources remain those qualified at `b2cec0f2`.
+
+Because `docs/mcp.md` is packaged, the wording correction changes the distributed
+payload. The seven-file set below remains the initially qualified set; it cannot
+qualify the revised payload by assumption. A new strict-built set and actual
+five-phase provided-assets checks on both Python 3.11 and Python 3.12 are pending.
+Their identities and results will be recorded separately from the complete
+source-suite runs above. Workflow configuration and its bounded Linux provisioning
+controls are recorded below.
+
+### Initially qualified 0.32.0 artifact identities at b2cec0f2
+
+| File | SHA-256 |
+| --- | --- |
+| `release-kit-plugin.zip` | `88ff50479cce33fe2bd6059689872a2acec61c4ee2193894e5618549db514a7f` |
+| `release-kit-plugin.zip.sha256` | `23f1275ecad8c63b9a895bca75924e45c4be4b1183a3431385cf709bc903d81f` |
+| `release.json` | `d92cff6e1532f7065ff01f5e563ec8228d585831c61ac2a3704508da40d49ddf` |
+| `release_kit-0.32.0-py3-none-any.whl` | `8efb4ce6866307b606736d68013243e16d77cdf3ed8764affc78b9c855cb302b` |
+| `release_kit-0.32.0-py3-none-any.whl.sha256` | `26d8c7aa1ef9f05e04fde26325fb762c3a7ad333c84b6c401516b9a2f02bd75c` |
+| `relkit.pyz` | `909b0a9ac01ea76ca69faef58811cea9aec2effad272d4614bc69613fb3ffce7` |
+| `relkit.pyz.sha256` | `17a188b0e8e3ea31ca8f32b8885f8d8cb341522a22a0321306c55d2c326cc8ef` |
+
+This is the seven-file set qualified by both completed Linux runs at `b2cec0f2`.
+It remains evidence for those exact bytes, preceding the packaged MCP wording
+correction. The earlier qualified inventory below also remains associated with
+its own source identity; its historical results are preserved separately.
+
+### Packaged publication audits at b2cec0f2
+
+The qualified `relkit.pyz` from the seven-file set above audited the same clean
+`b2cec0f2fafccae396147583e75d399a508bb6dd` source and `8fa0bc5a` tree on native
+Linux/Python 3.12.14. Both actual commands used `audit --strict --no-download
+--json`; the second also selected `--history`. The worktree audit passed in
+12.242 seconds and the history audit in 35.825 seconds. Each returned a valid
+CLI-0 envelope, native Betterleaks 1.8.1 and Lychee 0.24.2 status 0, and no errors,
+warnings, retained diagnostics or unconfirmed cleanup.
+
+The recorded scope includes 22 advertised refs, 25 local refs and 117 commits
+reachable from HEAD and the selected ref objects, including PR head and merge
+refs. History selection covers branches, remotes, tags, and the configured pull-request,
+merge-request, change and notes ref families. No advertised-ref mismatch was
+observed before or after either audit. Source, refs, advertised refs, all seven
+artifact hashes and the qualifying distribution report remained unchanged.
+
+The public policy uses `.gitleaks.toml`, structural exclusion `tests/*`, no
+baseline entries, candidate inspection enabled and owner mode disabled. Policy
+and Betterleaks inspect selected history; Lychee operates offline against the
+current Markdown snapshot and local links. These results do not claim checks of
+every historical Markdown version, external HTTP availability or every hosted
+surface. They qualify this exact candidate and scope. The later workflow,
+packaged-documentation and report revision needs its own source identity, strict
+artifact inventory, provided-assets qualification and final publication audit.
+
+### Earlier Python 3.11 source-fixture failure at 28eff54
+
+Report `run-bvau4zhk` records the native Linux x86_64/Python 3.11.17 attempt at
+`28eff54c07a8fd04bb9a78a051cf2a4c3e443bac`. The base suite ran 762 tests in
+91.546 seconds with one error. The complete attempt returned exit 1 after
+96.334 seconds; Ruff, MCP, the canonical build and all package phases were not
+reached. Source identity and all refs remained unchanged, and the failed-run
+workspace was retained. This failed attempt does not qualify the candidate or
+its separate strict-built assets.
+
+The error was in
+`OwnedProcessTests.test_source_gate_preserves_failed_sequential_worker_cleanup`.
+The real outer command returned `TimeoutExpired` at its existing two-second
+deadline where the test expected `CleanupError`. The PID readiness assertion
+appeared after that expected-exception block, so it was never reached. The fixture
+had already performed cleanup when inspected; whether its worker was ready at
+the original deadline is unknown. The observed exception does not establish a
+surviving worker or a product cleanup defect.
+
+This sequential fixture was added during the review, whereas the earlier MCP
+readiness cases in D13 existed in the baseline. The shared missing readiness
+precondition is tracked under D13 without adding another product finding. The
+synchronous test helper now waits for complete atomic markers before forwarding
+the first real `Popen.communicate` with its unchanged timeout arguments. Startup
+has its own ten-second assertion bound; cleanup reentry does not repeat that wait.
+A successful-readiness postcondition prevents an expected cleanup refusal from
+consuming a failed startup assertion. Both the outer and inner timeout controls
+retain their original operation budgets and ownership checks.
+
+An independent actual-child control added the same three-second startup delay to
+the generated checker. With the old fixture, SIGTERM arrived before the worker
+was ready, and the operation returned `TimeoutExpired` after 2.355 seconds. With
+the corrected fixture, the worker was ready before SIGTERM; the same two-second
+operation budget returned the expected `CleanupError` after 9.209 seconds, with
+the lock retained and the source-check report marked unconfirmed. Product source
+was unchanged. This reproduces a startup-sensitive fixture failure and validates
+the correction; it does not recover the original gate's missing readiness state.
+A separate real never-ready child with an injected cleanup refusal demonstrated
+that omitting the readiness postcondition falsely satisfied the expected error,
+while the maintained helper refused startup.
+
+The synchronous family passed on Python 3.11 and 3.12, running 21 tests including
+two explicit skips in 43.499 and 49.023 seconds respectively. Those skips were the
+Windows cwd control and this host's refused AF_UNIX capability probe. The packets
+preceded one final application of the same helper to the generated relay's inner
+two-second timeout; that actual method then passed on both interpreters in 2.995
+and 3.451 seconds, with `env={}` and the outer eight-second timeout unchanged.
+Independent source review accepted the final test-only diff, published in
+`b2cec0f2fafccae396147583e75d399a508bb6dd`. Complete qualification of that exact
+source is recorded above; the earlier failed gate receipt remains a failed
+acceptance result.
+
 ### Earlier candidate identity and qualification status
 
 The earlier qualified clean remote 0.32.0 candidate is source commit
@@ -167,7 +326,7 @@ with exit code 0. Its source identity is a clean checkout of that commit.
 | Base source suite | Passed | 755 discovered tests, four explicit skips, 56.353 seconds; Linux x86_64, Python 3.12.14 |
 | Ruff | Passed | Check and format checks passed; 108 files checked for formatting |
 | MCP source/SDK suite | Passed | 75 discovered tests, three explicit skips, 522.697 seconds |
-| Strict release build | Qualified | Seven-file inventory below, built from the candidate commit and matched to the gate inventory |
+| Separate strict release build | Qualified | Seven-file inventory below, built from the candidate commit and matched to the canonical working-tree test-build inventory |
 | Package checks on the identified seven files | Passed | `cli-smoke`, `onboarding`, `wheel-install`, `changelog`, and `plugin-stdio`: each passed with exit code 0 |
 | Inventory after package execution | Unchanged | Every retained artifact hash matches the gate's before/after inventory |
 | Complete canonical distribution gate | Passed | `base`, `mcp`, `build`, and the five package phases above: eight passed, each exit code 0; report `run-k_cqlusk` |
@@ -196,7 +355,7 @@ audits establish their separate `30dccaeefa8499f6e0885c2356e49337120739a3`
 boundary. Both revisions precede the D12, D13 and R11 corrections and cannot stand
 in for full qualification of those later changes.
 
-### Qualified artifact identities
+### Earlier qualified artifact identities
 
 These SHA-256 values identify the earlier strict-built and package-qualified
 `1c139f6e4c3f77592984c75ef8668da6ebc1fcd9` candidate.
@@ -294,9 +453,10 @@ code did not change during those fixture controls.
 
 The runtime correction and final fixture assertions were published in source
 commit `f72ecf115aa4e0a96c9d1a76d828d80366f89dc3`. Release-note and report updates
-follow that code commit. Fresh complete qualification on the integrated Python
-3.11 and Python 3.12 candidate remains pending. Historical passes and hashes above
-remain attached to the source that actually ran them.
+follow that code commit. The final integrated candidate then passed complete
+Linux Python 3.11 and Python 3.12 qualification at `b2cec0f2`, as recorded above.
+Historical passes and hashes remain attached to the source that actually ran
+them; the earlier failed attempts are preserved as failures.
 
 ### Changelog generation diagnostic and offline control
 
@@ -393,8 +553,7 @@ further evidence.
 
 An ordinary filesystem negative control made 207 post-deletion observations,
 including four independent stat executions, through 99.515 seconds; the deleted
-paths remained absent. This
-control did not reproduce the later visibility and does not prove its cause. The
+paths remained absent. This control did not reproduce the later visibility and does not prove its cause. The
 qualification results and immediate identity-checked cleanup are recorded above;
 the unresolved filesystem history remains an explicit forensic limitation.
 
@@ -433,7 +592,8 @@ and Betterleaks covered selected history; Lychee checked the current Markdown
 snapshot. Owner mode was disabled, `tests/*` was a structural exclusion, and no
 baseline or download was used. This is concrete packaged publication evidence
 for the earlier `30dccaeefa8499f6e0885c2356e49337120739a3` source and old artifact
-bytes; final publication checks must identify the later integrated candidate.
+bytes. The `b2cec0f2` candidate's separate packaged publication results are
+recorded above.
 
 ### Native tool and platform coverage
 
@@ -447,8 +607,9 @@ that HEAD and tags remain unchanged. Separate real-Git controls exercise ambiguo
 tag boundaries.
 
 Native execution evidence includes Linux x86_64 on Python 3.12.14 and the
-provisioned Python 3.11.17. The failed 3.11 gate and the historical successful
-3.12 gate are distinguished above; final integrated qualification is pending.
+provisioned Python 3.11.17. Both complete integrated Linux gates passed at the
+exact `b2cec0f2fafccae396147583e75d399a508bb6dd` candidate. The earlier failed 3.11
+attempts and historical successful 3.12 gate remain distinguished above.
 Windows Job Objects/junctions and native macOS execution need their existing platform gates;
 a mocked platform boundary or a skipped conditional test is not native acceptance.
 No real hosted release, installed-user update, user hook, production rollback or
@@ -460,12 +621,45 @@ Python 3.11 source checks on Linux, macOS and Windows, one Linux candidate build
 and package checks on the same downloaded candidate across those OS jobs: seven
 jobs in total. Its configuration is not evidence that those native runs passed.
 Windows/macOS acceptance remains open until actual native runs identify the
-reviewed source and checked bytes. Fresh Linux Python 3.11/3.12 acceptance must
+reviewed source and checked bytes. The completed Linux Python 3.11/3.12 runs
 identify the integrated D12, D13 and R11 corrections. The dispatched run's
-`headSha` must match the final remote candidate commit. The workflow neither publishes nor supplies
-native desktop-client discovery proof; that acceptance remains separate from
+`headSha` must match the final remote candidate commit. The workflow neither
+publishes nor supplies native desktop-client discovery proof; that acceptance remains separate from
 SDK/stdio startup. Its source stage now discovers an explicit forkserver
 regression on supported POSIX interpreters; no new workflow flag is required.
+
+D14 closes a separate configuration gap in that workflow. The existing
+`test_update_with_real_engines_without_windows_processor_environment` requires
+native Windows, `RELKIT_TEST_REAL_ENGINES=1`, and verified executable/archive
+pairs for all three maintained tools in the source root's `.cache/release-kit`
+directory. The earlier workflow supplied neither the opt-in nor the archives;
+its ordinary Windows package checks did not exercise this specific MCP sync
+apply/audit/rollback scenario with `PROCESSOR_*` removed.
+
+The applied workflow now runs a Windows-only inline Python provisioning step
+through `storage.inside` and the existing pinned resolver, then sets the opt-in
+to `1` for the Windows source check and `0` elsewhere. Its SHA-256 is
+`ba589b7602ae54d1f067c8a859ea858e86761ef4e37f71ce6df43eb341f1168d`.
+Independent source review checked the exact cache consumer, environment
+propagation and unmodified test assertions. YAML parsing, Python compilation and
+patch validation passed. The manual seven-job structure, action pins, permissions
+and same-candidate build/package jobs are unchanged.
+
+The exact inline program was also executed on Linux/Python 3.12.14 using seeded,
+verified Betterleaks, Lychee and git-cliff archives, with no executables present
+initially. All three extracted executable hashes matched their pins. A separate
+consumer resolved every engine from the default cache with downloads disabled
+and no cache override; the actual distribution environment retained the opt-in.
+Corrupt-archive and aliased-cache controls refused execution, respectively leaving
+no executable and leaving the aliased target unchanged. This is real Linux cache
+and control-flow evidence, without new download, Windows or hosted-workflow
+execution evidence. Native Windows acceptance still requires that named MCP test
+to execute successfully, rather than appear as a skip, in the actual reviewed
+workflow run.
+
+The manual workflow page was opened, but the GitHub browser session was signed
+out. No authenticated dispatch or hosted native run result was recorded for this
+candidate. Authenticated workflow dispatch remains outstanding.
 
 A read-only preflight resolved all four exact upstream action commits in the
 workflow and verified each `action.yml` Git blob against its pin. All declare the
