@@ -89,7 +89,7 @@ def smoke(root: Path, artifact: Path) -> None:
     require("/commit/" + initial in first, "initial feature was omitted from its draft")
     require(source.read_bytes() == original, "draft changed its source changelog")
     require(not (root / "unexpected-processor-write").exists(), "draft executed a template command")
-    source.write_text("# Changelog\n\n" + first, encoding="utf-8")
+    source.write_bytes(("# Changelog\n\n" + first).encode("utf-8"))
     git(root, environment, "add", "--", "CHANGELOG.md")
     commit(root, environment, "docs: record reviewed initial notes")
     git(root, environment, "tag", "v0.1.0")

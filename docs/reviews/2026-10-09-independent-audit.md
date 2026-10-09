@@ -126,9 +126,9 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D11 | Low; development status | The development smoke success message described checked CLI bytes as published even when qualifying an unpublished candidate. | The success status no longer asserts publication. Validation and exit behavior are unchanged; the actual CLI smoke against the qualified candidate and scoped Ruff checks passed for this wording-only correction. |
 | D12 | Medium; lifecycle integration | The MCP executor treated a delayed asynchronous exit notification as evidence that fallback SIGKILL had terminated a live process. A cooperatively exited relay could therefore produce a false `CleanupError`. | POSIX teardown awaits the actual exit notification after signalling the owned group; the PID fallback remains only for a Windows child that may not have joined its job. The accepted exit-status set and production grace are unchanged. A real-child notification-delay regression preserves the distinction between cooperative exit and abnormal cancellation, alongside the existing SIGKILL and surviving-writer controls. |
 | D13 | Medium; baseline and integration test fixtures | Ownership tests started their short operation or cancellation budget before full child PID readiness. A review-added ordinary launcher fixture also imposed a five-second functional-test budget below its supported Git lookup allowance. These fixture assumptions could prevent the intended oracle from running. | Ownership fixtures establish atomic readiness before their operation clock, with bounded startup and a successful-readiness postcondition; their actual timeout, exit-status, late-write and retention assertions remain. Ordinary launcher status/argv/cwd checks share their sibling harness's existing 120-second allowance. Controlled delayed children distinguish the two corrections from product cleanup; original failed-gate startup timing remains unrecorded. |
-| D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. Controlled Linux cache/refusal checks passed. Native workflow #5 then completed Windows provisioning and enabled the flag, but its base failure prevented the named MCP test from executing. |
-| D15 | Medium; baseline platform assumption | A transient POSIX process-group permission result was treated as immediate terminal cleanup failure. Native macOS ordinary timeout controls failed at this boundary; the original baseline already had the same error handling. | Both helpers treat permission denial as present or unconfirmed and retain the existing bounded polling. Only actual ESRCH, together with the existing lifetime and exit-status checks, permits confirmed cleanup. Real-child transient and persistent-denial controls preserve the distinction; native macOS after-fix qualification remains outstanding. |
-| D16 | Medium; baseline and review-added test fixtures | Windows source verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; the baseline 8.3 case and review-added cases are distinguished in the native record. |
+| D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. Controlled Linux cache/refusal checks passed. Native workflow #5 completed provisioning but failed before MCP; run #6 then executed the named acceptance successfully on Windows. |
+| D15 | Medium; baseline platform assumption | A transient POSIX process-group permission result was treated as immediate terminal cleanup failure. Native macOS ordinary timeout controls failed at this boundary; the original baseline already had the same error handling. | Both helpers treat permission denial as present or unconfirmed and retain the existing bounded polling. Only actual ESRCH, together with the existing lifetime and exit-status checks, permits confirmed cleanup. Real-child transient and persistent-denial controls preserve the distinction; hosted run #6 passed the native macOS source controls without weakening cleanup confirmation. |
+| D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. The review-added package history fixture now writes its expected LF bytes explicitly. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
@@ -148,7 +148,7 @@ Implementation: [synchronous runner](../../src/releasekit/processes.py),
 | Owner discovery, updater install/rollback, pin verification and archive extraction | Static transaction and path review, regression suites, actual pinned engine provisioning; updater recovery corrected for unconfirmed cleanup; owner discovery and toolchain sources unchanged |
 | CLI parsing, JSON status, notes export and MCP request routing | Actual CLI calls, closed-model tests, SDK protocol tests and exact argv controls; corrected SemVer routing, failure classification and retained scratch |
 | Wheel, zipapp and plugin contents, sidecars and receipts | Real builds, exact input refusal, archive membership/link tests, clean installation and packaged entrypoint checks |
-| Workflows and publication authority | Manual workflow review and actual hosted source execution; native failures and unexecuted candidate/package phases are retained explicitly; no automatic trigger or release/tag publication was introduced |
+| Workflows and publication authority | Manual workflow review and actual hosted source/package execution; earlier source failures and the later Windows package failure remain explicit; no automatic trigger or release/tag publication was introduced |
 | Documentation and compatibility | Generated template and Russian alias examples checked against runtime behavior; stable own-distribution policy and old-executor sync requirement stated explicitly |
 
 The CLI remains dependency-free. Maintained pinned engines continue to own secret,
@@ -162,6 +162,92 @@ plugin input paths. The added strict-build controls close alternative-input
 bypasses; they do not identify a missing payload in the original maintained layout.
 
 ## Validation record
+
+### Native and canonical qualification at 1428dbb0
+
+[Manual workflow run #6](https://github.com/Muratovnik/release-kit/actions/runs/37933011696)
+(run `37933011696`, attempt 1, `workflow_dispatch`, input `v0.32.0`)
+checked clean published commit `1428dbb098eed84e4dc3242ecd49181eebafc026`,
+tree `94490929caf372528efbb5748dd52f402804c676`. All three native source
+jobs passed. The overall workflow nevertheless failed in the later Windows
+package changelog check; it is not an all-platform package qualification.
+
+| Actual source job | Native runtime | Base result | MCP result |
+| --- | --- | --- | --- |
+| Linux `113828117369` | x86_64, CPython 3.11.17 | Passed: 774 tests, four named skips, 38.872 seconds | Passed: 78 tests, three skips, 126.965 seconds |
+| macOS `113828117387` | macOS 26.6.2, arm64, CPython 3.11.9 | Passed: 774 tests, four named skips, 103.313 seconds | Passed: 78 tests, three skips, 120.556 seconds |
+| Windows `113828117076` | Windows Server 2025, AMD64, CPython 3.11.9 | Passed: 774 tests, 20 named skips, 564.344 seconds | Passed: 78 tests, six POSIX skips, 307.545 seconds |
+
+All three source jobs passed Ruff lint and the 109-file format check and
+printed SDK 2.1.1. The Windows log explicitly records
+`test_update_with_real_engines_without_windows_processor_environment` as
+successful, after provisioning all three pinned tools with the opt-in enabled.
+The native alias control exercised the allowed refusal branch: no usable
+native short alias was available, and the deep runtime was refused without
+skipping the test.
+
+The macOS MCP log names both transient and persistent EPERM controls as
+successful, alongside pending-notification, nested-cancellation and
+unconfirmed-cleanup controls. Its complete base pass has exactly the four
+named Windows-only skips. Together with exact-source discovery, this supports
+execution of the synchronous D15 controls, the five previously failing
+timeout methods and the explicit two-worker forkserver oracle. Linux has
+the same exhaustive four-skip boundary. These base results are source-verified
+execution inferences, not individually printed success records; the original
+failed macOS group composition remains unproved.
+
+The shared Linux `candidate` job `113833863935` passed and uploaded
+`release-candidate`, artifact `11618500363`, archive size 730340 bytes, digest
+`sha256:9ce8b951a0f9329decb9558621c7c44dc01f88db79568f87b0304b144da66c9f`.
+Artifact metadata binds it to this run and commit. All three package jobs
+downloaded that exact artifact and recorded the matching actual digest;
+they used `--assets dist --version 0.32.0` without rebuilding.
+
+| Actual package job | Result against the shared candidate | Report |
+| --- | --- | --- |
+| Linux `113833947248` | All five phases passed | `run-chrw2swf`, passed |
+| macOS `113833947200` | All five phases passed | `run-1v548a0j`, passed |
+| Windows `113833947292` | `cli-smoke`, `onboarding` and `wheel-install` passed; `changelog` exited 1; `plugin-stdio` did not run | `run-jpxoa2k8`, failed |
+
+The Windows failure was `adding aliases changed extraction of an English
+historical entry`. Its failed result and unexecuted stdio phase are preserved.
+Linux and macOS package results record all seven hashes unchanged; the Windows
+failed report also records the same seven input hashes. All match the separate
+strict build at this source. Hosted source reports and the two successful
+package reports state `cleanup=removed`; the failed Windows package report
+states `cleanup=retained`. No independent later filesystem observation was
+made on those hosted runners.
+
+A separate complete canonical Linux x86_64 / Python 3.12.14 run at this same
+clean source passed all eight phases with exit 0 in 1077.065 seconds:
+774 base tests in 143.923 seconds with five skips, Ruff lint/format for 109
+files, 78 MCP tests in 831.613 seconds with three skips, the test build and all
+five actual package phases. Its isolated SDK reported MCP 2.1.1 and AnyIO
+4.14.2. Report `run-3muaddpu` identifies a
+`working-tree-distribution-check`; recorded source and refs stayed unchanged.
+The separate strict build passed in 0.779 seconds without
+`--allow-divergent`; all seven files match the canonical report and the
+hosted package results. The canonical gate also confirmed its artifact
+inventory unchanged. Its immediate observer recorded the lock and workspace
+absent; the later visibility observation below remains a separate forensic
+limit.
+
+| File at 1428dbb0 | SHA-256 |
+| --- | --- |
+| `release-kit-plugin.zip` | `2c21f8c15c34fbea9f5d445992401c5ffba5426bef852ac79888df51372f9265` |
+| `release-kit-plugin.zip.sha256` | `d9d6607590ee11454ddbd91a45c5e627b09fa540b465e53eeb3169b34e7d6a4f` |
+| `release.json` | `2116d8dc53d90a045cdc200df894627714d5b1be18677ec3fc6a6a4584c035ef` |
+| `release_kit-0.32.0-py3-none-any.whl` | `5d59395d503b691966e36a74e23b88feb5e70f4b53fd7195c3831ee8ec8b775e` |
+| `release_kit-0.32.0-py3-none-any.whl.sha256` | `c16739d5f6a6bc3c3057b80e7087801d14abd9710a1ea12e0234ae23d99cfa4c` |
+| `relkit.pyz` | `928d6c7546a372277ad95abafd964addff36c467e7195ddc5996559a064b8f82` |
+| `relkit.pyz.sha256` | `e2a216c6efafb9e5bb718abd33e1161b2a877dac9beeb3df7b4de37188b60ec9` |
+
+These results qualify their recorded source and payload only. A later
+report/development-smoke correction is not a rerun of these source suites;
+transfer of the package identities requires an actual strict rebuild matching
+all seven files. Windows package acceptance remains open until the corrected
+reviewed candidate completes the missing checks. Native desktop-client
+discovery remains unverified on every platform.
 
 ### Hosted native workflow at 93718d0c and follow-up corrections
 
@@ -231,7 +317,7 @@ distribution control keeps its real lock and report while a raw same-group
 worker, which has closed inherited lifetime writers, can still write.
 
 **D16 — Windows fixture portability.** The 13 Windows failure/error records
-fall into five test-fixture subcases, not 13 product defects:
+from run #5 fall into five test-fixture subcases, not 13 product defects:
 
 | Fixture assumption | Evidence and corrected oracle |
 | --- | --- |
@@ -249,8 +335,24 @@ These corrections change test fixtures and their platform oracles, not runtime
 newline handling, strict-build byte checks, launcher behavior or volume settings.
 The 8.3 assumption predates this review; the other affected fixture methods were
 added during it. The focused release-input/link/alias packet ran 15 tests
-including the one native Windows skip on Linux. Native Windows and macOS
-requalification of the corrections remains outstanding.
+including the one native Windows skip on Linux. Run #6 subsequently passed
+these source corrections on native Windows and macOS. Its separate Windows
+package changelog failure is retained in the newer qualification record above.
+
+**Later package fixture in D16.** Run #6 exposed an additional review-added
+fixture assumption, not another product finding. The packaged changelog smoke
+compared a generated LF entry with history installed through `Path.write_text`;
+the Windows text write translated that history to CRLF. The actual `1428dbb0`
+CLI and pinned git-cliff 2.14.1 reproduced the same error in 6.782 seconds when
+only that historical write received controlled Windows newline semantics.
+A one-line `write_bytes` correction establishes the expected LF fixture while
+retaining the exact entry-equality assertion. Actual complete smoke controls
+then passed on Linux/Python 3.11.17 in 13.094 seconds and Python 3.12.14 in
+16.485 seconds. Separate LF/CRLF extraction and export controls confirmed
+unchanged source bytes and preservation of internal line endings under the
+existing terminal-LF export contract. No runtime parser or normalization
+behavior changed. These are controlled local results; corrected native Windows
+package replay and its previously unreached plugin-stdio phase remain pending.
 
 **D13 — ordinary launcher fixture allowance.** A later precommit Linux
 Python 3.11 base check ran 769 tests in 182.599 seconds and stopped with one
@@ -297,9 +399,10 @@ before correction with three failures and four errors; the complete nine-method
 0.075 seconds. Receipts are under
 `.cache/review-publication-safety/skipped-subtests-f1ha2s0h` and
 `.cache/review-root/subtest-gates-jcjmwzkk`. This extends D6 without adding a
-new finding. Full qualification of the combined corrections remains pending
-at a newer frozen candidate; the older successful runs are not transferred to
-these changed runtime and test bytes.
+new finding. The subsequent `1428dbb0` candidate passed all three hosted
+source jobs and complete canonical Linux qualification, as recorded above;
+its Windows package failure remains separate. Older successful runs are not
+transferred to changed runtime or test bytes.
 
 The raw hosted logs and normalized observations are retained under
 `.cache/review-changelog/native-linux-37927315557-pgfpp4r2`,
@@ -772,6 +875,14 @@ creation trace identifies who recreated the paths, and available host
 observability did not provide that attribution; this does not assert that
 every possible tracing technique is unavailable.
 
+For the later `1428dbb0` canonical run `run-3muaddpu`, the immediate
+post-return observer again recorded the lock and workspace absent at
+13:12:16 UTC. At 13:15:07.995 UTC they and their owned phase directories were
+visible with later change times. A scoped read-only process check found no
+matching cwd or command line among processes visible through `/proc`; this
+does not establish an actor or mechanism.
+The observed state was preserved and the actual eight-phase pass is unchanged.
+
 An ordinary filesystem negative control made 207 post-deletion observations,
 including four independent stat executions, through 99.515 seconds; the deleted
 paths remained absent. This control did not reproduce the later visibility and does not prove its cause. The
@@ -834,15 +945,18 @@ provided-assets checks of the revised `cc7c26e` payload. The failed 3.11
 attempts and historical successful 3.12 gate remain distinguished above.
 Authenticated hosted workflow #5 later exercised native Linux, macOS and
 Windows source jobs at `93718d0c`: Linux passed, while the macOS and Windows
-base results failed as recorded in D15/D16. Their corrections require fresh
-native qualification. A mocked platform boundary or skipped conditional test
-is not native acceptance.
+base results failed as recorded in D15/D16. Run #6 at `1428dbb0` then passed
+all three native source jobs and the Linux/macOS package jobs; its Windows
+package changelog failure prevents an all-platform package pass. A mocked
+platform boundary or skipped conditional test is not native acceptance.
 
 The existing [manual release workflow](../../.github/workflows/release.yml)
 declares three Python 3.11 source jobs, one shared Linux candidate build and
 three package jobs consuming the same downloaded candidate. Run #5 did not
 reach that candidate build or expand the package matrix because source
-verification failed. No real hosted release, installed-user update, user hook,
+verification failed. Run #6 built one shared candidate and reached all three
+package jobs, with the Windows failure recorded above. No real hosted release,
+installed-user update, user hook,
 production rollback, client registration or native desktop-client discovery
 was performed. Those operations cannot be inferred from local/SDK fixtures or
 a source-only hosted result. Any new dispatch must identify the reviewed
@@ -874,13 +988,17 @@ Corrupt-archive and aliased-cache controls refused execution, respectively leavi
 no executable and leaving the aliased target unchanged. That control is real Linux cache
 and control-flow evidence without new downloads or native Windows execution.
 Separately, hosted run #5 completed native Windows provisioning for all three
-tools, but stopped in its base suite before MCP. Acceptance still requires the
-named MCP test to execute successfully in a reviewed native Windows run.
+tools, but stopped in its base suite before MCP. Run #6 then passed its native
+Windows source gate and explicitly logged the named real-engine MCP test as
+successful; that source acceptance is distinct from its later failed package
+changelog check.
 
 The earlier signed-out browser limitation was resolved. Authenticated manual
-dispatch actually ran the source jobs recorded above. Its failed result is retained;
-a successful native requalification and the named Windows MCP acceptance are
-still outstanding.
+dispatch actually ran the jobs recorded above. Run #5's source failures and
+run #6's Windows package failure remain preserved. Native source qualification
+and the named Windows MCP acceptance have passed. Complete Windows package
+acceptance remains open; native desktop-client discovery is an unverified
+scope boundary.
 
 A read-only preflight resolved all four exact upstream action commits in the
 workflow and verified each `action.yml` Git blob against its pin. All declare the
@@ -910,8 +1028,10 @@ cannot start: creating an `AF_UNIX` socket raises
 `PermissionError: [Errno 1] Operation not permitted`, before bind. That observed
 host refusal is not native forkserver acceptance. Hosted Linux run #5 provides
 separate source-verified execution evidence for the explicit forkserver oracle,
-with the aggregate-skip inference qualified above. The macOS failed-run log did
-not report enough individual skip information to make the same claim there.
+with the aggregate-skip inference qualified above. The macOS run #5 failed log
+could not establish the same result. Run #6's complete Linux and macOS base
+passes identify every skipped test, exclude this oracle from those skips, and
+supply the same source-verified native forkserver execution evidence.
 
 The version was synchronized with `tools/set_version.py 0.32.0` and uv 0.12.23.
 Review of the regenerated lock confirmed the same dependency package set, versions,
