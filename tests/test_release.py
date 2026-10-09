@@ -261,14 +261,16 @@ class ReleaseFixture(unittest.TestCase):
         self.runner.git("config", "core.hooksPath", str(self.root / ".git/hooks"))
         self.runner.git("config", "commit.gpgSign", "false")
         self.runner.git("config", "tag.gpgSign", "false")
-        # Git's background maintenance writes and removes its own lock after
-        # ordinary commands, which races a fixture that asserts an exact tree. The
-        # product must never turn this off in a user's repository, so the fixture
-        # turns it off in its own.
+        # Git's background maintenance can outlive a push, retain lifetime writers
+        # and change lock files. Disable it in both disposable fixture repositories;
+        # the product must never turn it off in a user's client or server.
         self.runner.git("config", "maintenance.auto", "false")
         self.runner.git("config", "gc.auto", "0")
         server = Path(temporary.name) / "server.git"
         self.runner.git("init", "--bare", "-q", str(server))
+        self.runner.git("-C", str(server), "config", "maintenance.auto", "false")
+        self.runner.git("-C", str(server), "config", "gc.auto", "0")
+        self.runner.git("-C", str(server), "config", "receive.autogc", "false")
         self.runner.git("remote", "add", "origin", str(server))
         self.server = server
         self.notes = "## [1.0.0] (2026-09-02)\n\n### Highlights\n\n- First useful release."
