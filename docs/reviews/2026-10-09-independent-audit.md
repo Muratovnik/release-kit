@@ -47,9 +47,9 @@ corrections, and test or documentation problems: 17 high, 20 medium and one low.
 Together these are 42 review items: three capability expansions, one coverage
 expansion and 38 other issues. Combined baseline/integration rows are labeled
 accordingly. D12 records a false refusal introduced while integrating the expanded
-process-ownership checks. D13 distinguishes original MCP fixtures from source-gate
-and launcher fixtures added during this review; they are not presented as additional
-product vulnerabilities. D15 records a baseline platform assumption exposed by hosted
+process-ownership checks. D13 distinguishes original MCP fixtures from source-gate,
+candidate-smoke and launcher fixtures added during this review; they are not
+presented as additional product vulnerabilities. D15 records a baseline platform assumption exposed by hosted
 macOS execution. D16 groups Windows fixture portability issues and separates
 its original 8.3 test and plugin-smoke padding assumptions from tests added
 during this review. D17 is a separate baseline product defect in the packaged
@@ -125,17 +125,17 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D3 | High | The exact-commit builder missed removed tracked inputs, untracked/ignored importable modules, and tracked links whose ignored targets changed under a clean HEAD. Ignored README/license inputs could also change wheel bytes without changing HEAD or Git status. | Strict checkout builds verify root identity and all inputs consumed by the maintained builders. Unsupported tracked symlink/gitlink modes are rejected before reading inputs. Fixed package inputs and the declared README must belong to the verified commit. Real Git controls verify refusal before output creation and preserve a valid alternate tracked README; Git-free snapshots retain their separate source-binding contract. |
 | D4 | High | A failed version update left some carriers changed; a timed-out resolver worker could overwrite a lock after rollback. | The version transaction preserves original bytes, owns resolver descendants, restores only after confirmed cleanup, and retains an explicit recovery snapshot when cleanup or restoration is uncertain. |
 | D5 | Medium | Successful distribution cleanup did not recognize its own wheel-install fixture directory. | Known phase roots include wheel installation and the new changelog smoke. Unknown roots still prevent deletion. |
-| D6 | Medium; baseline and integration test gates | The original parallel runner could qualify empty or entirely skipped discovery and failed to count unexpected successes as failures. Later subtest controls exposed method-versus-skip counting that could also reject executed cases or misclassify a real MCP failure. | Source and MCP gates record actual successful, expected-failure and successful-subtest callbacks. Entirely skipped suites refuse qualification; real failures and unexpected successes retain failure precedence. Sequential and actual parallel controls cover mixed and entirely skipped cases, and source logs identify each skipped test or subtest with its reason. |
+| D6 | Medium; baseline and integration test gates | The original parallel runner could qualify empty or entirely skipped discovery and failed to count unexpected successes as failures. Later subtest controls exposed method-versus-skip counting that could also reject executed cases or misclassify a real MCP failure. Baseline failure/error serialization also discarded test and subtest identities. | Source and MCP gates record actual successful, expected-failure and successful-subtest callbacks. Entirely skipped suites refuse qualification; real failures and unexpected successes retain failure precedence. Sequential and actual parallel controls cover mixed and entirely skipped cases, and source logs identify each skipped test or subtest with its reason. Failure/error diagnostics also preserve the actual test ID and subtest parameters; counts, verdict priority and ownership behavior are unchanged. |
 | D7 | High; baseline and lifecycle integration | The source-gate launcher could die before relaying a nested cleanup failure. During integration, the coordinator also needed to preserve the scanner's new explicit cleanup refusal. | The source launcher owns its command lifetime, and the coordinator preserves the audit's explicit unconfirmed result. Actual integration controls verify that both release and distribution locks remain held. |
 | D8 | High; baseline and lifecycle integration | The updater could roll back and unlock after a candidate-audit timeout while a worker still ran. Guard refresh also needed to propagate the new scanner cleanup result. | Candidate commands use owned process execution. Unconfirmed cleanup preserves the pending transaction, original backup, workspace and lock instead of starting automatic rollback or suggesting an immediate retry. |
 | D9 | Medium; lifecycle integration | The installed projection launcher and bounded package smoke wrappers closed inherited lifetime descriptors; wheel and secret-fixture cleanup could then run after unresolved descendant cleanup. | The interactive launcher preserves descriptor ownership without changing inherited stdin or Ctrl+C behavior. Bounded smoke commands use the shared runner. Unconfirmed cleanup retains their installation/input fixtures; completed ordinary failures keep normal cleanup. |
 | D10 | High; lifecycle integration | A multiprocessing `spawn` worker lost ancestor lifetime descriptors. A real failed test left a child alive, but the distribution check reported ordinary failure and removed its lock. | Each worker receives a separately transferred, identity-validated writer using multiprocessing's existing descriptor transfer. The parent retains its writer through lazy spawning and pool shutdown, then checks EOF. Actual fork/spawn controls preserve the lock on uncertainty; ordinary timeouts still stop workers and release it. |
 | D11 | Low; development status | The development smoke success message described checked CLI bytes as published even when qualifying an unpublished candidate. | The success status no longer asserts publication. Validation and exit behavior are unchanged; the actual CLI smoke against the qualified candidate and scoped Ruff checks passed for this wording-only correction. |
 | D12 | Medium; lifecycle integration | The MCP executor treated a delayed asynchronous exit notification as evidence that fallback SIGKILL had terminated a live process. A cooperatively exited relay could therefore produce a false `CleanupError`. | POSIX teardown awaits the actual exit notification after signalling the owned group; the PID fallback remains only for a Windows child that may not have joined its job. The accepted exit-status set and production grace are unchanged. A real-child notification-delay regression preserves the distinction between cooperative exit and abnormal cancellation, alongside the existing SIGKILL and surviving-writer controls. |
-| D13 | Medium; baseline and integration test fixtures | Ownership tests started their short operation or cancellation budget before full child PID readiness. A review-added ordinary launcher fixture also imposed a five-second functional-test budget below its supported Git lookup allowance. These fixture assumptions could prevent the intended oracle from running. | Ownership fixtures establish atomic readiness before their operation clock, with bounded startup and a successful-readiness postcondition; their actual timeout, exit-status, late-write and retention assertions remain. Ordinary launcher status/argv/cwd checks share their sibling harness's existing 120-second allowance. Controlled delayed children distinguish the two corrections from product cleanup; original failed-gate startup timing remains unrecorded. |
+| D13 | Medium; baseline and integration test fixtures | Ownership tests, including review-added source-gate and candidate-smoke fixtures, started their short operation or cancellation budget before full child PID readiness. A review-added ordinary launcher fixture also imposed a five-second functional-test budget below its supported Git lookup allowance. These fixture assumptions could prevent the intended oracle from running. | Corrected ownership fixtures establish atomic readiness before their operation clock, with bounded startup and a successful-readiness postcondition; their actual timeout, exit-status, late-write and retention assertions remain. Ordinary launcher status/argv/cwd checks share their sibling harness's existing 120-second allowance. Controlled delayed children distinguish the two corrections from product cleanup; original failed-gate startup timing remains unrecorded. The candidate-smoke follow-up below adds a permanent startup delay longer than its unchanged operation timeout and verifies all three real wrappers. |
 | D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. Controlled Linux cache/refusal checks passed. Native workflow #5 completed provisioning but failed before MCP; run #6 then executed the named acceptance successfully on Windows. |
 | D15 | Medium; baseline platform assumption | A transient POSIX process-group permission result was treated as immediate terminal cleanup failure. Native macOS ordinary timeout controls failed at this boundary; the original baseline already had the same error handling. | Both helpers treat permission denial as present or unconfirmed and retain the existing bounded polling. Only actual ESRCH, together with the existing lifetime and exit-status checks, permits confirmed cleanup. Real-child transient and persistent-denial controls preserve the distinction; hosted run #6 passed the native macOS source controls without weakening cleanup confirmation. |
-| D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. The original plugin smoke also exceeded the loader budget when no short alias was available. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. The review-added package history fixture writes its expected LF bytes explicitly; ordinary plugin startup keeps a long, spaced fixture path within the loader budget without requiring an alias. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. |
+| D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. The original plugin smoke also exceeded the loader budget when no short alias was available. A review-added repeat-cleanup test later assumed that a completed process PID must already be absent. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept a Windows absent-PID result or completion positively confirmed through a signaled process handle. The review-added package history fixture writes its expected LF bytes explicitly; ordinary plugin startup keeps a long, spaced fixture path within the loader budget without requiring an alias. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. Native run #8 exposed the further completed-PID fixture assumption; its focused follow-up is recorded below. |
 | D17 | Medium; baseline product defect | The packaged Windows launcher measured runtime and alias paths with Python character counts instead of UTF-16 code units. Non-BMP names could pass the existing DLL-loader budget while exceeding it in Windows units. | Both loader decisions and the smoke fixture's padding now count UTF-16 units without altering the path. Actual-loader regressions reject the original 291-unit and 297-unit false acceptances, preserve valid aliases and keep the existing threshold and refusal. Focused controls passed on Linux/Python 3.11 and 3.12; native DLL loading and qualification of the changed payload require separate evidence. |
 | D18 | Medium; baseline compatibility and documentation | The plugin used an extended-path cache without checking the upstream wheel installer's physical path budget, and documentation claimed that nested caches could exceed the legacy limit. Native Windows installation failed when a cached script and its parent acquired different prefix forms. | The launcher validates the physical disk-cache budget before runtime initialization, retains the existing owned `.runtime/cache`, and asks for a shorter installation path when needed. DLL alias/UTF-16 checks stay separate; this disk-path check adds no new UNC restriction. Focused controls passed on Linux/Python 3.11 and 3.12; corrected native installation remains pending. |
 
@@ -178,6 +178,246 @@ describes the state at that checkpoint, not a live CI status. Subsequent final
 candidate source and package results are recorded against their actual checked
 bytes in [PR #2](https://github.com/Muratovnik/release-kit/pull/2). The historical
 failures and unresolved filesystem attribution below remain part of this record.
+
+### Hosted source qualification at b10a0708 and D16 follow-up
+
+[Native workflow run #8](https://github.com/Muratovnik/release-kit/actions/runs/37947853201)
+ran once through `workflow_dispatch` for `v0.32.0` at commit
+`b10a0708204da5aa40f3cd7362072e4abf42c1aa`, tree
+`73eb357e4b4321fdaf762dac39ea1d5525672187`. The source jobs recorded:
+
+| Native job | Host and Python | Base suite | Ruff | MCP suite |
+| --- | --- | --- | --- | --- |
+| Ubuntu `113878697115` | Ubuntu 24.04.5 LTS, x86_64, CPython 3.11.17 | Passed: 778 tests, four skips, 35.258 seconds | Lint passed; 109 files already formatted | Passed: 78 tests, three skips, 105.125 seconds; SDK 2.1.1 |
+| macOS `113878697086` | macOS 26.6.2, arm64, CPython 3.11.9 | Passed: 778 tests, four skips, 126.256 seconds | Lint passed; 109 files already formatted | Passed: 78 tests, three skips, 174.153 seconds; SDK 2.1.1 |
+| Windows `113878696709` | Windows Server 2025, AMD64, CPython 3.11.9 | Failed: 778 tests, one error, 20 skips, 624.438 seconds | Not reached | Not reached |
+
+The quiet base runner prints aggregate outcomes and every skipped test, not
+individual passing-test lines. Ubuntu and macOS list the same four Windows-only
+base skips and three Windows/opt-in MCP skips. The explicit forkserver method
+exists in the checked source and is absent from those exhaustive skip lists;
+its execution remains a source-and-aggregate inference. The completed source
+logs print MCP SDK 2.1.1 but no separate AnyIO version. Windows provisioned all
+three pinned engines and enabled the opt-in, but its required real-engine MCP
+acceptance was not reached after the base failure.
+
+Windows failed in the review-added
+[`test_recorded_worker_cleanup_handles_live_and_finished_native_children`](https://github.com/Muratovnik/release-kit/blob/b10a0708204da5aa40f3cd7362072e4abf42c1aa/tests/test_smoke_processes.py#L202-L220).
+The trace identifies the second `stop_recorded_worker` call at line 220.
+The first call had stopped the live child, both `wait` calls had returned and
+the completed-returncode assertion had passed. The test then deleted its
+`Popen` object and assumed that repeating cleanup must encounter an absent PID.
+Instead, `os.kill` reported Windows access-denied error 5. This method and its
+shared test helper were introduced together in review commit `a2027d5`; neither
+file existed in baseline `0b3f05fe`. The issue extends D16's fixture portability
+record, leaving all 42 finding IDs and severity counts unchanged. It is not a
+D17/D18 installer failure or a newly identified shipped-runtime defect.
+
+Microsoft documents that a terminated process object can persist while handles
+remain open, and that [terminating an already completed process](https://learn.microsoft.com/en-us/windows/win32/api/processthreadsapi/nf-processthreadsapi-terminateprocess)
+can report access denied. The failed job did not instrument the underlying
+`OpenProcess` versus `TerminateProcess` branch, or identify a remaining-handle
+owner. Those details remain unknown. The observed prior waits establish that
+this child completed; releasing one Python object does not establish global
+PID absence.
+
+The bounded correction keeps the known completed child's native handle
+through the second call and accepts error 5 only after opening a synchronization
+handle and [observing its signaled state](https://learn.microsoft.com/en-us/windows/win32/api/synchapi/nf-synchapi-waitforsingleobject)
+with a zero-time wait and successful handle closure. Missing status support,
+a live or failed wait, or any open/wait/close error must preserve the original
+refusal. The existing real live-child termination, no-late-write and resolver
+rollback assertions remain required. The actual failing native job is retained
+as the primary before-fix evidence.
+
+Controlled Windows API responses exercised the unchanged public helper entry
+point against ignored old and proposed source copies on Linux/CPython 3.11.17.
+The old helper's one-test run produced an error in the positively confirmed
+finished case: it re-raised error 5 without querying the signaled handle. Five
+additional API-call assertions also failed; those are test diagnostics for the
+same missing probe, not five separate behavioral defects. The run took 0.020
+seconds. Three proposed-helper tests passed with no skips in 0.089 seconds,
+covering signaled acceptance, non-signaled and failed waits, failed open/wait/close
+operations, missing status support, other platform errors and positive-PID
+validation. These are controlled API responses, not native Windows execution;
+the held-Popen regression was not part of this shadow packet. The source and
+refs stayed unchanged. Its receipt is
+`.cache/review-release-lifecycle/windows-finished-worker-1r5mb4t5/shadow-summary.json`,
+SHA-256 `f57124eb0eb50f51112e500f5d4fb0dae1f9e98a88f41703d6df1fbf2d49d48d`.
+After application, the complete affected `test_smoke_processes` and
+`test_version_source` modules passed on Linux/CPython 3.11.17: 31 tests in
+23.413 seconds, with no skips. The actual owned runner returned 0 in 24.204
+seconds without a cleanup exception. The API-status method, real live/finished
+child method, no-late-write smoke and resolver rollback controls have named
+passing results. The real child ran on Linux; this is not Windows handle-API
+execution. Tracked files and refs stayed unchanged during the command; scoped
+Ruff lint, format and diff checks passed. The applied two-file correction and
+results are recorded in
+`.cache/review-release-lifecycle/windows-finished-worker-1r5mb4t5/final-summary.json`,
+SHA-256 `9e9804d95e4e31a2c889a7b02840ac9369f081056d0d7e4525e002bebf61dbae`.
+No shipped runtime changed in this D16 follow-up. The subsequent canonical base
+failed in a separate readiness fixture, described below. The next corrected
+base and native workflow remain pending at this dated checkpoint; their actual
+final-revision outcomes belong to PR #2.
+
+The failed source job blocked shared candidate `113883445984` and the single,
+unexpanded `candidate-smoke` job `113883447267`; both were skipped. The run's
+artifact endpoint returned an empty list. No shared candidate or package stage
+executed in run #8. The source reports state `cleanup=removed` on Ubuntu/macOS
+and `cleanup=retained` on Windows, without separate later hosted filesystem
+observations. These results do not qualify the corrected installed Windows
+plugin, and do not erase the earlier package failures.
+
+The Ubuntu/run summary is retained under
+`.cache/review-changelog/native-linux-37947853201-dosxjckx`, with `summary.json`
+SHA-256 `5c36327f4564edec8167f96d8dc9312f20cc4425e1a1a11355f2e5f38d20dae8`.
+The macOS receipt is
+`.cache/review-release-lifecycle/native-macos-37947853201-lt_tt_my/source-receipt.json`,
+SHA-256 `5ef020fe231de0349cfab1f97710ef778e6eb833cd723395c1aa7343f78e72ff`.
+The Windows failure receipt is
+`.cache/review-publication-safety/windows-native-workflow-37947853201-0zpbcxz7/source-failure-summary.json`,
+SHA-256 `1e132435771c223ccf53df626bd6c0164ebf4450938e733277688975f41d083e`.
+
+### D13 candidate-smoke readiness and D6 failure diagnostics
+
+A subsequent canonical base check on Linux / CPython 3.12.14 used `b10a0708`
+with the three locally frozen D16 helper, regression and report changes. It ran
+779 tests in 265.212 seconds, recorded five named skips and failed one assertion
+in `SmokeProcessTests.test_all_candidate_wrappers_propagate_inner_cleanup_failure`.
+The actual wrapper exited 1 after 270.577 seconds, finishing at
+2026-10-09 15:27:54 UTC. Ruff was not reached. This base-only command did not
+run the MCP or package qualification stages. Source and refs stayed unchanged
+during the failed check.
+
+The assertion at `tests/test_smoke_processes.py:145` found that the worker's
+`ready` marker was absent. The parallel failure log did not retain which of
+the onboarding, CLI or wheel subcases failed, child startup timing, or the
+intermediate caught exception. It therefore does not establish the original
+startup duration, the cause of the absent marker, or a product cleanup failure.
+The three-wrapper method was added in review commit
+[`29da007269636209ebda48b115839940990eab81`](https://github.com/Muratovnik/release-kit/commit/29da007269636209ebda48b115839940990eab81),
+not in the original baseline. Its generated candidate started a one-second inner
+command timeout before establishing worker readiness, and the worker published
+its PID directly into the observed marker. The required live-worker precondition
+was checked only after the candidate invocation. This additional test-precondition
+case belongs to D13; the 42-item count and product finding counts are unchanged.
+
+The correction publishes the PID atomically and uses the existing readiness
+helper around the actual inner command. Startup has its existing ten-second
+assertion bound; the inner operation timeout remains one second. The expected
+inner `CleanupError` is saved inside that context so its successful-readiness
+postcondition must finish before a separate `cleanup-refused` marker is written
+and the same error is re-raised. The parent requires that marker alongside the
+original live-worker, post-return write and error-type assertions. The permanent
+regression delays each worker's startup by two seconds, longer than the operation
+budget, and exercises onboarding, CLI and wheel wrappers. Production deadlines,
+the 0.1-second outer test grace and one-second late-write wait are unchanged.
+
+Four separate one-method controls ran on native Linux / CPython 3.12.14:
+
+| Control | Actual outcome | Seconds |
+| --- | --- | ---: |
+| Exact old fixture with a real two-second startup delay | Failed the original missing-readiness assertion in the controlled onboarding case; one failure, no errors | 1.591 |
+| Corrected permanent delayed-worker regression | Passed all three wrappers, each with readiness, confirmed inner refusal, outer `CleanupError` and a real late write after the trigger | 12.670 |
+| Corrected fixture with only its readiness barrier removed | Failed the missing-readiness assertion even though the refusal marker existed; one failure, no errors | 1.371 |
+| Worker that never publishes readiness | Failed the startup-confirmation marker despite an actual outer `CleanupError`; one failure, no errors | 10.518 |
+
+These controls reproduce and discriminate the missing precondition; they do not
+identify the unrecorded wrapper or timing in the original canonical failure.
+The diagnostic harness subsequently confirmed its captured workers stopped;
+its owned ancestors reported no unconfirmed cleanup, and source and refs stayed
+unchanged. The frozen control receipt is
+`.cache/review-release-lifecycle/smoke-worker-readiness-tui08b8_/control-summary.json`,
+SHA-256 `c5e73b435c9eb4d5f771bc7b74730736ae63b05f4594e8bb5cb8216b411016b2`.
+After application, the complete affected `test_smoke_processes` module passed
+on Linux / CPython 3.11.17: 11 tests in 17.942 seconds, no skips. The owned
+runner exited 0 after 18.334 seconds with no cleanup exception. The original
+successful-command/no-background-write, output, cleanup-retention and real
+live/finished-child checks also have named passing results. Tracked files and
+refs stayed unchanged; scoped Ruff lint, format and diff checks passed.
+The applied receipt is
+`.cache/review-release-lifecycle/smoke-worker-readiness-tui08b8_/final-summary.json`,
+SHA-256 `687c7720e54de4ae8a62ba8986ceaad4790f9d9848ec2db43e6f39ab5d7b24be`.
+These Linux results do not qualify the separate native Windows handle branch.
+
+**D6 diagnostic follow-up.** The original baseline runner already discarded
+unittest's test objects when serializing failures and errors: lines 62–63 of
+`tools/parallel_tests.py` at `0b3f05fe205efeb4151b581df8f4040d14b6d544` kept
+only traceback strings. The correction prefixes the actual `test.id()`, including
+subtest parameters, to each corresponding traceback. Failure/error counts,
+unexpected-success handling, skip/completion verdicts and process ownership
+are unchanged. A permanent regression executes identical-location failures
+and errors through `_execute` and real `--jobs 1` and `--jobs 2` runs. Against
+the old runner its one test produced 12 missing-identity assertion failures
+and no errors; the corrected runner passed it in 0.117 seconds on Linux /
+CPython 3.12.14. After application, the complete affected module passed on
+Linux / CPython 3.11.17: nine tests in 1.672 seconds, no skips, owned-command
+exit 0 after 2.546 seconds. Frozen runner/test bytes and refs stayed unchanged;
+scoped Ruff lint, format and diff checks passed. Its receipt is
+`.cache/review-publication-safety/runner-diagnostic-review-a1d2bazb/final-summary.json`,
+SHA-256 `15de0e66f1000d9967db59d860335fc9131f308952a87c515217a16075554ee2`.
+This repairs future diagnostics; it cannot recover the historical unknown
+wrapper or establish its startup cause.
+
+The failed base attempt remains preserved under
+`.cache/review-root/windows-finished-worker-base-_20yx1fh`, including
+`check.log`, `summary.json` and the identical before/after source and ref
+inventories. Its failure is not replaced by the focused results. The next
+canonical base and corrected native workflow remain pending at this dated
+checkpoint; their actual final-revision outcomes belong to PR #2. The earlier
+full `b10a0708` qualification and seven artifact identities below remain their
+own completed evidence. These test and development-runner corrections do not
+change the shipped payloads.
+
+### Linux full distribution qualification at b10a0708
+
+A separate canonical full check completed on the same clean `b10a0708204da5aa40f3cd7362072e4abf42c1aa`
+source and `73eb357e4b4321fdaf762dac39ea1d5525672187` tree on native
+Linux x86_64 / CPython 3.12.14. It exited 0 after 1,273.579 seconds and passed
+all eight stages: base, MCP, build, CLI smoke, onboarding, wheel installation,
+changelog and plugin stdio. The base suite ran 778 tests in 176.426 seconds
+with five skips; Ruff lint passed and reported 109 files already formatted.
+The MCP suite ran 78 tests in 989.914 seconds with three skips. A separate
+query of that actual SDK environment reported MCP 2.1.1 and AnyIO 4.14.2.
+
+The canonical build is a working-tree test build using `--allow-divergent`.
+Its seven artifact hashes matched the separately held strict build, whose
+recorded local commit `be486101914a4d006fe385fbe139935fa1042258` has the same
+source tree as published `b10a0708`. Both strict-input inventories, before and
+after the full check, matched the actual gate hashes. The local strict files
+have the following measured sizes and SHA-256 identities:
+
+| Artifact | Local bytes | SHA-256 |
+| --- | ---: | --- |
+| `release-kit-plugin.zip` | 426931 | `ecdc4ffc2800cb35628b742a0e507a4b2694cede6c20aa36c07d22df3a075745` |
+| `release-kit-plugin.zip.sha256` | 89 | `42d8c9ff70b066d7f80569e59ca7d49e15d2244e2bb3ee8b9311d490d1dbaeb6` |
+| `release.json` | 669 | `66361e36ac65f89dd67aba79189180d3c30c8e0754fdad54ecb5bc515376fe47` |
+| `release_kit-0.32.0-py3-none-any.whl` | 170135 | `5d59395d503b691966e36a74e23b88feb5e70f4b53fd7195c3831ee8ec8b775e` |
+| `release_kit-0.32.0-py3-none-any.whl.sha256` | 102 | `c16739d5f6a6bc3c3057b80e7087801d14abd9710a1ea12e0234ae23d99cfa4c` |
+| `relkit.pyz` | 144961 | `928d6c7546a372277ad95abafd964addff36c467e7195ddc5996559a064b8f82` |
+| `relkit.pyz.sha256` | 77 | `e2a216c6efafb9e5bb718abd33e1161b2a877dac9beeb3df7b4de37188b60ec9` |
+
+Tracked source, refs and the strict files remained unchanged during the check.
+The report recorded `cleanup=removed`, and the driver immediately observed
+both the owned workspace and lock absent at 15:17:47 UTC. A read-only check
+at 15:20:09 UTC found both paths visible again. The workspace inode changed
+from 1505585 to 1579613 and the lock inode from 1505584 to 1510012 on device
+27; their modification times were preserved and their change times were later.
+The original identities had been captured during this same run at 15:01:50 UTC.
+These observations establish changed identities after recorded absence, without
+identifying an actor or mechanism. No observed path was cleaned or modified.
+The records `visibility-during.json` and `later-visibility-observation.json`
+are preserved beside the full-run summary. The qualification pass stands as
+recorded; lasting cleanup and creation attribution remain unresolved. The full record is
+`.cache/review-root/post-review-final-bt4qfous/summary.json`, with canonical
+report `run-34nbqp6h.json`, SHA-256
+`95a02f07949740e339d056c52f89a51c062e025eb5c68a0ba887833225ab727a`.
+
+This qualifies the listed bytes on Linux/Python 3.12.14, including their actual
+packaged stdio execution. It does not qualify Windows installation, undo native
+run #8's failure, or cover the subsequent D16 test-helper correction. The next
+source and native results will be recorded against their actual revision in
+PR #2; no future result is assumed here.
 
 ### Windows runtime path units and qualification boundary (D17)
 
@@ -1128,6 +1368,9 @@ visible with later change times. A scoped read-only process check found no
 matching cwd or command line among processes visible through `/proc`; this
 does not establish an actor or mechanism.
 The observed state was preserved and the actual eight-phase pass is unchanged.
+The later `b10a0708` checkpoint above adds original in-progress inode records,
+immediate absence and subsequently visible different identities for that run;
+the responsible actor and mechanism remain unknown.
 
 An ordinary filesystem negative control made 207 post-deletion observations,
 including four independent stat executions, through 99.515 seconds; the deleted

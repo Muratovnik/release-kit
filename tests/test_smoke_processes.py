@@ -13,7 +13,7 @@ import unittest
 import zipfile
 from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import process_fixtures
 from process_fixtures import stop_recorded_worker
@@ -40,11 +40,14 @@ class SmokeProcessTests(unittest.TestCase):
             archive.writestr("__main__.py", source)
         return path
 
-    def worker(self, case):
+    def worker(self, case, *, startup_delay=0):
         ready, trigger, late = (case / name for name in ("ready", "trigger", "late"))
         source = (
             "import os,time\nfrom pathlib import Path\n"
-            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            f"time.sleep({startup_delay!r})\n"
+            f"pending=Path({str(ready.with_suffix('.tmp'))!r})\n"
+            "pending.write_text(str(os.getpid()))\n"
+            f"pending.replace({str(ready)!r})\n"
             "deadline=time.monotonic()+15\n"
             f"while not Path({str(trigger)!r}).exists() and time.monotonic()<deadline:\n"
             " time.sleep(0.01)\n"
@@ -118,17 +121,29 @@ class SmokeProcessTests(unittest.TestCase):
             with self.subTest(wrapper=wrapper):
                 case = self.root / wrapper
                 case.mkdir()
-                command, ready, trigger, late = self.worker(case)
+                command, ready, trigger, late = self.worker(case, startup_delay=2)
+                refused = case / "cleanup-refused"
                 path = case / (".github/relkit.pyz" if wrapper == "onboarding" else "relkit.pyz")
+                # Check startup before propagating the real inner refusal. Its
+                # marker prevents a cleanup error from concealing failed readiness.
                 self.candidate(
                     path,
-                    "import subprocess,sys\n"
-                    f"sys.path.insert(0,{str(ROOT / 'src')!r})\n"
+                    "import subprocess,sys\nfrom pathlib import Path\n"
+                    f"sys.path[:0]=[{str(ROOT / 'src')!r},{str(ROOT / 'tests')!r}]\n"
                     "from releasekit import processes\n"
+                    "from test_owned_processes import timeout_after_ready\n"
                     "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
                     "processes._group=denied\n"
-                    f"processes.run({command!r},timeout=1,"
-                    "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n",
+                    "failure=None\n"
+                    f"with timeout_after_ready(Path({str(ready)!r})):\n"
+                    " try:\n"
+                    f"  processes.run({command!r},timeout=1,"
+                    "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+                    " except processes.CleanupError as error:\n"
+                    "  failure=error\n"
+                    "if failure is None: raise AssertionError('expected inner cleanup refusal')\n"
+                    f"Path({str(refused)!r}).touch()\n"
+                    "raise failure\n",
                 )
                 observed = None
                 try:
@@ -142,6 +157,10 @@ class SmokeProcessTests(unittest.TestCase):
                                 smoke_wheel._run([sys.executable, str(path)], self.environment)
                         except RuntimeError as error:
                             observed = error
+                    self.assertTrue(
+                        refused.is_file(),
+                        "inner cleanup refusal must follow established worker startup",
+                    )
                     self.assertTrue(ready.is_file(), "the cleanup fault must concern a live worker")
                     trigger.touch()
                     deadline = time.monotonic() + 1
@@ -176,6 +195,7 @@ class SmokeProcessTests(unittest.TestCase):
                 with (
                     patch.object(process_fixtures, "os", boundary),
                     patch.object(boundary, "kill", side_effect=error) as kill,
+                    patch.dict(sys.modules, {"_winapi": None}),
                 ):
                     if accepted:
                         stop_recorded_worker(ready)
@@ -186,6 +206,51 @@ class SmokeProcessTests(unittest.TestCase):
                     kill.assert_called_once_with(123, signal.SIGTERM)
         with patch.object(process_fixtures.os, "kill", side_effect=ProcessLookupError):
             stop_recorded_worker(ready)
+
+    def test_recorded_worker_access_denial_requires_a_signaled_windows_handle(self):
+        ready = self.root / "recorded-pid"
+        ready.write_text("123")
+        for status, failed_call, accepted in (
+            (0, None, True),
+            (258, None, False),
+            (0xFFFFFFFF, None, False),
+            (0, "OpenProcess", False),
+            (0, "WaitForSingleObject", False),
+            (0, "CloseHandle", False),
+        ):
+            with self.subTest(status=status, failed_call=failed_call):
+                error = PermissionError("controlled termination access denial")
+                error.winerror = 5
+                boundary = SimpleNamespace(name="nt", kill=Mock(side_effect=error))
+                handle = 456
+                native = SimpleNamespace(
+                    OpenProcess=Mock(return_value=handle),
+                    WaitForSingleObject=Mock(return_value=status),
+                    CloseHandle=Mock(),
+                    WAIT_OBJECT_0=0,
+                )
+                if failed_call:
+                    failure = PermissionError("controlled native status query failure")
+                    failure.winerror = 5
+                    getattr(native, failed_call).side_effect = failure
+                with (
+                    patch.object(process_fixtures, "os", boundary),
+                    patch.dict(sys.modules, {"_winapi": native}),
+                ):
+                    if accepted:
+                        stop_recorded_worker(ready)
+                    else:
+                        with self.assertRaises(OSError) as seen:
+                            stop_recorded_worker(ready)
+                        self.assertIs(error, seen.exception)
+                boundary.kill.assert_called_once_with(123, signal.SIGTERM)
+                native.OpenProcess.assert_called_once_with(0x00100000, False, 123)
+                if failed_call == "OpenProcess":
+                    native.WaitForSingleObject.assert_not_called()
+                    native.CloseHandle.assert_not_called()
+                else:
+                    native.WaitForSingleObject.assert_called_once_with(handle, 0)
+                    native.CloseHandle.assert_called_once_with(handle)
 
     def test_recorded_worker_cleanup_requires_a_positive_pid(self):
         ready = self.root / "recorded-pid"
@@ -211,13 +276,13 @@ class SmokeProcessTests(unittest.TestCase):
             stop_recorded_worker(ready)
             child.wait(timeout=5)
             self.assertIsNotNone(child.returncode)
+            # Keep our Windows handle open: the finished object still has this PID,
+            # and a second termination may deny access even though a wait confirms it.
+            stop_recorded_worker(ready)
         finally:
             if child.poll() is None:
                 child.kill()
             child.wait(timeout=5)
-        # Release Windows' process handle before checking the now absent PID.
-        del child
-        stop_recorded_worker(ready)
 
     def test_wheel_cleanup_retains_unknown_workers_but_uninstalls_after_completed_failure(self):
         for unconfirmed in (False, True):

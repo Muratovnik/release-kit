@@ -173,6 +173,63 @@ class ParallelRunnerTests(unittest.TestCase):
                 )
                 self.assertNotIn("(feature='available')", output.getvalue())
 
+    def test_failed_subtest_identity_survives_execution_and_both_runner_modes(self):
+        with tempfile.TemporaryDirectory(prefix="runner failure context ") as temporary:
+            folder = Path(temporary)
+            (folder / "test_failure_context.py").write_text(
+                "import unittest\n"
+                "class ContextTests(unittest.TestCase):\n"
+                "    def test_failures(self):\n"
+                "        for wrapper in ('onboarding', 'wheel'):\n"
+                "            with self.subTest(wrapper=wrapper):\n"
+                "                self.fail('same failure at the same source line')\n"
+                "    def test_errors(self):\n"
+                "        for wrapper in ('onboarding', 'wheel'):\n"
+                "            with self.subTest(wrapper=wrapper):\n"
+                "                raise RuntimeError('same error at the same source line')\n"
+                "    @unittest.expectedFailure\n"
+                "    def test_unexpected(self): pass\n",
+                encoding="utf-8",
+            )
+            paths = (*parallel_tests.IMPORT_PATHS, str(folder))
+            prefixes = []
+            for method, label, failure_count, error_count in (
+                ("test_failures", "FAIL", 2, 0),
+                ("test_errors", "ERROR", 0, 2),
+            ):
+                identifier = f"test_failure_context.ContextTests.{method}"
+                outcome = parallel_tests._execute((identifier, paths))
+                self.assertEqual(identifier, outcome[0])
+                self.assertEqual(failure_count, len(outcome[2]))
+                self.assertEqual(error_count, len(outcome[3]))
+                self.assertEqual([], outcome[4])
+                self.assertFalse(outcome[5])
+                for wrapper, report in zip(("onboarding", "wheel"), outcome[2] + outcome[3]):
+                    prefix = f"{label}: {identifier} (wrapper={wrapper!r})"
+                    prefixes.append(prefix)
+                    with self.subTest(method=method, wrapper=wrapper, boundary="execute"):
+                        self.assertTrue(report.startswith(prefix + "\nTraceback"), report)
+            unexpected = "test_failure_context.ContextTests.test_unexpected"
+            outcome = parallel_tests._execute((unexpected, paths))
+            self.assertEqual([f"unexpected success: {unexpected}"], outcome[2])
+            self.assertEqual([], outcome[3])
+            self.assertEqual([], outcome[4])
+            self.assertFalse(outcome[5])
+            for jobs in (1, 2):
+                output = io.StringIO()
+                with self.subTest(jobs=jobs), contextlib.redirect_stdout(output):
+                    self.assertEqual(
+                        1,
+                        parallel_tests.main(["--jobs", str(jobs), "--start-dir", str(folder)]),
+                    )
+                text = output.getvalue()
+                self.assertIn("Ran 3 tests in ", text)
+                self.assertIn("FAILED (failures=3, errors=2)", text)
+                self.assertIn(f"unexpected success: {unexpected}", text)
+                for prefix in prefixes:
+                    with self.subTest(jobs=jobs, diagnostic=prefix):
+                        self.assertIn(prefix + "\nTraceback", text)
+
     def test_discovery_matches_stdlib_unittest(self):
         start = ROOT / "tests"
         paths = (*parallel_tests.IMPORT_PATHS, str(start))

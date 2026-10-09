@@ -139,9 +139,9 @@ def _execute(work: tuple[str, tuple[str, ...]]) -> tuple[str, float, list, list,
     return (
         identifier,
         time.monotonic() - started,
-        [text for _, text in result.failures]
+        [f"FAIL: {test.id()}\n{text}" for test, text in result.failures]
         + [f"unexpected success: {test.id()}" for test in result.unexpectedSuccesses],
-        [text for _, text in result.errors],
+        [f"ERROR: {test.id()}\n{text}" for test, text in result.errors],
         [(test.id(), reason) for test, reason in result.skipped],
         result.completed,
     )
