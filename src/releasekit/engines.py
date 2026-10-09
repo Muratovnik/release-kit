@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -21,6 +22,7 @@ from .exposure.audit import _skip_worktree_paths, scannable_paths, worktree_path
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd", ".mdx"})
 BETTERLEAKS_FINDINGS_EXIT = 10
 LYCHEE_FINDINGS_EXIT = 2
+LYCHEE_ARGUMENT_BYTES = 16 * 1024
 ENGINE_TIMEOUT_SECONDS = 600
 HISTORY_LOG_OPTS = (
     "HEAD --branches --remotes --tags "
@@ -34,14 +36,18 @@ def _run(
     *,
     root: Path,
     environment: dict[str, str] | None = None,
+    deadline: float | None = None,
 ) -> int:
+    timeout = ENGINE_TIMEOUT_SECONDS if deadline is None else deadline - time.monotonic()
+    if timeout <= 0:
+        raise RuntimeError("publication engine timed out")
     try:
         result = processes.run(
             list(command),
             cwd=root,
             check=False,
             env=environment,
-            timeout=ENGINE_TIMEOUT_SECONDS,
+            timeout=timeout,
             stdout=sys.stdout,
             stderr=sys.stderr,
         )
@@ -57,8 +63,10 @@ def _run_owned(
     root: Path,
     findings_exit: int,
     environment: dict[str, str] | None = None,
+    runtime_name: str = "runtime",
+    deadline: float | None = None,
 ) -> int:
-    runtime = storage.inside(workspace.path, workspace.path / "runtime")
+    runtime = storage.inside(workspace.path, workspace.path / runtime_name)
     runtime.mkdir()
     workspace.remember(runtime)
     workspace.scratch(runtime)
@@ -66,7 +74,7 @@ def _run_owned(
         **(os.environ if environment is None else environment),
         **storage.confinement(runtime),
     }
-    code = _run(command, root=root, environment=environment)
+    code = _run(command, root=root, environment=environment, deadline=deadline)
     if code not in (0, findings_exit):
         workspace.retain_scratch()
     return code
@@ -277,6 +285,29 @@ def _markdown_paths(
     )
 
 
+def _lychee_inputs(paths: Sequence[str]) -> tuple[list[str], list[list[str]]]:
+    """Preserve literal paths through Lychee's line and glob input grammar."""
+    file_inputs: list[str] = []
+    argument_batches: list[list[str]] = [[]]
+    used = 0
+    for path in paths:
+        # Prefixing also prevents comment, whitespace, URL and option parsing.
+        # Lychee treats glob characters as patterns even when the file exists.
+        literal = "./" + "".join(f"[{char}]" if char in "*?[]" else char for char in path)
+        if "\n" not in path and "\r" not in path:
+            file_inputs.append(literal)
+            continue
+        # Only line-breaking names need argv. Keep the ordinary file list scalable
+        # and leave room for argument pointers/quoting within each small batch.
+        size = len(os.fsencode(literal)) + 64
+        if argument_batches[-1] and used + size > LYCHEE_ARGUMENT_BYTES:
+            argument_batches.append([])
+            used = 0
+        argument_batches[-1].append(literal)
+        used += size
+    return file_inputs, argument_batches
+
+
 def lychee(
     root: Path,
     *,
@@ -304,22 +335,36 @@ def lychee(
                 include_candidates=include_candidates,
             )
         workspace.remember(snapshot)
+        file_inputs, argument_batches = _lychee_inputs(paths)
         inputs = storage.inside(workspace.path, workspace.path / "markdown-inputs.txt")
         with inputs.open("x", encoding="utf-8") as stream:
-            stream.write("\n".join(paths) + "\n")
+            stream.write("\n".join(file_inputs) + "\n")
         workspace.remember(inputs)
-        command = [
+        base_command = [
             str(executable),
             "--offline",
             "--no-progress",
             "--mode",
             "plain",
-            "--files-from",
-            str(inputs),
         ]
-        return _run_owned(
-            workspace,
-            command,
-            root=snapshot,
-            findings_exit=LYCHEE_FINDINGS_EXIT,
-        )
+        deadline = time.monotonic() + ENGINE_TIMEOUT_SECONDS
+        verdict = 0
+        for index, arguments in enumerate(argument_batches):
+            command = base_command.copy()
+            if index == 0 and file_inputs:
+                command += ["--files-from", str(inputs)]
+            if arguments:
+                command += ["--", *arguments]
+            code = _run_owned(
+                workspace,
+                command,
+                root=snapshot,
+                findings_exit=LYCHEE_FINDINGS_EXIT,
+                runtime_name="runtime" if index == 0 else f"runtime-{index}",
+                deadline=deadline,
+            )
+            if code not in (0, LYCHEE_FINDINGS_EXIT):
+                return code
+            if code == LYCHEE_FINDINGS_EXIT:
+                verdict = code
+        return verdict

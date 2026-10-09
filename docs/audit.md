@@ -134,6 +134,11 @@ relative policy files must be indexed. Unstaged policy edits are not part of tha
 verdict. Betterleaks scans staged changes; policy and Markdown inspect the index.
 Scanner snapshots read raw Git blobs, preserving link text and indexed line
 endings without running checkout filters such as Git LFS smudge commands.
+The link checker preserves exact Markdown filenames, including Unicode, spaces,
+leading `#`, literal glob characters and, where the filesystem permits them, line
+breaks. Relative links keep their original parent directory. Ordinary names use an
+owned input list; names with line breaks use bounded argument batches sharing one
+600-second engine deadline. An operational error in any batch refuses the audit.
 Scanner caches and temporary files occupy a separate owned directory. Completed
 scans remove that scratch; operational failures preserve available diagnostic files.
 Timeouts stop owned engine descendants. If their cleanup cannot be confirmed,

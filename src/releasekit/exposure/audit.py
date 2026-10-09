@@ -807,10 +807,20 @@ def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str
     arguments = ["ls-files", "-z", "--cached"]
     if include_candidates:
         arguments += ["--others", "--exclude-standard"]
-    result = _git(root, arguments)
+    # NUL delimiters do not disable text-mode universal-newline conversion.
+    # Preserve every path byte before decoding, including literal CR and CRLF.
+    result = _git_bytes(root, arguments)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files failed")
-    return tuple(sorted(item for item in result.stdout.split("\0") if item))
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip() or "git ls-files failed"
+        )
+    return tuple(
+        sorted(
+            item.decode("utf-8", errors="surrogateescape")
+            for item in result.stdout.split(b"\0")
+            if item
+        )
+    )
 
 
 def worktree_paths(root: Path, *, include_candidates: bool = True) -> tuple[str, ...]:
@@ -854,10 +864,16 @@ def worktree_changes(root: Path) -> tuple[str, ...]:
     means a scanned file is not the committed one; an untracked entry only adds a
     file that no commit contains, which the worktree pass scans anyway.
     """
-    result = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    result = _git_bytes(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git status failed")
-    return tuple(item for item in result.stdout.split("\0") if item)
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip() or "git status failed"
+        )
+    return tuple(
+        item.decode("utf-8", errors="surrogateescape")
+        for item in result.stdout.split(b"\0")
+        if item
+    )
 
 
 def unignored(root: Path, required: Sequence[str]) -> list[str]:
@@ -939,25 +955,33 @@ def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> b
 
 
 def _tracked_modes(root: Path) -> dict[str, str]:
-    result = _git(root, ["ls-files", "-s", "-z"])
+    result = _git_bytes(root, ["ls-files", "-s", "-z"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files mode inventory failed")
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip()
+            or "git ls-files mode inventory failed"
+        )
     modes: dict[str, str] = {}
-    for record in result.stdout.split("\0"):
-        metadata, separator, relative = record.partition("\t")
+    for record in result.stdout.split(b"\0"):
+        metadata, separator, relative = record.partition(b"\t")
         if separator:
-            modes[relative] = metadata.split(maxsplit=1)[0]
+            modes[relative.decode("utf-8", errors="surrogateescape")] = metadata.split(maxsplit=1)[
+                0
+            ].decode("ascii")
     return modes
 
 
 def _skip_worktree_paths(root: Path) -> set[str]:
-    result = _git(root, ["ls-files", "-t", "-z"])
+    result = _git_bytes(root, ["ls-files", "-t", "-z"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files sparse inventory failed")
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip()
+            or "git ls-files sparse inventory failed"
+        )
     return {
-        record[2:]
-        for record in result.stdout.split("\0")
-        if len(record) >= 3 and record.startswith("S ")
+        record[2:].decode("utf-8", errors="surrogateescape")
+        for record in result.stdout.split(b"\0")
+        if len(record) >= 3 and record.startswith(b"S ")
     }
 
 
@@ -1262,10 +1286,7 @@ def scan(
     if candidates is None:
         inventory = scannable_paths if staged else worktree_paths
         candidates = inventory(root, include_candidates=include_candidates)
-    tracked_result = _git(root, ["ls-files", "-z", "--cached"])
-    if tracked_result.returncode != 0:
-        raise RuntimeError(tracked_result.stderr.strip() or "git ls-files failed")
-    tracked = {item for item in tracked_result.stdout.split("\0") if item}
+    tracked = set(scannable_paths(root, include_candidates=False))
     tracked_modes = _tracked_modes(root)
     skip_worktree = _skip_worktree_paths(root)
     for relative in candidates:

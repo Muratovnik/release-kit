@@ -131,6 +131,32 @@ class ArchivePngTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    @unittest.skipIf(os.name == "nt", "Windows filenames cannot contain carriage returns")
+    def test_carriage_returns_do_not_alias_line_feeds_in_git_inventories(self):
+        private, clean = "carriage\rreturn.md", "carriage\nreturn.md"
+        with _repository({private: "SyntheticOwnerWorkflow\n", clean: "public content\n"}) as name:
+            root = Path(name)
+            for staged in (False, True):
+                with self.subTest(staged=staged):
+                    report = audit.scan(
+                        root, staged=staged, owner_workflows=("SyntheticOwnerWorkflow",)
+                    )
+                    self.assertEqual(
+                        [(private, rules.OWNER_WORKFLOW)],
+                        [(finding.path, finding.kind) for finding in report.new],
+                    )
+            self.assertEqual({private, clean}, set(audit.scannable_paths(root)))
+            self.assertEqual({private, clean}, set(audit._tracked_modes(root)))
+            self.assertEqual({"A  " + private, "A  " + clean}, set(audit.worktree_changes(root)))
+            subprocess.run(
+                ["git", "update-index", "--skip-worktree", "--", private], cwd=root, check=True
+            )
+            (root / private).unlink()
+            self.assertEqual({private}, audit._skip_worktree_paths(root))
+            self.assertEqual({private, clean}, set(audit.worktree_paths(root)))
+            report = audit.scan(root, owner_workflows=("SyntheticOwnerWorkflow",))
+            self.assertEqual([private], [finding.path for finding in report.new])
+
     def test_a_directory_reparse_point_refuses_worktree_traversal(self):
         with _repository({"docs/example.md": "public content\n"}) as name:
             root = Path(name)
