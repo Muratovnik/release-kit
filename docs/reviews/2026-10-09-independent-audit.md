@@ -32,7 +32,7 @@ identity and precedence are not interchangeable with Python version normalizatio
 | Reproducible packaging and version updates | Reject inputs that differ from the declared commit; restore or retain a failed version transaction | Implemented with real Git inputs and resolver-worker controls |
 | Verification and delivery | Reject empty/invalid test verdicts; qualify exact artifacts; preserve an explicit platform evidence boundary | Integrated into the existing source and distribution gates |
 
-## Findings corrected
+## Findings and corrections
 
 Severity describes the consequence of the original behavior: **high** includes
 publication/privacy bypass, unintended execution or deletion, source overwrite,
@@ -41,7 +41,9 @@ selection, false qualification, broken recovery inspection, and unusable output;
 **low** includes presentation ambiguity. R1–R3 are requested capability expansions
 beyond the baseline contract. Other rows identify baseline defects or explicitly
 label corrections needed while integrating the expanded lifecycle. The report
-records 34 findings and capability changes.
+records 37 findings and capability changes. D12 records a false refusal introduced
+while integrating the expanded process-ownership checks, rather than a defect
+attributed to the original baseline.
 
 ### Release identities and changelog
 
@@ -57,6 +59,7 @@ records 34 findings and capability changes.
 | R8 | Medium | Packaged notes documentation linked to a changelog starter that was absent from the plugin archive. | Both starter files are packaged and included in the inventory; the real ZIP test resolves the documentation's relative link. |
 | R9 | Medium | Recovery status could not read its own retained-process-cleanup state; a case variant of the reserved candidate receipt name could collide on case-insensitive filesystems. | Receipt validation accepts the documented retained state, and candidate asset checks reserve the receipt name case-insensitively. |
 | R10 | Medium; documentation | The Node/Angular example implied that stock generator output was a stdout draft compatible with the bounded changelog profile, without establishing either output or layout compatibility. | The [Node generator documentation](../notes.md#generators) now declares a project-owned script with exact argv, requires the script or project metadata to select the version and range, and explains the stdout option and stock Angular heading/section differences. The writer must satisfy the selected profile; no version or range is injected into a custom command. This correction was checked against source and documentation only. No Node execution is claimed. |
+| R11 | Medium | Failed changelog generation exposed only the final output line, discarding an actionable cause when a generic backtrace hint followed it. | The displayed diagnostic retains at most 4096 Unicode characters of normalized stderr, falling back to stdout when stderr has no text. Longer diagnostics preserve their head and tail with an explicit omission marker. Real failing-command and CLI controls retain the cause, final hint and native exit status; network, success-output and cleanup behavior are unchanged. |
 
 Implementation: [SemVer](../../src/releasekit/semver.py),
 [release selection](../../src/releasekit/release/versions.py),
@@ -115,6 +118,8 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D9 | Medium; lifecycle integration | The installed projection launcher and bounded package smoke wrappers closed inherited lifetime descriptors; wheel and secret-fixture cleanup could then run after unresolved descendant cleanup. | The interactive launcher preserves descriptor ownership without changing inherited stdin or Ctrl+C behavior. Bounded smoke commands use the shared runner. Unconfirmed cleanup retains their installation/input fixtures; completed ordinary failures keep normal cleanup. |
 | D10 | High; lifecycle integration | A multiprocessing `spawn` worker lost ancestor lifetime descriptors. A real failed test left a child alive, but the distribution check reported ordinary failure and removed its lock. | Each worker receives a separately transferred, identity-validated writer using multiprocessing's existing descriptor transfer. The parent retains its writer through lazy spawning and pool shutdown, then checks EOF. Actual fork/spawn controls preserve the lock on uncertainty; ordinary timeouts still stop workers and release it. |
 | D11 | Low; development status | The development smoke success message described checked CLI bytes as published even when qualifying an unpublished candidate. | The success status no longer asserts publication. Validation and exit behavior are unchanged; the actual CLI smoke against the qualified candidate and scoped Ruff checks passed for this wording-only correction. |
+| D12 | Medium; lifecycle integration | The MCP executor treated a delayed asynchronous exit notification as evidence that fallback SIGKILL had terminated a live process. A cooperatively exited relay could therefore produce a false `CleanupError`. | POSIX teardown awaits the actual exit notification after signalling the owned group; the PID fallback remains only for a Windows child that may not have joined its job. The accepted exit-status set and production grace are unchanged. A real-child notification-delay regression preserves the distinction between cooperative exit and abnormal cancellation, alongside the existing SIGKILL and surviving-writer controls. |
+| D13 | Medium; development test fixtures | Ownership tests could expire their short operation or cancellation budget before the real child wrote its PID receipt. The missing receipt then failed the test before its ownership oracle could run. | The affected sleeper, nested-runner and stdio-request fixtures establish complete PID readiness before the tested timeout or cancellation. Readiness has its own bounded assertion, PID receipts are published atomically, and the existing 0.7-second/two-second operation limits and post-return ownership checks remain in force. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
@@ -149,9 +154,9 @@ bypasses; they do not identify a missing payload in the original maintained layo
 
 ## Validation record
 
-### Candidate identity and qualification status
+### Earlier candidate identity and qualification status
 
-The qualified clean remote 0.32.0 candidate is source commit
+The earlier qualified clean remote 0.32.0 candidate is source commit
 `1c139f6e4c3f77592984c75ef8668da6ebc1fcd9`, with Git tree
 `0e385a9b6d8eb83cff48e79dbe724d0f1e012dd5`. The complete canonical
 `working-tree-distribution-check`, report `run-k_cqlusk`, passed all eight phases
@@ -175,18 +180,26 @@ around identity capture and cleanup; those wrappers called the original operatio
 and did not replace any check or command. Its cleanup observations are recorded
 below.
 
-The final report and a one-line development smoke success-message correction are
-subsequent changes to this qualified candidate. The actual CLI smoke against the
-qualified assets, with version `0.32.0` and the source checkout, passed with exit
-code 0 after that wording correction; scoped Ruff check and format checks also
-passed. The eight-phase qualification remains bound to `1c139f6e4c3f77592984c75ef8668da6ebc1fcd9`,
-not to the later report/status revision. A strict rebuild and artifact identity
-comparison for that later revision have not yet been recorded here; their actual
-result belongs in the final delivery record.
+A subsequent report/status revision, clean source commit
+`30dccaeefa8499f6e0885c2356e49337120739a3`, Git tree
+`9fd6e1430228d66adc86fdc70a4cf753f31cfef4`, included the report and a one-line
+development smoke success-message correction. The actual CLI smoke against the
+qualified assets passed with exit code 0 after that wording change; scoped Ruff
+check and format checks also passed. A strict rebuild at that revision completed
+with exit code 0 and all seven artifact hashes matched the earlier qualified set
+below. Actual packaged publication audits at the same revision are recorded later
+in this section.
+
+The original eight-phase qualification remains bound to
+`1c139f6e4c3f77592984c75ef8668da6ebc1fcd9`; the strict rebuild and publication
+audits establish their separate `30dccaeefa8499f6e0885c2356e49337120739a3`
+boundary. Both revisions precede the D12, D13 and R11 corrections and cannot stand
+in for full qualification of those later changes.
 
 ### Qualified artifact identities
 
-These SHA-256 values identify the strict-built and package-qualified candidate.
+These SHA-256 values identify the earlier strict-built and package-qualified
+`1c139f6e4c3f77592984c75ef8668da6ebc1fcd9` candidate.
 The retained seven-file set matches both actual distribution-check inventories,
 and every file was unchanged after package execution.
 
@@ -199,6 +212,138 @@ and every file was unchanged after package execution.
 | `release_kit-0.32.0-py3-none-any.whl.sha256` | `6eda9bccb2abf0e70648809ce0299ded846bcecbba1ed4044706438e1f3ac982` |
 | `relkit.pyz` | `5b3554a7fb7af19b15ea001f9e3175a1f211d698f5ffd328ba8b32c075225bb2` |
 | `relkit.pyz.sha256` | `ea6549605fa04e02461ea919d884a5a7b91df62b8b57920319df9672cdca198a` |
+
+### Python 3.11 qualification failure, D12 and fixture correction D13
+
+Python 3.11 was initially absent, but normal project-owned provisioning succeeded:
+uv 0.12.23 installed native CPython 3.11.17 for Linux x86_64. No global interpreter
+installation, credential change or permission override was needed. The provisioned
+interpreter then ran the canonical check against clean source commit
+`30dccaeefa8499f6e0885c2356e49337120739a3`, version 0.32.0.
+
+Report `run-fac4se0h` records a failed qualification. The base suite passed,
+running 755 tests including four explicit skips in 67.903 seconds; Ruff check and
+format checks also passed. The MCP suite ran 75 tests in 703.607 seconds, with
+three skips and one error in the cancellation branch of
+`test_timeout_and_cancellation_stop_deeply_nested_releasekit_commands`. The build
+and five package phases were not reached. This is actual native Python 3.11
+execution and a failed acceptance result, not an unavailable interpreter or a
+successful full check.
+
+A narrow replay of that exact test recorded four false cleanup refusals across
+12 stops. In the decisive ready-child cancellation record, the owned group was
+already absent, the lifetime pipe reached EOF and the eventual native exit status
+was `-SIGINT` (`-2`). The asynchronous process object's `returncode` remained
+`None` briefly. Its fallback `kill()` returned without raising, and the executor
+marked termination as forced even though the subsequent wait returned the
+cooperative status. That callback-ordering observation identifies D12; startup
+speed does not explain the ready-child case.
+
+Independent native synchronous controls on the same Python 3.11 interpreter
+confirmed the expected distinction. A plain termination handler exited as `-2`,
+a developer-style `SystemExit(130)` remained accepted, and three real nested
+runners completed with descendant statuses `-15`, `-2` and `-2`, with EOF at every
+owned boundary. Separate actual exit-1 and ignored-SIGTERM/real-SIGKILL controls
+both retained `CleanupError`. These five controls do not qualify the asynchronous
+adapter or justify widening its accepted statuses.
+
+The corrected POSIX path awaits the process's exit notification after its group
+has disappeared, within the existing five-second cleanup bound. A PID fallback
+remains for an unassigned Windows child. The production grace and accepted
+exit-status set are unchanged; actual forced termination, abnormal cancellation
+and surviving lifetime writers still require retained recovery.
+
+The permanent regression delays only notification of a real child already reaped
+by the watcher. Before correction, it failed for actual exit codes 0 and 130;
+its exit-7 control also detected the unnecessary fallback kill. Native group
+absence and lifetime EOF are asserted before teardown. These checks isolate the
+product correction from fixture startup timing.
+
+After correction, the new notification-delay regression passed on both SDK
+interpreters. Six repetitions of the deep-chain method produced 12 ready-child
+stops without a cleanup refusal on Python 3.11. The first Python 3.11 lifetime
+packet passed those new controls but recorded a separate
+error in `test_timeout_kills_only_owned_tree`: the PID receipt was absent after
+its existing 0.7-second operation timeout. That packet ran 12 tests with two skips
+in 30.073 seconds and is recorded as failed, rather than relabeled a pass on the
+strength of its successful D12 controls.
+
+That separate error confirmed D13, a baseline development-fixture defect. The
+sleeper timeout/cancellation tests, Windows working-directory control, stdio
+request cancellation and added nested-runner control now establish full PID
+readiness using real child execution. Atomic receipt publication prevents the
+ready marker from exposing incomplete JSON. A bounded startup failure becomes an
+assertion rather than the expected operation `TimeoutError`. An explicit successful
+readiness postcondition also prevents a cleanup refusal in `execute.finally` from
+replacing a startup assertion and accidentally satisfying an expected
+`CleanupError`. The tested 0.7-second and two-second operation limits, production
+cleanup grace, and checks for a live descendant or writes after return are not
+relaxed.
+
+A controlled real sleeper delayed its readiness publication by 1.2 seconds. The
+same fixture bytes failed the old pre-readiness test in 0.918 seconds with a missing
+PID receipt, then passed the corrected test in 2.177 seconds with the unchanged
+0.7-second operation timeout. Both owned PIDs were dead afterward in both cases:
+the original failure was in the fixture oracle, not product process termination.
+The coherent lifetime family then passed on Python 3.11 and 3.12, running 12 tests
+including two Windows-specific skips in 24.561 and 22.532 seconds respectively.
+Those packets preceded the final readiness postcondition; a separate actual
+never-ready child with an injected cleanup refusal demonstrated that the earlier
+helper falsely accepted startup, while the final helper refused it. The product
+code did not change during those fixture controls.
+
+The runtime correction and final fixture assertions were published in source
+commit `f72ecf115aa4e0a96c9d1a76d828d80366f89dc3`. Release-note and report updates
+follow that code commit. Fresh complete qualification on the integrated Python
+3.11 and Python 3.12 candidate remains pending. Historical passes and hashes above
+remain attached to the source that actually ran them.
+
+### Changelog generation diagnostic and offline control
+
+Actual `notes 0.32.0 --draft --from-tag v0.31.0` generation at source commit
+`f72ecf115aa4e0a96c9d1a76d828d80366f89dc3` failed with CLI exit 2. The verified
+pinned git-cliff 2.14.1 executable exited 101 while requesting GitHub metadata.
+Its full native stderr identified `invalid peer certificate: UnknownIssuer` under
+the failed metadata request. Release-kit exposed only the final Rust backtrace
+hint and omitted that actionable cause. The native TLS failure is an environment
+and upstream execution observation; discarding its diagnostic is the product
+defect R11. The exact failing command, native stderr and source identity were
+preserved before any retry.
+
+The same actual CLI command succeeded with exit 0 in 1.737 seconds after enabling
+the supported per-invocation `GIT_CLIFF_OFFLINE=true` setting. It generated the
+entry from local commits and retained the configured static GitHub commit links,
+including the full published `f72ecf1` commit identity. Source and tag references
+were unchanged. Certificate verification was not disabled or altered. The pinned
+executable was already verified in the owned cache; this is not evidence that an
+uncached generator can be provisioned without network access.
+
+The [offline recipe](../notes.md#drafting-without-remote-metadata) documents that
+boundary and the loss of pull-request titles, labels and other remote enrichment.
+The diagnostic correction retains at most 4096 Unicode characters, including an
+explicit marker between the retained head and tail when output is longer. This
+bounds the displayed diagnostic, not subprocess output collection. Normalized,
+nonempty stderr takes precedence; otherwise stdout is used. The same 13-test
+packet recorded six assertion failures and no errors before correction, then
+passed with no skips in 3.881 seconds on Python 3.12.14. Actual failing child
+commands verify the multiline cause and hint, invalid UTF-8 replacement, stderr
+precedence and fallback, truncation and silent failure. An actual CLI invocation
+preserves native exit 101 as CLI 2 with `generation_error`; separate controls keep
+successful output and exact custom argv unchanged. Independent source review
+confirmed that network behavior and cleanup routing were untouched.
+
+A separate real failing subprocess replayed the original 853-byte native stderr.
+The old adapter's 106-character message omitted the cause and metadata context;
+the corrected 842-character message retained both and the final hint, without
+terminal color sequences. That replay made no new remote request.
+
+The diagnostic correction and offline documentation were published in source
+commit `4fe6f804f3cc11473557fee47af87e88955a295b`. The actual offline notes CLI
+then regenerated the 0.32.0 entry from `v0.31.0` with exit 0 in 6.278 seconds.
+The generated entry includes full published links for both the MCP and diagnostic
+fix commits. Only the generated current entry was replaced; the preamble and
+all prior release entries remained byte-for-byte unchanged. This generation
+result is not a substitute for final integrated qualification.
 
 ### First aggregate failure and fixture correction
 
@@ -220,9 +365,9 @@ repository maintenance policy was changed.
 A narrow reproduction ran the same three fixture methods through two owned parent
 runners and nine workers: 108 repetitions produced 108 detached maintenance
 launches and two cleanup refusals. Disabling server maintenance produced no such
-launches or refusals in 27 repetitions. After the tracked fixture correction, all
-111 tests in the three affected release modules passed through the same parent and
-worker arrangement, without instrumentation, in 30.326 seconds. These targeted
+launches or refusals in 27 repetitions. After the tracked fixture correction, the
+three affected release modules passed, running 111 tests through the same parent
+and worker arrangement, without instrumentation, in 30.326 seconds. These targeted
 results establish the correction's boundary; the candidate qualification table
 above records the subsequent aggregate run separately.
 
@@ -271,10 +416,24 @@ historical version. The 23 local refs and 20 advertised refs were recorded; sour
 and refs remained unchanged, with no advertised-ref mismatches afterward. This is
 bounded source evidence, not a complete inventory of every hosted surface.
 
-These earlier audits are not results for the later qualified commit or the final
-report/status revision. Final packaged publication audits have not yet been
-recorded here; their actual source and artifact identities and outcomes belong in
-the final delivery record.
+Those earlier source audits do not represent the subsequent qualified commit.
+A separate packaged publication audit then checked clean source commit
+`30dccaeefa8499f6e0885c2356e49337120739a3`, Git tree
+`9fd6e1430228d66adc86fdc70a4cf753f31cfef4`, using the actual qualified
+`relkit.pyz` whose SHA-256 is listed above. Strict no-download worktree and
+selected-history audits passed in 2.583 and 14.402 seconds respectively on
+Linux/Python 3.12.14. Both returned valid CLI-0 envelopes, native Betterleaks and
+Lychee status 0, no errors and no unconfirmed cleanup. Source, refs and all seven
+artifact hashes remained unchanged.
+
+The recorded scope had 22 advertised refs, 25 local refs and 113 commits reachable
+from HEAD and the selected recorded ref objects, including the PR head and merge
+refs. There were no advertised-ref mismatches before or after the audits. Policy
+and Betterleaks covered selected history; Lychee checked the current Markdown
+snapshot. Owner mode was disabled, `tests/*` was a structural exclusion, and no
+baseline or download was used. This is concrete packaged publication evidence
+for the earlier `30dccaeefa8499f6e0885c2356e49337120739a3` source and old artifact
+bytes; final publication checks must identify the later integrated candidate.
 
 ### Native tool and platform coverage
 
@@ -287,8 +446,10 @@ source overwrite, and suppression of template output side effects. It verifies
 that HEAD and tags remain unchanged. Separate real-Git controls exercise ambiguous
 tag boundaries.
 
-Native execution evidence covers Linux x86_64 and Python 3.12.14. Windows Job
-Objects/junctions and native macOS execution need their existing platform gates;
+Native execution evidence includes Linux x86_64 on Python 3.12.14 and the
+provisioned Python 3.11.17. The failed 3.11 gate and the historical successful
+3.12 gate are distinguished above; final integrated qualification is pending.
+Windows Job Objects/junctions and native macOS execution need their existing platform gates;
 a mocked platform boundary or a skipped conditional test is not native acceptance.
 No real hosted release, installed-user update, user hook, production rollback or
 client registration was performed. Those operations cannot be inferred from the
@@ -298,21 +459,43 @@ The existing [manual release workflow](../../.github/workflows/release.yml) decl
 Python 3.11 source checks on Linux, macOS and Windows, one Linux candidate build,
 and package checks on the same downloaded candidate across those OS jobs: seven
 jobs in total. Its configuration is not evidence that those native runs passed.
-Windows/macOS and native Python 3.11 acceptance remain open until actual runs
-identify the reviewed source and checked bytes. The dispatched run's `headSha`
-must match the final remote candidate commit. The workflow neither publishes nor
-supplies native desktop-client discovery proof; that acceptance remains separate from SDK/stdio startup. It also does not
-explicitly select the forkserver context.
+Windows/macOS acceptance remains open until actual native runs identify the
+reviewed source and checked bytes. Fresh Linux Python 3.11/3.12 acceptance must
+identify the integrated D12, D13 and R11 corrections. The dispatched run's
+`headSha` must match the final remote candidate commit. The workflow neither publishes nor supplies
+native desktop-client discovery proof; that acceptance remains separate from
+SDK/stdio startup. Its source stage now discovers an explicit forkserver
+regression on supported POSIX interpreters; no new workflow flag is required.
+
+A read-only preflight resolved all four exact upstream action commits in the
+workflow and verified each `action.yml` Git blob against its pin. All declare the
+`node24` runtime; the pinned
+[setup-python README](https://github.com/actions/setup-python/blob/5fda3b95a4ea91299a34e894583c3862153e4b97/README.md)
+requires Actions Runner 2.327.1 or later. None declares a Docker-only action
+runtime. This verifies external pins and runtime configuration, without claiming
+that a workflow or native OS job executed.
 
 The Node/Angular documentation correction in R10 has source/documentation evidence
 only. It adds no Node runtime, npm installation or generated-output execution claim
 to the native coverage recorded here.
 
 Multiprocessing `fork` and `spawn` were exercised with real workers, including
-constructor, initializer, map and shutdown failures. Native `forkserver` could not
-start: this host raises `PermissionError: [Errno 1] Operation not permitted` while
-creating an `AF_UNIX` socket, before choosing or binding a filesystem path. Its
-code path was reviewed, but that result is not a native forkserver pass.
+constructor, initializer, map and shutdown failures. The maintained
+`test_forkserver_source_workers_preserve_cleanup_ownership` now explicitly runs
+the existing two-worker timeout and cleanup-denial oracles with `forkserver`.
+It preserves the separate `spawn` regression and requires distinct worker PIDs
+and the selected native start method. An owned short IPC directory avoids an
+artificially deep distribution-fixture socket path; only the generated launcher
+changes its own `tempfile.tempdir`.
+
+The forkserver test skips an absent start method, Windows, or an actual socket
+unsupported/permission/path-limit failure. Worker creation, descriptor transfer
+and pool failures remain test failures. On this host native `forkserver` still
+cannot start: creating an `AF_UNIX` socket raises
+`PermissionError: [Errno 1] Operation not permitted`, before bind. That observed
+host refusal is not native forkserver acceptance. The maintained test now makes
+the existing manual source jobs exercise the real forkserver boundary on capable
+hosts, rather than relying on their default multiprocessing start method.
 
 The version was synchronized with `tools/set_version.py 0.32.0` and uv 0.12.23.
 Review of the regenerated lock confirmed the same dependency package set, versions,
@@ -342,6 +525,8 @@ a clean timeout. See [distribution lifecycle](../distribution.md) for that contr
   prerelease channel selection.
 - [Keep a Changelog in Russian](https://keepachangelog.com/ru/1.1.0/): translated
   reader-facing section headings.
+- [git-cliff remote configuration](https://git-cliff.org/docs/configuration/remote/#offline):
+  supported offline metadata behavior, also checked against the pinned executable.
 - Repository-specific requirements in [AGENTS.md](../../AGENTS.md), including
   generated release notes, exact artifacts, ownership-preserving cleanup, and
   separate source, package and native-client acceptance.

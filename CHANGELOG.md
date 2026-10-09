@@ -13,6 +13,8 @@
 - **audit:** preserve publication boundaries and owned scanner state ([e36d253](https://github.com/Muratovnik/release-kit/commit/e36d253fefc657ec322d2d5674886d10aa1a9268))
 - **audit:** preserve literal filenames across Git inventories and link scans ([69e57f2](https://github.com/Muratovnik/release-kit/commit/69e57f2ac68e1334663cf6f81a29595d46af1e55))
 - **runtime:** retain process ownership and verify exact release inputs ([29da007](https://github.com/Muratovnik/release-kit/commit/29da007269636209ebda48b115839940990eab81))
+- **mcp:** avoid false cleanup failures after process termination ([f72ecf1](https://github.com/Muratovnik/release-kit/commit/f72ecf115aa4e0a96c9d1a76d828d80366f89dc3))
+- **notes:** preserve actionable generator failure diagnostics ([4fe6f80](https://github.com/Muratovnik/release-kit/commit/4fe6f804f3cc11473557fee47af87e88955a295b))
 
 ## [0.31.0](https://github.com/Muratovnik/release-kit/compare/v0.30.0...v0.31.0) (2026-09-26)
 
