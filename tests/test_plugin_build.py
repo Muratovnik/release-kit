@@ -90,6 +90,7 @@ class PluginBuildTests(unittest.TestCase):
                         side_effect=AssertionError("ordinary smoke must not need an alias")
                     )
                     with patch.dict(namespace, {"alias_path": unavailable}):
+                        launcher["check_installer_cache"](package / ".runtime" / "cache")
                         self.assertEqual(package, launcher["loadable_base"](package, virtualenv))
                     unavailable.assert_not_called()
 
@@ -98,6 +99,8 @@ class PluginBuildTests(unittest.TestCase):
             destination = smoke["extraction_destination"](long_parent)
             self.assertEqual(long_parent, destination.parent)
             package = destination / "release-kit"
+            with self.assertRaisesRegex(ValueError, "Windows installer normalization limit"):
+                launcher["check_installer_cache"](package / ".runtime" / "cache")
             with (
                 patch.dict(namespace, {"alias_path": lambda path: None}),
                 self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"),
@@ -105,6 +108,115 @@ class PluginBuildTests(unittest.TestCase):
                 launcher["loadable_base"](package, package / ".runtime" / "venv")
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(directory, smoke["extraction_destination"](directory))
+
+    def test_windows_installer_checks_physical_disk_cache_in_utf16_units(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        parent = PureWindowsPath(r"C:\owned work")
+
+        def package_path(units, name="plugin space"):
+            package = parent / name / "release-kit"
+            padding = units - len(str(package).encode("utf-16-le", "surrogatepass")) // 2
+            self.assertGreaterEqual(padding, 0)
+            return parent / (name + "x" * padding) / "release-kit"
+
+        safe = package_path(165)
+        over = package_path(166)
+        previous_smoke = package_path(170)
+        unicode_safe = package_path(165, "plugin space " + "\U0001f680" * 12)
+        unicode_over = package_path(166, "plugin space " + "\U0001f680" * 12)
+        # This is the actual locked wheel entry whose uv normalization failed.
+        entry = (
+            PureWindowsPath("archive-v0")
+            / "YQwpXvgRhrzjsCGr"
+            / "pywin32-312.data"
+            / "scripts"
+            / "pywin32_postinstall.py"
+        )
+        with patch.object(sys, "platform", "win32"):
+            for package, expected in ((safe, 260), (over, 261), (previous_smoke, 265)):
+                leaf = package / ".runtime" / "cache" / entry
+                self.assertEqual(
+                    expected,
+                    len(launcher["process_path"](leaf).encode("utf-16-le")) // 2,
+                )
+            cases = (
+                ("disk at the measured limit", safe, True),
+                ("disk over the limit", over, False),
+                ("old 170-unit smoke root", previous_smoke, False),
+                ("non-BMP at the limit", unicode_safe, True),
+                ("non-BMP over the limit", unicode_over, False),
+                ("opaque WCHAR", parent / "opaque-\ud800" / "release-kit", True),
+                ("verbatim disk at the limit", PureWindowsPath("\\\\?\\" + str(safe)), True),
+                ("verbatim disk over the limit", PureWindowsPath("\\\\?\\" + str(over)), False),
+                ("UNC", PureWindowsPath(r"\\server\share") / ("long" * 100), True),
+                ("verbatim UNC", PureWindowsPath(r"\\?\UNC\server\share") / ("long" * 100), True),
+            )
+            forbidden = Mock(side_effect=AssertionError("a physical cache must not use aliases"))
+            with patch.dict(launcher["loadable_base"].__globals__, {"alias_path": forbidden}):
+                for label, package, allowed in cases:
+                    with self.subTest(label=label):
+                        cache = package / ".runtime" / "cache"
+                        if allowed:
+                            launcher["check_installer_cache"](cache)
+                        else:
+                            with self.assertRaisesRegex(
+                                ValueError, "Windows installer normalization limit"
+                            ):
+                                launcher["check_installer_cache"](cache)
+                # The earlier loader check allowed this root; its independent
+                # alias policy cannot establish the physical cache budget.
+                self.assertEqual(
+                    previous_smoke,
+                    launcher["loadable_base"](previous_smoke, previous_smoke / ".runtime" / "venv"),
+                )
+            forbidden.assert_not_called()
+        with patch.object(sys, "platform", "linux"):
+            launcher["check_installer_cache"](previous_smoke / ".runtime" / "cache")
+
+    def test_windows_installer_refuses_before_creating_runtime_or_lock(self):
+        with tempfile.TemporaryDirectory(prefix="installer budget ") as temporary:
+            folder = Path(temporary)
+            output = folder / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as archive:
+                archive.extractall(folder)
+            package = folder / "release-kit"
+            launcher = runpy.run_path(str(package / "scripts/launch.py"))
+            cache = package / ".runtime" / "cache"
+            physical = PureWindowsPath(r"D:\owned work") / ("plugin " + "x" * 137) / "release-kit"
+            self.assertEqual(170, len(str(physical).encode("utf-16-le")) // 2)
+            checked = storage.inside
+
+            def windows_cache(root, path):
+                result = checked(root, path)
+                # Supply the native path spelling only at the checked cache boundary;
+                # payload verification and all no-mutation assertions use real files.
+                return physical / ".runtime" / "cache" if path == cache else result
+
+            with (
+                patch.object(sys, "path", list(sys.path)),
+                patch.object(sys, "platform", "win32"),
+                patch("shutil.which", return_value="uv"),
+                patch.object(storage, "inside", side_effect=windows_cache),
+                patch.object(
+                    storage,
+                    "environment",
+                    side_effect=AssertionError("cache refusal must precede runtime environment"),
+                ) as environment,
+                patch("subprocess.call", side_effect=AssertionError("uv must not start")) as invoke,
+            ):
+                with self.assertRaisesRegex(ValueError, "Windows installer normalization limit"):
+                    launcher["main"]([])
+                environment.assert_not_called()
+                invoke.assert_not_called()
+                self.assertFalse((package / ".runtime").exists())
+                self.assertFalse((package / ".runtime.lock").exists())
+                # Read-only package inspection does not initialize an installer.
+                with patch.object(sys, "stdout", io.StringIO()) as output:
+                    self.assertEqual(0, launcher["main"](["--check"]))
+                self.assertTrue(json.loads(output.getvalue())["valid"])
+                self.assertFalse((package / ".runtime").exists())
+                self.assertFalse((package / ".runtime.lock").exists())
 
     def test_windows_loader_counts_utf16_units_for_original_and_alias_paths(self):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))

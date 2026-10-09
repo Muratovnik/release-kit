@@ -114,10 +114,11 @@ def extraction_destination(directory: Path) -> Path:
     """Keep a long Unicode Windows fixture inside the caller's workspace."""
     if sys.platform != "win32":
         return directory
-    # Ordinary startup must fit the DLL loader without requiring an 8.3 alias.
+    # Ordinary startup must fit physical installer paths and the DLL loader
+    # without requiring an 8.3 alias.
     name = "plugin space \U0001f680"
     units = len(str(directory / name / "release-kit").encode("utf-16-le", "surrogatepass")) // 2
-    padding = max(0, 170 - units)
+    padding = max(0, 160 - units)
     return directory / (name + "x" * padding)
 
 

@@ -9,7 +9,7 @@ import subprocess
 import sys
 import time
 from contextlib import contextmanager
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -32,6 +32,13 @@ def process_path(path):
 LOADER_LIMIT = 260
 # "\Lib\site-packages\" and the longest compiled file name the lock installs.
 RUNTIME_LEAF = 70
+# Default uv 0.12.24 archive-v0 paths use a 16-character ID. The maintained
+# CPython 3.11/win_amd64 lock's longest .data/scripts or .data/data entry is
+# pywin32-312.data/scripts/pywin32_postinstall.py: 47 WCHARs, plus 29 for the
+# archive path. Requalify this boundary when the lock or supported uv mode changes.
+CACHE_LEAF = 76
+# uv's disk-prefix normalization includes the verbatim prefix in this limit.
+INSTALLER_LIMIT = 260
 
 
 def alias_path(path):
@@ -61,6 +68,25 @@ def alias_path(path):
 def utf16_units(path):
     """Count Windows WCHAR units without changing opaque path contents."""
     return len(str(path).encode("utf-16-le", "surrogatepass")) // 2
+
+
+def check_installer_cache(cache):
+    """Keep physical disk-cache paths within uv's Windows normalization limit."""
+    if sys.platform != "win32":
+        return
+    drive = PureWindowsPath(cache).drive.removeprefix("\\\\?\\")
+    # uv canonicalizes cached paths, so a DLL-loader alias cannot establish this
+    # physical-path bound. dunce strips a disk prefix only when the whole prefixed
+    # path fits; it never strips VerbatimUNC, which has no such prefix mismatch.
+    if (
+        len(drive) == 2
+        and drive[1] == ":"
+        and utf16_units(process_path(cache)) + CACHE_LEAF > INSTALLER_LIMIT
+    ):
+        raise ValueError(
+            "the runtime cache path is too long for the Windows installer normalization "
+            "limit; reinstall the plugin into a shorter directory"
+        )
 
 
 def loadable_base(root, virtualenv):
@@ -159,6 +185,7 @@ def main(argv=None):
     temporary = storage.inside(ROOT, runtime / "tmp")
     cache = storage.inside(ROOT, runtime / "cache")
     virtualenv = storage.inside(ROOT, runtime / "venv")
+    check_installer_cache(cache)
     base = loadable_base(ROOT, virtualenv)
     environment = storage.environment(temporary)
     for key in list(environment):
