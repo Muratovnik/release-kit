@@ -49,7 +49,8 @@ process-ownership checks. D13 distinguishes original MCP fixtures from source-ga
 and launcher fixtures added during this review; they are not presented as additional
 product vulnerabilities. D15 records a baseline platform assumption exposed by hosted
 macOS execution. D16 groups Windows fixture portability issues and separates
-its original 8.3 assumption from tests added during this review.
+its original 8.3 test and plugin-smoke padding assumptions from tests added
+during this review.
 
 ### Release identities and changelog
 
@@ -128,7 +129,7 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D13 | Medium; baseline and integration test fixtures | Ownership tests started their short operation or cancellation budget before full child PID readiness. A review-added ordinary launcher fixture also imposed a five-second functional-test budget below its supported Git lookup allowance. These fixture assumptions could prevent the intended oracle from running. | Ownership fixtures establish atomic readiness before their operation clock, with bounded startup and a successful-readiness postcondition; their actual timeout, exit-status, late-write and retention assertions remain. Ordinary launcher status/argv/cwd checks share their sibling harness's existing 120-second allowance. Controlled delayed children distinguish the two corrections from product cleanup; original failed-gate startup timing remains unrecorded. |
 | D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. Controlled Linux cache/refusal checks passed. Native workflow #5 completed provisioning but failed before MCP; run #6 then executed the named acceptance successfully on Windows. |
 | D15 | Medium; baseline platform assumption | A transient POSIX process-group permission result was treated as immediate terminal cleanup failure. Native macOS ordinary timeout controls failed at this boundary; the original baseline already had the same error handling. | Both helpers treat permission denial as present or unconfirmed and retain the existing bounded polling. Only actual ESRCH, together with the existing lifetime and exit-status checks, permits confirmed cleanup. Real-child transient and persistent-denial controls preserve the distinction; hosted run #6 passed the native macOS source controls without weakening cleanup confirmation. |
-| D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. The review-added package history fixture now writes its expected LF bytes explicitly. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. |
+| D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. The original plugin smoke also exceeded the loader budget when no short alias was available. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. The review-added package history fixture writes its expected LF bytes explicitly; ordinary plugin startup keeps a long, spaced fixture path within the loader budget without requiring an alias. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
@@ -333,8 +334,8 @@ that the short-path API may succeed with the original long name;
 the Windows substitution-path spelling returned by `os.readlink`.
 These corrections change test fixtures and their platform oracles, not runtime
 newline handling, strict-build byte checks, launcher behavior or volume settings.
-The 8.3 assumption predates this review; the other affected fixture methods were
-added during it. The focused release-input/link/alias packet ran 15 tests
+The native 8.3 test predates this review; the other affected source fixture
+methods listed above were added during it. The focused release-input/link/alias packet ran 15 tests
 including the one native Windows skip on Linux. Run #6 subsequently passed
 these source corrections on native Windows and macOS. Its separate Windows
 package changelog failure is retained in the newer qualification record above.
@@ -353,6 +354,28 @@ unchanged source bytes and preservation of internal line endings under the
 existing terminal-LF export contract. No runtime parser or normalization
 behavior changed. These are controlled local results; corrected native Windows
 package replay and its previously unreached plugin-stdio phase remain pending.
+
+**Plugin startup fixture in D16.** A bounded review of that unreached stdio
+phase found a separate baseline assumption in `tools/smoke_plugin.py`: for an
+ordinary short parent, its Windows padding made the installed package path
+180 characters long. The maintained launcher's runtime suffix and compiled-file
+allowance raised the loader budget to 264 characters, exceeding its supported
+260 and requiring a usable short alias. This is a confirmed fixture constraint,
+not an observed failure of the unreached hosted phase. The fixture now pads to
+170 characters, yielding 254 under the same loader contract. It retains a long
+path with spaces inside the caller's workspace; an already too-long parent
+remains owned and can still produce the existing explicit refusal.
+
+A permanent regression calls the actual fixture destination helper and shipped
+loader, with any alias lookup forbidden for ordinary startup. The helper first
+preserved the original 180-character behavior and failed that test; the
+170-character correction passed. The complete affected module then passed
+12 tests on Linux/Python 3.11.17 in 9.240 seconds and Python 3.12.14 in
+3.331 seconds, each with the native Windows 8.3 test explicitly skipped.
+Existing alias and refusal controls remain unchanged. These controlled results
+do not claim native Windows startup or cache installation beyond `MAX_PATH`;
+the corrected hosted package replay remains pending. No runtime launcher code
+or product finding count changed.
 
 **D13 — ordinary launcher fixture allowance.** A later precommit Linux
 Python 3.11 base check ran 769 tests in 182.599 seconds and stopped with one

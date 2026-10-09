@@ -110,18 +110,23 @@ def extract(archive_path: Path, destination: Path) -> Path:
     return destination / "release-kit"
 
 
+def extraction_destination(directory: Path) -> Path:
+    """Keep the Windows fixture long and spaced inside the caller's workspace."""
+    if sys.platform != "win32":
+        return directory
+    # Ordinary startup must fit the DLL loader without requiring an 8.3 alias.
+    padding = max(0, 170 - len(str(directory / "plugin space" / "release-kit")))
+    return directory / ("plugin space" + "x" * padding)
+
+
 def smoke(archive_path: Path, directory: Path, version: str) -> None:
     import anyio
     from mcp import Client, StdioServerParameters
 
-    if sys.platform == "win32":
-        # Exercise uv's real cache and wheel installation beyond MAX_PATH even
-        # when the caller selected a short workspace. Keep the adopter path short.
+    destination = extraction_destination(directory)
+    if destination != directory:
         directory.mkdir()
-        padding = max(0, 180 - len(str(directory / "plugin space" / "release-kit")))
-        package = extract(archive_path, directory / ("plugin space" + "x" * padding))
-    else:
-        package = extract(archive_path, directory)
+    package = extract(archive_path, destination)
     launch = load_launch(package, fixture_environment())
     check_launch(launch, version)
     if (package / ".runtime").exists():

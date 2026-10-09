@@ -13,9 +13,9 @@ import tomllib
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from releasekit import __version__, distribution, storage
 from releasekit.plugin import Bundle
@@ -66,6 +66,37 @@ class PluginBuildTests(unittest.TestCase):
                 self.assertEqual(expected, launcher["process_path"](value))
         with patch.object(sys, "platform", "linux"):
             self.assertEqual("/example/cache", launcher["process_path"]("/example/cache"))
+
+    def test_windows_plugin_smoke_stays_within_loader_budget_without_an_alias(self):
+        smoke = runpy.run_path(str(ROOT / "tools/smoke_plugin.py"))
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        namespace = launcher["loadable_base"].__globals__
+        directory = PureWindowsPath(r"C:\owned work\runs\run-abcdefgh\plugin space")
+        unavailable = Mock(side_effect=AssertionError("ordinary smoke must not need an alias"))
+        with patch.object(sys, "platform", "win32"):
+            destination = smoke["extraction_destination"](directory)
+            package = destination / "release-kit"
+            self.assertEqual(directory, destination.parent)
+            self.assertIn(" ", str(package))
+            self.assertGreater(len(str(package)), 150)
+            with patch.dict(namespace, {"alias_path": unavailable}):
+                self.assertEqual(
+                    package, launcher["loadable_base"](package, package / ".runtime" / "venv")
+                )
+            unavailable.assert_not_called()
+
+            # An already long caller-owned parent stays owned and may still refuse.
+            long_parent = directory / ("already long " * 15).strip()
+            destination = smoke["extraction_destination"](long_parent)
+            self.assertEqual(long_parent, destination.parent)
+            package = destination / "release-kit"
+            with (
+                patch.dict(namespace, {"alias_path": lambda path: None}),
+                self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"),
+            ):
+                launcher["loadable_base"](package, package / ".runtime" / "venv")
+        with patch.object(sys, "platform", "linux"):
+            self.assertEqual(directory, smoke["extraction_destination"](directory))
 
     def test_deep_windows_runtime_uses_a_short_alias_for_compiled_imports(self):
         # A real installation hit this: uv installed the packages and the server
