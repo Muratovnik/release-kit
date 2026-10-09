@@ -3,9 +3,9 @@
 Validate the complete release set before executing any candidate code, including
 when invoked without a coordinator. Signatures remain the caller's responsibility.
 What metadata cannot check is that the published bytes are a working tool, so
-every assertion here reads the downloaded files and runs the downloaded zipapp. The
-source snapshot supplies only input to read, never code to import: importing
-`releasekit` from it would prove the source works, which is not what shipped.
+every product assertion here reads the downloaded files and runs the downloaded
+zipapp. The source harness supplies owned process cleanup; candidate behavior is
+always checked through the actual artifact subprocess.
 """
 
 from __future__ import annotations
@@ -19,6 +19,10 @@ import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from releasekit import processes
 
 CLI = "relkit.pyz"
 MANIFEST = "relkit.pyz.sha256"
@@ -98,20 +102,23 @@ def inventory(assets: Path, version: str) -> dict[str, str]:
 
 
 def _run(assets: Path, arguments: list[str]) -> str:
-    completed = subprocess.run(
+    completed = processes.run(
         [sys.executable, str(assets / CLI), *arguments],
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         check=False,
         timeout=120,
+    )
+    output, errors = (
+        payload.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        for payload in (completed.stdout, completed.stderr)
     )
     if completed.returncode != 0:
         raise SmokeError(
             f"published {CLI} failed `{' '.join(arguments)}` with exit "
-            f"{completed.returncode}: {completed.stderr.strip() or completed.stdout.strip()}"
+            f"{completed.returncode}: {errors.strip() or output.strip()}"
         )
-    return completed.stdout
+    return output
 
 
 def smoke(assets: Path, source: Path, version: str) -> list[str]:

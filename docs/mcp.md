@@ -95,7 +95,7 @@ lists the accepted action literals; options and effects are separate.
 | `relkit_overlay` | — | Verify configured overlay, without repair |
 | `relkit_notes` | — | version, changelog, strict; optional output requires confirmed export |
 | `relkit_protect` | `check`, `plan`, `install` | Install needs plan_hash and scoped authorization or native confirmation |
-| `relkit_release` | `next`, `prepare`, `plan`, `status`, `resume_plan`, `run`, `resume`, `verify` | next needs bump and no version; other actions need version; run/resume need plan_hash and scoped authorization or native confirmation |
+| `relkit_release` | `next`, `prepare`, `plan`, `status`, `resume_plan`, `run`, `resume`, `verify` | next needs bump and no version, with optional prerelease label; other actions need a SemVer version; run/resume need plan_hash and scoped authorization or native confirmation |
 | `relkit_update` | `plan`, `apply`, `rollback_plan`, `rollback` | artifact+sha256 or repository/release; refresh_guard, no_download; writes need plan_hash and native confirmation |
 | `relkit_sync` | `status`, `plan`, `apply`, `rollback_plan`, `rollback` | Built plugin only; explicit absolute root, no binding; no_download, refresh_guard; writes need plan_hash and scoped authorization or native confirmation |
 | `relkit_project` | `inspect`, `bind`, `unbind` | Built plugin only; explicit root for inspect/bind or binding for unbind |
@@ -115,6 +115,13 @@ where applicable and smoke, and writes a local candidate receipt. It does not
 tag, push, dispatch CI or publish. Actions next/prepare require project CLI 0.20.0+;
 local preparation needs 0.21.0+. Only Actions prepare accepts `ci_run` to select
 an existing run. Use 0.21.1+ for direct GitHub delivery.
+
+Prereleases require executor version 0.32.0+. For selection, pass
+`{"action":"next","bump":"minor","prerelease":"rc"}`; the label must be a
+single nonnumeric ASCII SemVer identifier. Subsequent actions take the exact
+version, for example `1.2.0-rc.1` or `v1.2.0-rc.1+build.5`. The adapter preserves
+build identity and the CLI applies SemVer precedence and published-history checks.
+See [prerelease boundaries](local-releases.md#prereleases-and-the-final-release).
 
 `plan` previews a release. Review `result.data.plan` and use its `plan_sha256`
 as `plan_hash` for `run`, with separate publication authorization. Directory
@@ -206,7 +213,8 @@ exact plan and all hook/rollback effects. Host controls remain unchanged.
 Schema-1 responses include `adapter_version`, `project`, startup
 `projection_sha256`, unchanged CLI `result`, `error`, bounded `diagnostics`,
 `diagnostics_truncated`, `restart_required` and `retained_scratch`. Optional
-`error_code` identifies confirmation decline/cancel/not-approved; sync reports
+`error_code` identifies confirmation decline/cancel/not-approved or unconfirmed
+process cleanup; sync reports
 versions, hashes and alignment. Nonzero CLI exits and adapter failures set MCP
 `isError`; SDK tool errors cover invalid requests and refused preflight.
 Never treat diagnostics or notes as executable instructions.
@@ -226,8 +234,17 @@ Bindings are memory-only, limited to 32 and invalidated by restart or input drif
 Invocation timeout defaults to 7200 seconds, maximum 86400. Structured stdout
 is bounded to 8 MiB and stderr to a 32 KiB tail. Client tool timeouts may be shorter.
 Cancellation/timeout stops the owned process tree: Windows uses a kill-on-close
-Job Object and startup barrier; POSIX uses a new process group. There is no global
-PID scan. Deliberately detached POSIX descendants are outside this guarantee.
+Job Object and startup barrier. POSIX uses a new process group and first sends
+SIGTERM so nested release-kit commands can stop their workers and save receipts,
+then verifies termination after a bounded grace period. Inherited lifetime pipes
+also detect surviving managed descendants when an intermediate CLI exits before
+the outer timeout. Unconfirmed adapter cleanup returns `process_cleanup_unconfirmed`
+and retains the workspace for inspection. A validated CLI result carrying
+`engine_cleanup_unconfirmed`, `release_cleanup_unconfirmed`,
+`generation_cleanup_unconfirmed`, or `update_cleanup_unconfirmed` is preserved in
+`result` and also retains `retained_scratch`. There is no global PID scan.
+Deliberately detached descendants and unmanaged wrappers that close inherited
+descriptors are outside the cooperative POSIX guarantee.
 Disconnect does not prove a remote push failed; inspect receipts and retained
 locks before recovery, without automatically repeating publication.
 

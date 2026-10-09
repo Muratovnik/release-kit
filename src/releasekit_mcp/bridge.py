@@ -9,7 +9,7 @@ from pathlib import Path
 
 import anyio
 
-from releasekit import __version__, distribution, storage
+from releasekit import __version__, distribution, semver, storage
 from releasekit import canonical as canonical_json
 
 from . import models, process
@@ -138,6 +138,7 @@ class Bridge:
         environment.pop("RELKIT_CACHE_DIR", None)
         environment["GIT_PAGER"] = "cat"
         environment["GIT_TERMINAL_PROMPT"] = "0"
+        cleanup_confirmed = True
         try:
             code, payload, stderr, truncated = await process.execute(
                 self.executor,
@@ -177,6 +178,18 @@ class Bridge:
             ):
                 raise ValueError("CLI returned an invalid or mismatched structured result")
             response.result = value
+            # The CLI can catch an inner cleanup failure and exit normally with a
+            # structured refusal. Its own exit does not prove those workers stopped.
+            cleanup_confirmed = not any(
+                error["code"]
+                in {
+                    "engine_cleanup_unconfirmed",
+                    "release_cleanup_unconfirmed",
+                    "generation_cleanup_unconfirmed",
+                    "update_cleanup_unconfirmed",
+                }
+                for error in value["errors"]
+            )
             try:
                 self.check()
             except (ValueError, OSError, storage.StorageError):
@@ -185,6 +198,10 @@ class Bridge:
                     response.error = (
                         "projection changed during the operation; inspect before retrying"
                     )
+        except process.CleanupError as error:
+            cleanup_confirmed = False
+            response.error = str(error)
+            response.error_code = "process_cleanup_unconfirmed"
         except TimeoutError:
             response.error = (
                 "CLI timed out; owned processes stopped. Remote outcome may be unknown. "
@@ -194,7 +211,7 @@ class Bridge:
             response.error = str(error)
         finally:
             try:
-                clean = workspace.cleanup()
+                clean = cleanup_confirmed and workspace.cleanup()
             except (OSError, storage.StorageError):
                 clean = False
             if not clean:
@@ -281,6 +298,17 @@ class Bridge:
             self.reviewed(request.plan_hash, plan["plan_sha256"])
             return Prepared([*argv, "--plan-hash=" + request.plan_hash], argv, True, plan)
         if isinstance(request, models.Release):
+            version = (
+                request.version[1:] if request.version.startswith(("v", "V")) else request.version
+            )
+            extended = bool(request.prerelease)
+            if version:
+                parsed = semver.parse(version)
+                extended |= bool(parsed.prerelease or parsed.build)
+            if extended and distribution.version_tuple(self.executor_artifact.version) < (0, 32, 0):
+                raise ValueError(
+                    "SemVer prereleases require release-kit 0.32.0 or newer; sync the project"
+                )
             if request.action in ("next", "prepare"):
                 if distribution.version_tuple(self.executor_artifact.version) < (0, 20, 0):
                     raise ValueError(
@@ -293,6 +321,8 @@ class Bridge:
                     if request.no_download:
                         raise ValueError("next does not accept no_download")
                     argv += ["--bump", request.bump]
+                    if request.prerelease:
+                        argv.append("--prerelease=" + request.prerelease)
                 else:
                     argv += [request.version]
                     if request.ci_run:

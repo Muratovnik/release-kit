@@ -112,7 +112,7 @@ def _check_from_tag(root: Path, tag: str) -> None:
         )
         if result.returncode or result.stdout.rstrip(b"\r\n") != os.fsencode(reference):
             raise GenerationError("--from-tag must name an unambiguous local tag")
-    except (OSError, subprocess.SubprocessError, processes.CleanupError) as error:
+    except (OSError, subprocess.SubprocessError) as error:
         raise GenerationError(f"could not validate --from-tag: {error}") from error
 
 
@@ -144,7 +144,7 @@ def draft(
             timeout=TIMEOUT,
             check=False,
         )
-    except (OSError, subprocess.SubprocessError, processes.CleanupError) as error:
+    except (OSError, subprocess.SubprocessError) as error:
         raise GenerationError(f"could not run {command[0]}: {error}") from error
     if completed.returncode:
         detail = (

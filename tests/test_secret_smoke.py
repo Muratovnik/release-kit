@@ -58,6 +58,19 @@ class SecretSmokeTests(unittest.TestCase):
             smoke_onboarding.check_secret_detection(self.root, {})
         self.assertFalse(self.path.exists())
 
+    def test_unconfirmed_worker_cleanup_keeps_the_synthetic_input(self):
+        with (
+            patch.object(
+                smoke_onboarding,
+                "invoke",
+                side_effect=smoke_onboarding.processes.CleanupError("worker may remain"),
+            ),
+            self.assertRaisesRegex(smoke_onboarding.processes.CleanupError, "worker may remain"),
+        ):
+            smoke_onboarding.check_secret_detection(self.root, {})
+        self.assertTrue(self.path.is_file())
+        self.assertRegex(self.path.read_text(), r"github_token = ghp_[0-9a-f]{36}\n")
+
     def test_existing_file_is_never_replaced_or_deleted(self):
         self.path.write_text("existing data", encoding="utf-8")
         with self.assertRaises(FileExistsError):

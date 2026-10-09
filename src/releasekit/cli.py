@@ -23,6 +23,7 @@ from . import (
     __version__,
     generation,
     owner,
+    processes,
     protection,
     publication,
     storage,
@@ -223,6 +224,10 @@ def _notes(arguments: argparse.Namespace) -> int:
             text = generation.draft(
                 policy, arguments.version, root=root, from_tag=arguments.from_tag
             )
+        except processes.CleanupError as error:
+            arguments.result.error("generation_cleanup_unconfirmed", error)
+            print(f"relkit notes: {error}", file=sys.stderr)
+            return 2
         except (generation.GenerationError, storage.StorageError) as error:
             arguments.result.error("generation_error", error)
             print(f"relkit notes: {error}", file=sys.stderr)

@@ -3,11 +3,14 @@
 import argparse
 import hashlib
 import json
+import os
 import subprocess
+import tomllib
 import zipfile
 from pathlib import Path
 
-from build_plugin import ROOT, build_plugin
+from build_plugin import DOCUMENTS, FILES, ROOT, TEMPLATE, build_plugin
+from build_wheel import PACKAGES
 from build_wheel import build as build_wheel
 
 from releasekit import distribution, storage
@@ -15,10 +18,15 @@ from releasekit import distribution, storage
 # Git's own object header, so a worktree file hashes to the id its blob would have.
 BLOB = b"blob %d\0"
 CONTENT_MODES = frozenset({"100644", "100755"})
+# Share the plugin's maintained inventory; the other builders read these three
+# fixed root inputs and the README selected by the committed package metadata.
+REQUIRED_INPUTS = frozenset({"pyproject.toml", "CHANGELOG.md", "LICENSE", *DOCUMENTS}) | frozenset(
+    (TEMPLATE / name).relative_to(ROOT).as_posix() for name in FILES
+)
 
 
 def diverged(root: Path) -> list[str]:
-    """Tracked files whose exact worktree bytes are not the committed ones.
+    """Missing, changed or extra inputs that cannot belong to the committed release.
 
     Raw bytes, and neither `git status` nor `git hash-object`: both compare through
     Git's clean filter, which calls a CRLF worktree equal to its LF blob. That is
@@ -26,30 +34,89 @@ def diverged(root: Path) -> list[str]:
     than the published release, because the builder packs the bytes it reads. It also
     reports files this repository's own status called clean.
 
-    Outside a Git work tree there is no commit to disagree with, so nothing diverges.
+    A Git-free snapshot has no commit to compare here. Never discover a parent
+    checkout; a broken checkout, in contrast, must not bypass this check.
     """
+    if not (root / ".git").exists() and not (root / ".git").is_symlink():
+        return []
     try:
-        listing = subprocess.run(
-            ["git", "-C", str(root), "ls-tree", "-r", "-z", "HEAD"],
+        actual = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "--show-toplevel"],
             capture_output=True,
             check=True,
-        ).stdout.decode("utf-8")
-    except (OSError, subprocess.CalledProcessError):
-        return []
-    found = []
+        ).stdout
+        if Path(os.fsdecode(actual).rstrip("\r\n")).resolve() != root.resolve():
+            raise ValueError("could not verify committed release inputs in this checkout")
+        listing = subprocess.run(
+            ["git", "-C", str(root), "ls-tree", "--full-tree", "-r", "-z", "HEAD"],
+            capture_output=True,
+            check=True,
+        ).stdout
+        untracked = subprocess.run(
+            ["git", "-C", str(root), "ls-files", "--others", "--exclude-standard", "-z"],
+            capture_output=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:
+        raise ValueError("could not verify committed release inputs") from error
+    found = {os.fsdecode(name) for name in untracked.split(b"\0") if name}
+    committed = {}
+    unsupported = set()
+    listing = os.fsdecode(listing)
     for entry in listing.split("\0"):
         if not entry:
             continue
         metadata, name = entry.split("\t", 1)
         mode, kind, object_id = metadata.split(" ", 2)
+        committed[name] = object_id
         if kind != "blob" or mode not in CONTENT_MODES:
+            unsupported.add(name)
+    # A tracked link records only its target text, and a gitlink records a foreign
+    # commit. Neither proves the filesystem bytes the builders would consume.
+    # Reject the whole input set before reading files or traversing package roots.
+    if unsupported:
+        return sorted(found | unsupported)
+    project_metadata = None
+    for name, object_id in committed.items():
+        try:
+            path = storage.inside(root, root / name)
+        except storage.StorageError:
+            found.add(name)
             continue
-        path = root / name
         if not path.is_file():
+            found.add(name)
             continue
         payload = path.read_bytes()
         if hashlib.sha1(BLOB % len(payload) + payload).hexdigest() != object_id:
-            found.append(name)
+            found.add(name)
+        elif name == "pyproject.toml":
+            project_metadata = payload
+    # A clean status says nothing about ignored files absent from HEAD. Builders
+    # still consume their fixed documents and the declared README, so each must
+    # belong to the input set whose raw bytes were verified above.
+    found.update(REQUIRED_INPUTS.difference(committed))
+    if project_metadata is not None:
+        project = tomllib.loads(project_metadata.decode("utf-8")).get("project", {})
+        readme = project.get("readme") if isinstance(project, dict) else None
+        if not isinstance(readme, str) or not readme:
+            raise ValueError("committed package metadata must declare a README file path")
+        try:
+            path = storage.inside(root, root / readme)
+        except (storage.StorageError, ValueError):
+            found.add(readme)
+        else:
+            name = path.relative_to(storage.checked(root)).as_posix()
+            # The wheel reads the original spelling. Normalizing `..` here could
+            # hide a link component that the actual read would follow first.
+            if ".." in Path(readme).parts or name not in committed:
+                found.add(readme)
+    # All builders include Python modules by glob. Even ignored local modules
+    # would enter the artifacts, so ordinary `ls-files --others` is insufficient.
+    for package in PACKAGES:
+        for path in (root / "src" / package).rglob("*.py"):
+            name = path.relative_to(root).as_posix()
+            if name not in committed:
+                found.add(name)
     return sorted(found)
 
 

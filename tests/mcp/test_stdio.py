@@ -389,6 +389,88 @@ class StdioTests(Fixture):
 
 
 class BridgeTests(Fixture):
+    def test_cli_cleanup_uncertainty_retains_workspace_after_a_normal_process_exit(self):
+        from test_process import replace_cli
+
+        from releasekit.result import Result
+
+        for error_code in (
+            "engine_cleanup_unconfirmed",
+            "release_cleanup_unconfirmed",
+            "generation_cleanup_unconfirmed",
+            "update_cleanup_unconfirmed",
+        ):
+            with self.subTest(error_code=error_code):
+                result = Result()
+                result.error(error_code, "controlled cleanup outcome")
+                payload = result.envelope(["audit"], str(self.root), 2)
+                recorded = self.root / "scratch-path.txt"
+                replace_cli(
+                    self,
+                    "import os\nfrom pathlib import Path\n"
+                    "def main():\n"
+                    f" Path({str(recorded)!r}).write_text(os.environ['TMPDIR'])\n"
+                    f" print({json.dumps(payload)!r})\n"
+                    " return 2\n",
+                )
+                bridge = Bridge(self.root, self.digest)
+
+                async def scenario(bridge=bridge, recorded=recorded, error_code=error_code):
+                    response = await bridge.call(["audit"], ["audit"])
+                    scratch = Path(recorded.read_text())
+                    self.assertEqual(2, response.result["exit_code"])
+                    self.assertEqual(error_code, response.result["errors"][0]["code"])
+                    self.assertEqual(str(scratch), response.retained_scratch)
+                    self.assertTrue(scratch.is_dir())
+
+                self.run_async(scenario)
+
+    def test_ordinary_cli_failure_removes_an_empty_confirmed_workspace(self):
+        from test_process import replace_cli
+
+        from releasekit.result import Result
+
+        result = Result()
+        result.error("engine_error", "controlled operational failure")
+        payload = result.envelope(["audit"], str(self.root), 2)
+        recorded = self.root / "scratch-path.txt"
+        replace_cli(
+            self,
+            "import os\nfrom pathlib import Path\n"
+            "def main():\n"
+            f" Path({str(recorded)!r}).write_text(os.environ['TMPDIR'])\n"
+            f" print({json.dumps(payload)!r})\n"
+            " return 2\n",
+        )
+        bridge = Bridge(self.root, self.digest)
+
+        async def scenario():
+            response = await bridge.call(["audit"], ["audit"])
+            self.assertEqual(2, response.result["exit_code"])
+            self.assertIsNone(response.error)
+            self.assertIsNone(response.retained_scratch)
+            self.assertFalse(Path(recorded.read_text()).exists())
+
+        self.run_async(scenario)
+
+    def test_unconfirmed_process_cleanup_preserves_workspace_and_reports_uncertainty(self):
+        from releasekit_mcp import process
+
+        bridge = Bridge(self.root, self.digest)
+
+        async def scenario():
+            with patch.object(
+                process, "execute", side_effect=process.CleanupError("owned cleanup unconfirmed")
+            ):
+                result = await bridge.call(["--version"], ["version"])
+            self.assertEqual("process_cleanup_unconfirmed", result.error_code)
+            self.assertIn("unconfirmed", result.error)
+            self.assertIsNone(result.result)
+            self.assertTrue(Path(result.retained_scratch).is_dir())
+            self.assertTrue(Path(result.retained_scratch).is_relative_to(self.root))
+
+        self.run_async(scenario)
+
     def test_missing_optional_sdk_has_actionable_startup_error(self):
         result = subprocess.run(
             [

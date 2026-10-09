@@ -66,8 +66,18 @@ files and modes in `.git/relkit-update-<id>/`, records `.git/relkit-update.json`
 runs the new projection's worktree audit. It refreshes only an already-installed,
 intact repository guard and verifies it. An external dispatcher is checked, not
 modified; no new guard is installed. `--no-download` also disables audit-engine
-downloads. A failed audit restores the old artifact/guard. Concurrent edits that
-make restoration unsafe are preserved, and the backup is reported for recovery.
+downloads. A failed audit restores the old artifact/guard after the updater has
+confirmed its owned commands stopped. Concurrent edits that make restoration
+unsafe are preserved, and the backup is reported for recovery.
+
+If command cleanup is unconfirmed, the updater returns `2` with
+`update_cleanup_unconfirmed` and does not automatically roll back or release the
+update lock. It retains the current projection/guard, the pending receipt and
+backup if created, and the entire command workspace. JSON reports
+`data.process_cleanup: "unconfirmed"`, plus `data.lock` and `data.retained_scratch`
+when those resources were allocated;
+`next_action` is `null`. A candidate can report this uncertainty even after its
+own process exits. Guard refresh follows the same rule.
 
 Review the projection diff, run project tests, commit, then run the clean-history
 publication audit, with `--owner` where applicable. Updates do not stage, commit,
@@ -118,8 +128,10 @@ python .github/relkit.pyz update --rollback
 
 Keep the trusted external updater available if the restored version predates this
 command. Rollback verifies backups and refuses later edits to guarded inputs/hooks.
-It does not reset Git or discard user changes. After a crash, inspect the PID in
-`.git/relkit-update.lock` and remove only that lock after proving its process stopped.
+It does not reset Git or discard user changes. After a crash or unconfirmed
+cleanup, inspect `.git/relkit-update.lock`, the receipt and reported workspace.
+Verify that the updater and all its owned descendants stopped before removing
+that exact lock and requesting rollback; a stopped parent PID alone is insufficient.
 A pending receipt requires rollback before another update. Exit `0` means success,
 no-op or dry-run; `2` means refusal or operational failure, not proof of no effects.
 

@@ -7,6 +7,10 @@ import sys
 
 import anyio
 
+from releasekit.processes import CleanupError, LifetimePipe, cancellation_exit_confirmed
+
+_GRACE = 5.0
+
 # The child cannot start project code until the parent owns its process tree.
 # This avoids the Windows race between spawn and Job Object assignment.
 BOOTSTRAP = """
@@ -21,10 +25,62 @@ runpy.run_path(path, run_name='__main__')
 """
 
 
+def _group(pid, signum):
+    try:
+        os.killpg(pid, signum)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+async def _stop(process, job, lifetime=None):
+    """Allow nested CLI runners to clean their groups, then confirm owned teardown."""
+    try:
+        was_running = process is not None and process.returncode is None
+        forced = False
+        if job is not None:
+            await anyio.to_thread.run_sync(job.stop)
+        elif process is not None:
+            # releasekit.processes owns separate nested groups. SIGTERM lets its
+            # handler stop those workers and persist a release receipt before exit.
+            _group(process.pid, signal.SIGTERM)
+            with anyio.move_on_after(_GRACE):
+                while _group(process.pid, 0):
+                    await anyio.sleep(0.01)
+            if _group(process.pid, 0):
+                forced = True
+                _group(process.pid, signal.SIGKILL)
+        if process is not None:
+            if process.returncode is None:
+                try:
+                    process.kill()
+                except ProcessLookupError:
+                    pass
+                else:
+                    forced = job is None or forced
+            with anyio.fail_after(_GRACE):
+                await process.wait()
+                if job is None:
+                    while _group(process.pid, 0):
+                        await anyio.sleep(0.01)
+            if lifetime is not None and not lifetime.finished():
+                raise CleanupError("nested CLI command remains active; inspect retained state")
+            if job is None and (
+                forced or (was_running and not cancellation_exit_confirmed(process.returncode))
+            ):
+                raise CleanupError(
+                    "CLI process cleanup is unconfirmed after forced or abnormal termination; "
+                    "inspect retained state"
+                )
+    except (OSError, TimeoutError) as error:
+        raise CleanupError("CLI process cleanup is unconfirmed; inspect retained state") from error
+
+
 async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024 * 1024):
     """Return exit/stdout/stderr/truncation; reap only this invocation's descendants."""
     process = None
     job = None
+    lifetime = None
     stdout, stderr = bytearray(), bytearray()
     overflow = False
     stderr_truncated = False
@@ -56,12 +112,18 @@ async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024
                 from releasekit._winjob import Job
 
                 job = Job()
+            else:
+                lifetime = LifetimePipe(environment)
+                environment = lifetime.environment
+                options["pass_fds"] = lifetime.descriptors
             process = await anyio.open_process(
                 [sys.executable, "-I", "-B", "-c", BOOTSTRAP, str(path), digest, *argv],
                 cwd=root,
                 env=environment,
                 **options,
             )
+            if lifetime is not None:
+                lifetime.spawned()
             if job is not None:
                 job.assign(process.pid)
             await process.stdin.send(b"1")
@@ -82,21 +144,18 @@ async def execute(path, digest, argv, root, environment, timeout, limit=8 * 1024
     finally:
         with anyio.CancelScope(shield=True):
             try:
-                if job is not None:
-                    await anyio.to_thread.run_sync(job.stop)
-                elif process is not None and os.name != "nt":
-                    try:
-                        os.killpg(process.pid, signal.SIGKILL)
-                    except ProcessLookupError:
-                        pass
+                await _stop(process, job, lifetime)
             finally:
                 if job is not None:
                     job.close()
+                if lifetime is not None:
+                    lifetime.close()
                 if process is not None:
                     if process.returncode is None:
                         try:
                             process.kill()
-                        except ProcessLookupError:
+                        except OSError:
                             pass
-                    await process.wait()
-                    await process.aclose()
+                    with anyio.move_on_after(_GRACE):
+                        await process.wait()
+                        await process.aclose()

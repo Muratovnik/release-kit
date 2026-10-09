@@ -25,7 +25,7 @@ import sys
 from collections.abc import Sequence
 from pathlib import Path
 
-from . import cli, protection
+from . import cli, processes, protection
 
 ENVIRONMENT = "RELKIT_DELEGATE"
 
@@ -74,14 +74,29 @@ def _run(projection: Path, argv: Sequence[str]) -> int:
     cwd = None if _root(argv) is not None else repository
     # The interrupt reaches the child too; it decides how to stop, and killing it here
     # would cut short the cleanup it reports on.
-    process = subprocess.Popen([sys.executable, str(projection), *argv], cwd=cwd)
-    while True:
-        try:
-            code = process.wait()
-        except KeyboardInterrupt:
-            continue
-        # A POSIX child killed by a signal reports -N; a shell reports that as 128+N.
-        return 128 - code if code < 0 else code
+    lifetime = None
+    try:
+        options = {}
+        if os.name != "nt":
+            lifetime = processes.LifetimePipe(None)
+            options = {"pass_fds": lifetime.descriptors, "env": lifetime.environment}
+        process = subprocess.Popen([sys.executable, str(projection), *argv], cwd=cwd, **options)
+        if lifetime is not None:
+            lifetime.spawned()
+        while True:
+            try:
+                code = process.wait()
+            except KeyboardInterrupt:
+                continue
+            if lifetime is not None and not lifetime.finished():
+                raise processes.CleanupError(
+                    "projection process cleanup is unconfirmed; inspect retained state"
+                )
+            # A POSIX child killed by a signal reports -N; a shell reports that as 128+N.
+            return 128 - code if code < 0 else code
+    finally:
+        if lifetime is not None:
+            lifetime.close()
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -89,7 +104,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     projection = pinned_projection(argv, dict(os.environ))
     if projection is None:
         return cli.main(argv)
-    return _run(projection, argv)
+    try:
+        return _run(projection, argv)
+    except processes.CleanupError as error:
+        print(f"relkit: {error}", file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

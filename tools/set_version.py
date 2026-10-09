@@ -11,17 +11,21 @@ refuses any other lock change: a version bump must not carry a dependency update
 from __future__ import annotations
 
 import argparse
+import hashlib
+import os
 import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import tomllib
 from copy import deepcopy
+from dataclasses import dataclass
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from releasekit import distribution, plugin
+from releasekit import distribution, plugin, processes, storage
 
 # One pattern per file, each required to match exactly once. A second match would mean
 # the file gained another version and this tool no longer knows which one is the number.
@@ -96,7 +100,7 @@ def _resolved(lock: dict) -> dict[str, str]:
     return {package["name"]: package["version"] for package in lock["package"]}
 
 
-def relock(root: Path, version: str) -> bool:
+def relock(root: Path, version: str, *, uv: str = "uv") -> bool:
     """Let uv write its own lock, then refuse any resolved version but the runtime's.
 
     Deliberately not `--offline`: an incomplete cache makes offline resolution answer
@@ -111,16 +115,17 @@ def relock(root: Path, version: str) -> bool:
     """
     template = plugin_root(root)
     before = _lock(root)
-    completed = subprocess.run(
-        ["uv", "lock"],
+    completed = processes.run(
+        [uv, "lock"],
         cwd=template,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         timeout=LOCK_TIMEOUT,
         check=False,
     )
     if completed.returncode:
-        raise SystemExit(f"set-version: uv lock failed\n{completed.stderr.strip()}")
+        detail = completed.stderr.decode("utf-8", errors="replace").strip()
+        raise SystemExit(f"set-version: uv lock failed\n{detail}")
     after = _lock(root)
     runtime = tomllib.loads((template / "pyproject.toml").read_bytes().decode("utf-8"))
     expected = {**_resolved(before), runtime["project"]["name"]: version}
@@ -149,22 +154,129 @@ def _without_runtime(lock: dict, version: str, runtime: dict) -> dict:
     return expected
 
 
+@dataclass
+class Recovery:
+    path: Path
+    identity: tuple[int, int, int]
+    files: dict[Path, tuple[bytes, tuple[int, int, int]]]
+
+
+def preserve(root: Path, before: dict[Path, bytes], version: str) -> Recovery:
+    """Keep original bytes until resolver teardown and any rollback are known."""
+    recovery = None
+    try:
+        parent = storage.inside(root, root / ".cache")
+        parent.mkdir(exist_ok=True)
+        path = Path(tempfile.mkdtemp(prefix="version-recovery-", dir=parent))
+        recovery = Recovery(path, storage.identity(path), {})
+        inventory = {}
+        for index, (source, payload) in enumerate(before.items()):
+            name = f"{index:02d}-{source.name}"
+            target = storage.inside(path, path / name)
+            with target.open("xb") as stream:
+                stream.write(payload)
+                stream.flush()
+                os.fsync(stream.fileno())
+            recovery.files[target] = (payload, storage.identity(target))
+            inventory[source.relative_to(root).as_posix()] = {
+                "backup": name,
+                "sha256": hashlib.sha256(payload).hexdigest(),
+            }
+        manifest = path / "recovery.json"
+        storage.atomic_json(
+            manifest,
+            {
+                "schema": 1,
+                "tool": "set_version",
+                "root": str(root),
+                "requested_version": version,
+                "files": inventory,
+            },
+        )
+        recovery.files[manifest] = (manifest.read_bytes(), storage.identity(manifest))
+        return recovery
+    except (OSError, storage.StorageError) as error:
+        retained = f"; partial recovery retained at {recovery.path}" if recovery else ""
+        raise SystemExit(
+            "set-version: could not preserve previous bytes before changing versions"
+            + retained
+            + f": {error}"
+        ) from error
+
+
+def discard_recovery(recovery: Recovery) -> bool:
+    """Remove only the unchanged files this invocation wrote; retain any unknown data."""
+    try:
+        if storage.identity(recovery.path) != recovery.identity:
+            return False
+        if set(recovery.path.iterdir()) != set(recovery.files):
+            return False
+        for path, (payload, identity) in recovery.files.items():
+            if storage.identity(path) != identity or path.read_bytes() != payload:
+                return False
+        for path in recovery.files:
+            path.unlink()
+        recovery.path.rmdir()
+        return True
+    except (OSError, storage.StorageError):
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("version", help="Stable X.Y.Z")
     version = parser.parse_args(argv).version
     distribution.version_tuple(version)
-    if shutil.which("uv") is None:
+    uv = shutil.which("uv")
+    if uv is None:
         raise SystemExit("set-version: uv is required to regenerate the plugin lock")
-    written = [path for path, pattern in carriers(ROOT) if rewrite(path, pattern, version)]
-    written.extend(path for path in readmes(ROOT) if retarget_readme(path, version))
-    if relock(ROOT, version):
-        written.append(plugin_root(ROOT) / "uv.lock")
-    if distribution.source_version(declaration(ROOT).read_text(encoding="utf-8")) != version:
-        raise SystemExit("set-version: the runtime declaration did not take the new version")
-    plugin.check_versions(plugin_root(ROOT), version)
+    root = storage.checked(ROOT)
+    paths = [
+        *(path for path, _ in carriers(root)),
+        *readmes(root),
+        plugin_root(root) / "uv.lock",
+    ]
+    # A failed resolver or a malformed later carrier must not leave a half-bumped
+    # release. Preserve bytes, including line endings; uv remains the lock's writer.
+    before = {storage.inside(root, path): path.read_bytes() for path in paths}
+    recovery = preserve(root, before, version)
+    discard = False
+    try:
+        written = [path for path, pattern in carriers(root) if rewrite(path, pattern, version)]
+        written.extend(path for path in readmes(root) if retarget_readme(path, version))
+        if relock(root, version, uv=uv):
+            written.append(plugin_root(root) / "uv.lock")
+        if distribution.source_version(declaration(root).read_text(encoding="utf-8")) != version:
+            raise SystemExit("set-version: the runtime declaration did not take the new version")
+        plugin.check_versions(plugin_root(root), version)
+        discard = True
+    except processes.CleanupError as error:
+        raise SystemExit(
+            "set-version: resolver process cleanup is unconfirmed; previous bytes retained at "
+            f"{recovery.path}. Inspect owned processes before restoring files"
+        ) from error
+    except BaseException as error:
+        unrestored = []
+        for path, payload in before.items():
+            try:
+                storage.inside(root, path)
+                if not path.exists() or path.read_bytes() != payload:
+                    path.write_bytes(payload)
+            except (OSError, storage.StorageError):
+                unrestored.append(path.relative_to(root).as_posix())
+        if unrestored:
+            raise SystemExit(
+                "set-version: bump failed and previous bytes could not be restored in: "
+                + ", ".join(unrestored)
+                + f"; previous bytes retained at {recovery.path}"
+            ) from error
+        discard = True
+        raise
+    finally:
+        if discard and not discard_recovery(recovery):
+            print(f"set-version: recovery retained at {recovery.path}", file=sys.stderr)
     for path in written:
-        print(f"set-version: wrote {path.relative_to(ROOT).as_posix()}")
+        print(f"set-version: wrote {path.relative_to(root).as_posix()}")
     print(f"set-version: plugin, runtime, lock and CLI agree on {version}")
     return 0
 

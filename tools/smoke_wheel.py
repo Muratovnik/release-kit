@@ -9,12 +9,17 @@ removes it again. Nothing outside the given work directory is read or written.
 from __future__ import annotations
 
 import argparse
+import locale
 import os
 import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from releasekit import processes
 
 TIMEOUT = 600
 
@@ -45,15 +50,21 @@ def _environment(work: Path) -> dict[str, str]:
 def _run(
     command: list[str], environment: dict[str, str], cwd: Path | None = None
 ) -> subprocess.CompletedProcess:
-    return subprocess.run(
+    completed = processes.run(
         command,
-        capture_output=True,
-        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         timeout=TIMEOUT,
         env=environment,
         cwd=cwd,
         check=False,
     )
+    encoding = "utf-8" if sys.flags.utf8_mode else locale.getencoding()
+    output, errors = (
+        payload.decode(encoding).replace("\r\n", "\n").replace("\r", "\n")
+        for payload in (completed.stdout, completed.stderr)
+    )
+    return subprocess.CompletedProcess(completed.args, completed.returncode, output, errors)
 
 
 def _pinned_repository(work: Path, marker: str) -> Path:
@@ -76,6 +87,7 @@ def check(wheel: Path, version: str, work: Path) -> None:
     installed = _run([uv, "tool", "install", "--offline", str(wheel)], environment)
     if installed.returncode:
         raise WheelSmokeError(f"wheel did not install:\n{installed.stderr.strip()}")
+    cleanup_confirmed = True
     try:
         for command in ("relkit", "relkit-mcp"):
             shim = work / "bin" / (command + (".exe" if sys.platform == "win32" else ""))
@@ -99,8 +111,12 @@ def check(wheel: Path, version: str, work: Path) -> None:
                 f"{delegated.stdout.strip()!r}"
             )
         print("wheel-smoke: installed command ran the repository's pinned projection")
+    except processes.CleanupError:
+        cleanup_confirmed = False
+        raise
     finally:
-        _run([uv, "tool", "uninstall", "release-kit"], environment)
+        if cleanup_confirmed:
+            _run([uv, "tool", "uninstall", "release-kit"], environment)
 
 
 def main(argv: list[str] | None = None) -> int:

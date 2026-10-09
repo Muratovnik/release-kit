@@ -159,6 +159,148 @@ class OwnedProcessTests(unittest.TestCase):
         # A Windows job terminates all descendants, including the lock owner; a
         # retained lock is intentionally not auto-deleted after that abrupt stop.
 
+    def test_timeout_relays_through_multiple_nested_runners(self):
+        command, ready, late = self.tree()
+        for _ in range(3):
+            command = self.command(
+                f"from releasekit import processes\nprocesses.run({command!r}, timeout=25)\n"
+            )
+        with self.assertRaises(subprocess.TimeoutExpired):
+            processes.run(
+                command,
+                env=self.environment,
+                cwd=self.root,
+                timeout=2,
+                stderr=subprocess.PIPE,
+            )
+        self.assert_no_late_write(ready, late)
+
+    @unittest.skipIf(os.name == "nt", "POSIX relay failure; Windows owns one native job")
+    def test_failed_inner_cleanup_is_not_reported_as_a_confirmed_outer_timeout(self):
+        ready = self.root / "worker-pid"
+        worker = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        relay = (
+            "import subprocess\nfrom releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run({self.command(worker)!r}, timeout=25, "
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        try:
+            with self.assertRaises(processes.CleanupError):
+                processes.run(
+                    self.command(relay),
+                    env=self.environment,
+                    cwd=self.root,
+                    timeout=2,
+                    stderr=subprocess.PIPE,
+                )
+            self.assertTrue(ready.is_file(), "the denied cleanup must concern a started worker")
+        finally:
+            if ready.is_file():
+                try:
+                    os.killpg(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipIf(os.name == "nt", "POSIX nested lifetime; Windows owns one native job")
+    def test_inner_timeout_cannot_hide_a_live_worker_behind_an_ordinary_failure(self):
+        ready = self.root / "early-worker-pid"
+        worker = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        relay = (
+            "import subprocess\nfrom releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run({self.command(worker)!r}, timeout=2, env={{}}, "
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        try:
+            with (
+                patch.object(processes, "_GRACE", 0.3),
+                self.assertRaises(processes.CleanupError),
+            ):
+                processes.run(
+                    self.command(relay),
+                    env=self.environment,
+                    cwd=self.root,
+                    timeout=8,
+                    stderr=subprocess.PIPE,
+                )
+            self.assertTrue(ready.is_file(), "the inner command must fail after its worker starts")
+        finally:
+            if ready.is_file():
+                try:
+                    os.killpg(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    @unittest.skipIf(os.name == "nt", "POSIX descriptor inheritance")
+    def test_stale_lifetime_metadata_cannot_inherit_an_unrelated_pipe(self):
+        reader, writer = os.pipe()
+        try:
+            os.set_inheritable(writer, True)
+            identity = os.fstat(writer)
+            body = (
+                "import os\n"
+                f"try: value=os.fstat({writer})\n"
+                "except OSError: print('not inherited')\n"
+                f"else: print((value.st_dev,value.st_ino)=={(identity.st_dev, identity.st_ino)!r})\n"
+            )
+            with patch.dict(
+                os.environ,
+                {
+                    processes._LIFETIME_ENV: json.dumps(
+                        [[writer, identity.st_dev, identity.st_ino + 1]]
+                    )
+                },
+            ):
+                result = processes.run(self.command(body), timeout=5, stdout=subprocess.PIPE)
+            self.assertNotIn(b"True", result.stdout)
+            self.assertEqual(identity.st_ino, os.fstat(writer).st_ino)
+        finally:
+            os.close(writer)
+            os.close(reader)
+
+    @unittest.skipIf(os.name == "nt", "POSIX cancellation outcomes")
+    def test_cooperative_interruption_statuses_and_abnormal_exits_are_distinct(self):
+        for code in (3, 130, 2):
+            with self.subTest(code=code):
+                ready = self.root / f"ready-{code}"
+                command = self.command(
+                    "import signal,sys,time\nfrom pathlib import Path\n"
+                    f"signal.signal(signal.SIGTERM,lambda *args: sys.exit({code}))\n"
+                    f"Path({str(ready)!r}).touch()\n"
+                    "time.sleep(20)\n"
+                )
+                exception = processes.CleanupError if code == 2 else subprocess.TimeoutExpired
+                with self.assertRaises(exception):
+                    processes.run(command, timeout=2, stderr=subprocess.PIPE)
+                self.assertTrue(ready.exists())
+
+    @unittest.skipIf(os.name == "nt", "POSIX hard kill cannot acknowledge nested cleanup")
+    def test_forced_termination_requires_retaining_state(self):
+        ready = self.root / "ignoring-term"
+        command = self.command(
+            "import signal,time\nfrom pathlib import Path\n"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            f"Path({str(ready)!r}).touch()\n"
+            "time.sleep(20)\n"
+        )
+        with (
+            patch.object(processes, "_GRACE", 0.2),
+            self.assertRaisesRegex(processes.CleanupError, "forced or abnormal"),
+        ):
+            processes.run(command, timeout=2, stderr=subprocess.PIPE)
+        self.assertTrue(ready.exists())
+
     def checked_source(self):
         artifact = self.root / "fixture.pyz"
         artifact.write_bytes(b"setup only; never execute")
@@ -223,6 +365,72 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual("cleanup-unconfirmed", report["checks"][0]["status"])
         self.assertEqual("failed", report["status"])
 
+    @unittest.skipIf(os.name == "nt", "POSIX sequential source-gate cleanup propagation")
+    def test_source_gate_preserves_failed_sequential_worker_cleanup(self):
+        source = self.checked_source()
+        suite = self.root / "gate-tests"
+        suite.mkdir()
+        ready = self.root / "gate-worker-pid"
+        leaf = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        (suite / "test_gate.py").write_text(
+            "import subprocess,sys,unittest\nfrom releasekit import processes\n"
+            "class GateTests(unittest.TestCase):\n"
+            " def test_owned_worker(self):\n"
+            "  def denied(*args): raise PermissionError('controlled inner cleanup denial')\n"
+            "  processes._group=denied\n"
+            f"  processes.run({self.command(leaf)!r}, timeout=25, "
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n",
+            encoding="utf-8",
+        )
+        checker = self.root / "run-check.py"
+        checker.write_text(
+            "import sys\n"
+            f"sys.path.insert(0,{str(ROOT / 'tools')!r})\n"
+            "import check\n"
+            f"check.GATES=([{str(ROOT / 'tools/parallel_tests.py')!r}, "
+            f"'--jobs','1','--start-dir',{str(suite)!r}],)\n"
+            "raise SystemExit(check.main())\n",
+            encoding="utf-8",
+        )
+        script = (
+            "from pathlib import Path\nfrom releasekit import processes\n"
+            "import check_distribution\n"
+            f"check_distribution.ROOT=Path({str(source)!r})\n"
+            "check_distribution.source_checks=lambda root,uv: "
+            f"[('base',{[sys.executable, str(checker)]!r})]\n"
+            "check_distribution.shutil.which=lambda name:'uv'\n"
+            "with processes.termination_handler():\n"
+            " raise SystemExit(check_distribution.main(['--source-only']))\n"
+        )
+        environment = dict(self.environment)
+        environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT / "tools")))
+        try:
+            with self.assertRaises(processes.CleanupError):
+                processes.run(
+                    self.command(script),
+                    env=environment,
+                    cwd=self.root,
+                    timeout=2,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+            self.assertTrue(ready.is_file(), "the cleanup fault must concern a started worker")
+            state = source / ".cache/release-kit-checks"
+            self.assertTrue((state / "check.lock").is_file())
+            report = json.loads(next((state / "reports").glob("*.json")).read_text())
+            self.assertEqual("unconfirmed", report["process_cleanup"])
+            self.assertEqual("cleanup-unconfirmed", report["checks"][0]["status"])
+        finally:
+            if ready.is_file():
+                try:
+                    os.killpg(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
     def test_phase_timeout_is_reported_as_failure(self):
         report = {"checks": []}
         with self.assertRaises(subprocess.TimeoutExpired):
@@ -234,6 +442,125 @@ class OwnedProcessTests(unittest.TestCase):
                 timeout=0.2,
             )
         self.assertEqual("timed-out", report["checks"][0]["status"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX writer transfer into spawned source-test workers")
+    def test_spawned_source_workers_preserve_cleanup_ownership(self):
+        source = self.checked_source()
+        suite = self.root / "spawn-tests"
+        suite.mkdir()
+        denied, returned = self.root / "deny-cleanup", self.root / "source-returned"
+        worker = (
+            "import os,sys,time\nfrom pathlib import Path\n"
+            "root=Path(sys.argv[1]);name=sys.argv[2]\n"
+            "(root/(name+'.pid')).write_text(str(os.getpid()))\n"
+            "deadline=time.monotonic()+20\n"
+            f"while not Path({str(returned)!r}).exists() and time.monotonic()<deadline:\n"
+            " time.sleep(0.01)\n"
+            f"if Path({str(returned)!r}).exists(): (root/(name+'.late')).touch()\n"
+        )
+        (suite / "test_spawned.py").write_text(
+            "import multiprocessing,os,subprocess,sys,time,unittest\nfrom pathlib import Path\n"
+            "from releasekit import processes\n"
+            "class SpawnedTests(unittest.TestCase):\n"
+            " def owned(self,name,other):\n"
+            f"  root=Path({str(self.root)!r})\n"
+            "  self.assertEqual('spawn',multiprocessing.get_start_method())\n"
+            "  (root/(name+'.runner')).write_text(str(os.getpid()))\n"
+            "  deadline=time.monotonic()+5\n"
+            "  while not (root/(other+'.runner')).exists() and time.monotonic()<deadline:\n"
+            "   time.sleep(0.01)\n"
+            "  self.assertTrue((root/(other+'.runner')).exists())\n"
+            f"  if Path({str(denied)!r}).exists():\n"
+            "   def refusal(*args): raise PermissionError('controlled spawned worker denial')\n"
+            "   processes._group=refusal\n"
+            f"  processes.run([sys.executable,'-S','-c',{worker!r},str(root),name], "
+            "timeout=0.5,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            " def test_first(self): self.owned('first','second')\n"
+            " def test_second(self): self.owned('second','first')\n",
+            encoding="utf-8",
+        )
+        parallel = self.root / "run-spawned.py"
+        parallel.write_text(
+            "import multiprocessing,sys\n"
+            f"sys.path.insert(0,{str(ROOT / 'tools')!r})\n"
+            "import parallel_tests\n"
+            "if __name__=='__main__':\n"
+            " multiprocessing.set_start_method('spawn',force=True)\n"
+            f" raise SystemExit(parallel_tests.main(['--jobs','2','--start-dir',{str(suite)!r}]))\n",
+            encoding="utf-8",
+        )
+        checker = self.root / "run-pool-check.py"
+        checker.write_text(
+            "import sys\n"
+            f"sys.path.insert(0,{str(ROOT / 'tools')!r})\n"
+            "import check\n"
+            f"check.GATES=([{str(parallel)!r}],)\n"
+            "raise SystemExit(check.main())\n",
+            encoding="utf-8",
+        )
+        script = (
+            "from pathlib import Path\nfrom releasekit import processes\n"
+            "import check_distribution\n"
+            f"check_distribution.ROOT=Path({str(source)!r})\n"
+            "check_distribution.source_checks=lambda root,uv: "
+            f"[('base',{[sys.executable, str(checker)]!r})]\n"
+            "check_distribution.shutil.which=lambda name:'uv'\n"
+            "with processes.termination_handler():\n"
+            " raise SystemExit(check_distribution.main(['--source-only']))\n"
+        )
+        environment = dict(self.environment)
+        environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT / "tools")))
+        state = source / ".cache/release-kit-checks"
+        for refuse in (False, True):
+            with self.subTest(cleanup_denied=refuse):
+                for name in ("first", "second"):
+                    for suffix in ("pid", "runner", "late"):
+                        (self.root / f"{name}.{suffix}").unlink(missing_ok=True)
+                returned.unlink(missing_ok=True)
+                if refuse:
+                    denied.touch()
+                before = set((state / "reports").glob("*.json"))
+                try:
+                    expected = (
+                        self.assertRaises(processes.CleanupError)
+                        if refuse
+                        else contextlib.nullcontext()
+                    )
+                    with expected:
+                        completed = processes.run(
+                            self.command(script),
+                            env=environment,
+                            cwd=self.root,
+                            timeout=15,
+                            stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE,
+                        )
+                        self.assertEqual(1, completed.returncode, completed.stderr)
+                    self.assertTrue(
+                        all((self.root / f"{name}.pid").is_file() for name in ("first", "second"))
+                    )
+                    self.assertNotEqual(
+                        (self.root / "first.runner").read_text(),
+                        (self.root / "second.runner").read_text(),
+                        "both independently spawned workers must execute",
+                    )
+                    reports = set((state / "reports").glob("*.json")) - before
+                    self.assertEqual(1, len(reports))
+                    report = json.loads(reports.pop().read_text())
+                    self.assertEqual(refuse, (state / "check.lock").is_file())
+                    self.assertEqual(refuse, report.get("process_cleanup") == "unconfirmed")
+                    returned.touch()
+                    time.sleep(0.2)
+                    for name in ("first", "second"):
+                        self.assertEqual(refuse, (self.root / f"{name}.late").exists())
+                finally:
+                    for name in ("first", "second"):
+                        ready = self.root / f"{name}.pid"
+                        if ready.is_file():
+                            try:
+                                os.killpg(int(ready.read_text()), signal.SIGTERM)
+                            except ProcessLookupError:
+                                pass
 
     @unittest.skipUnless(os.name == "nt", "Windows asynchronous process teardown regression")
     def test_short_timeout_releases_the_child_cwd_before_returning(self):

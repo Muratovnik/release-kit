@@ -12,6 +12,8 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from releasekit import processes
 
 
 def fixture_environment() -> dict[str, str]:
@@ -78,22 +80,25 @@ def create_project(root: Path, artifact: Path, *, examples: Path | None = None):
 
 
 def invoke(root: Path, environment: dict[str, str], expected: int, *arguments: str):
-    result = subprocess.run(
+    result = processes.run(
         [sys.executable, str(root / ".github/relkit.pyz"), *arguments, "--json"],
         cwd=root,
         env=environment,
-        capture_output=True,
-        encoding="utf-8",
-        errors="replace",
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
         timeout=600,
         check=False,
+    )
+    output, errors = (
+        payload.decode("utf-8", errors="replace").replace("\r\n", "\n").replace("\r", "\n")
+        for payload in (result.stdout, result.stderr)
     )
     if result.returncode != expected:
         raise RuntimeError(
             f"candidate {' '.join(arguments)}: expected exit {expected}, got {result.returncode}\n"
-            f"{result.stdout}\n{result.stderr}"
+            f"{output}\n{errors}"
         )
-    response = json.loads(result.stdout)
+    response = json.loads(output)
     if response.get("schema_version") != 1 or response.get("exit_code") != expected:
         raise RuntimeError("candidate returned a mismatched CLI envelope")
     return response
@@ -107,12 +112,17 @@ def check_secret_detection(root: Path, environment: dict[str, str]) -> None:
     token = "ghp_" + hashlib.sha256(b"release-kit never-issued smoke credential").hexdigest()[:36]
     with path.open("x", encoding="utf-8") as stream:
         stream.write(f"github_token = {token}\n")
+    cleanup_confirmed = True
     try:
         rejected = invoke(root, environment, 1, "audit")
         if rejected["data"]["engines"] != {"betterleaks": 10, "lychee": 0}:
             raise RuntimeError("real secret scanner did not reject the synthetic credential")
+    except processes.CleanupError:
+        cleanup_confirmed = False
+        raise
     finally:
-        path.unlink()
+        if cleanup_confirmed:
+            path.unlink()
     recovered = invoke(root, environment, 0, "audit")
     if recovered["data"]["engines"] != {"betterleaks": 0, "lychee": 0}:
         raise RuntimeError("starter project did not recover after removing the credential fixture")

@@ -954,6 +954,7 @@ def _commands(
 
 def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_download: bool) -> None:
     assert runner.log is not None
+    audit_result = Result()
     with (
         storage.checked(runner.log).open("a", encoding="utf-8") as stream,
         contextlib.redirect_stdout(stream),
@@ -968,7 +969,13 @@ def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_down
             owner_mode=release.owner_audit,
             require_overlay=False,
             allow_download=not no_download,
+            result=audit_result,
         )
+    # The audit's CLI status cannot distinguish unresolved child ownership from an
+    # ordinary engine error. Preserve its structured refusal before releasing state.
+    for error in audit_result.errors:
+        if error["code"] == "engine_cleanup_unconfirmed":
+            raise processes.CleanupError(error["message"])
     if status:
         raise ReleaseError(
             f"{'history' if history else 'worktree'} publication audit failed; see the release log"

@@ -4,14 +4,19 @@ import hashlib
 import io
 import json
 import os
+import signal
 import unittest
 import zipfile
+from pathlib import Path
+from unittest.mock import patch
 
 import anyio
 from test_stdio import Fixture
 
 from releasekit import __version__, distribution
 from releasekit_mcp import process
+
+SOURCE = Path(__file__).resolve().parents[2] / "src"
 
 
 def alive(pid):
@@ -46,6 +51,163 @@ def replace_cli(fixture, source):
 
 
 class LifetimeTests(Fixture):
+    def test_timeout_and_cancellation_stop_deeply_nested_releasekit_commands(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                ready = self.root / "nested-ready.json"
+                trigger = self.root / "nested-trigger"
+                late = self.root / "nested-late"
+                child = (
+                    "import os,json,time\nfrom pathlib import Path\n"
+                    f"Path({str(ready)!r}).write_text(json.dumps(os.getpid()))\n"
+                    "deadline=time.monotonic()+20\n"
+                    f"while not Path({str(trigger)!r}).exists() and time.monotonic()<deadline:\n"
+                    " time.sleep(0.01)\n"
+                    f"if Path({str(trigger)!r}).exists(): Path({str(late)!r}).write_text('survived')\n"
+                )
+                script = self.root / "nested.py"
+                nested = child
+                for _ in range(3):
+                    nested = (
+                        "import sys\n"
+                        f"sys.path.insert(0,{str(SOURCE)!r})\n"
+                        "from releasekit import processes\n"
+                        f"processes.run([sys.executable,'-c',{nested!r}], timeout=25)\n"
+                    )
+                script.write_text(nested)
+                digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+                async def scenario(
+                    cancel=cancel,
+                    script=script,
+                    digest=digest,
+                    ready=ready,
+                    trigger=trigger,
+                    late=late,
+                ):
+                    try:
+                        if cancel:
+                            with anyio.move_on_after(2) as scope:
+                                await process.execute(
+                                    script, digest, [], self.root, dict(os.environ), 30
+                                )
+                            self.assertTrue(scope.cancel_called)
+                        else:
+                            with self.assertRaises(TimeoutError):
+                                await process.execute(
+                                    script, digest, [], self.root, dict(os.environ), 2
+                                )
+                        self.assertTrue(ready.is_file(), "the nested command must have started")
+                        trigger.touch()
+                        await anyio.sleep(0.3)
+                        self.assertFalse(late.exists(), "nested command survived MCP cleanup")
+                        self.assertTrue(alive(os.getpid()))
+                    finally:
+                        # A failing regression still reaps only its own recorded fixture.
+                        if ready.is_file():
+                            pid = json.loads(ready.read_text())
+                            if alive(pid):
+                                try:
+                                    os.kill(pid, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                        for path in (ready, trigger, late):
+                            path.unlink(missing_ok=True)
+
+                self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX abnormal relay outcome")
+    def test_failed_nested_cleanup_is_reported_even_after_the_relay_exits(self):
+        ready = self.root / "unknown-worker-pid"
+        child = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        script = self.root / "unknown.py"
+        script.write_text(
+            "import subprocess,sys\n"
+            f"sys.path.insert(0,{str(SOURCE)!r})\n"
+            "from releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run([sys.executable,'-c',{child!r}],timeout=25,"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            try:
+                with self.assertRaises(process.CleanupError):
+                    await process.execute(script, digest, [], self.root, dict(os.environ), 2)
+                self.assertTrue(ready.is_file())
+            finally:
+                if ready.is_file():
+                    try:
+                        os.killpg(int(ready.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+        self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX nested lifetime")
+    def test_inner_timeout_is_unconfirmed_before_the_outer_deadline(self):
+        ready = self.root / "early-worker-pid"
+        child = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        script = self.root / "early-unknown.py"
+        script.write_text(
+            "import subprocess,sys\n"
+            f"sys.path.insert(0,{str(SOURCE)!r})\n"
+            "from releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run([sys.executable,'-c',{child!r}],timeout=2,env={{}},"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            try:
+                with (
+                    patch.object(process, "_GRACE", 0.3),
+                    self.assertRaises(process.CleanupError),
+                ):
+                    await process.execute(script, digest, [], self.root, dict(os.environ), 8)
+                self.assertTrue(ready.is_file())
+            finally:
+                if ready.is_file():
+                    try:
+                        os.killpg(int(ready.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+        self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX forced relay termination")
+    def test_forced_termination_reports_unconfirmed_cleanup(self):
+        script = self.root / "ignoring-term.py"
+        script.write_text(
+            "import signal,time\nfrom pathlib import Path\n"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            "Path('ignoring-ready').touch()\n"
+            "time.sleep(20)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            with (
+                patch.object(process, "_GRACE", 0.2),
+                self.assertRaisesRegex(process.CleanupError, "forced or abnormal"),
+            ):
+                await process.execute(script, digest, [], self.root, dict(os.environ), 2)
+            self.assertTrue((self.root / "ignoring-ready").is_file())
+
+        self.run_async(scenario)
+
     def test_stdio_request_cancellation_stops_cli_and_keeps_server_usable(self):
         replace_cli(
             self,

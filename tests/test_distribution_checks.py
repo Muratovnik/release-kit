@@ -115,13 +115,16 @@ class GateTests(unittest.TestCase):
         )
         self.assertEqual({"base", "mcp"}, set(source))
         self.assertEqual(
-            {"cli-smoke", "onboarding", "wheel-install", "plugin-stdio"}, set(packages)
+            {"cli-smoke", "onboarding", "wheel-install", "changelog", "plugin-stdio"}, set(packages)
         )
         mcp = source["mcp"]
         self.assertIn("--locked", mcp)
         self.assertIn("--no-python-downloads", mcp)
         self.assertIn(str(root / "tools/check_mcp.py"), mcp)
         self.assertIn(str(scratch / "assets/release-kit-plugin.zip"), packages["plugin-stdio"])
+        draft = packages["changelog"]
+        self.assertEqual(str(scratch / "assets/relkit.pyz"), draft[draft.index("--artifact") + 1])
+        self.assertEqual(str(scratch / "changelog space"), draft[draft.index("--work-dir") + 1])
 
     def test_provided_candidate_bytes_are_checked_without_a_rebuild(self):
         assets = Path("source/downloaded")
@@ -129,7 +132,7 @@ class GateTests(unittest.TestCase):
             Path("source"), Path("scratch"), "uv", "1.2.3", assets
         )
         self.assertEqual(
-            ["cli-smoke", "onboarding", "wheel-install", "plugin-stdio"],
+            ["cli-smoke", "onboarding", "wheel-install", "changelog", "plugin-stdio"],
             [n for n, _ in commands],
         )
         self.assertIn(str(assets / "relkit.pyz"), dict(commands)["onboarding"])

@@ -8,8 +8,9 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
-from releasekit import cli
+from releasekit import cli, processes
 
 
 class DraftOutputSafetyTests(unittest.TestCase):
@@ -83,6 +84,18 @@ class DraftOutputSafetyTests(unittest.TestCase):
         self.assertEqual(self.draft.encode(), (self.root / "release notes.md").read_bytes())
         self.assertEqual(self.original, source.read_bytes())
         self.assertEqual(policy, (self.root / "relkit.toml").read_bytes())
+
+    def test_unknown_generation_cleanup_remains_an_explicit_structured_refusal(self):
+        source = self.root / "CHANGELOG.md"
+        source.write_bytes(self.original)
+        with patch.object(
+            processes, "run", side_effect=processes.CleanupError("owned worker still unconfirmed")
+        ):
+            code, result, _ = self.invoke("--output", "release notes.md")
+        self.assertEqual(2, code)
+        self.assertEqual("generation_cleanup_unconfirmed", result["errors"][0]["code"])
+        self.assertFalse((self.root / "release notes.md").exists())
+        self.assertEqual(self.original, source.read_bytes())
 
 
 if __name__ == "__main__":
