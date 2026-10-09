@@ -40,6 +40,8 @@ DOCUMENTS = (
     "examples/audit/relkit.toml",
     "examples/audit/.betterleaks.toml",
     "examples/audit/.gitignore",
+    "examples/changelog/README.md",
+    "examples/changelog/cliff.toml",
     "examples/plugin-marketplace.json",
 )
 # Pages that stay in the repository. A relative link to one of them would resolve to

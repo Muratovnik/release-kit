@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import runpy
 import subprocess
 import sys
@@ -25,6 +26,35 @@ BUILDER = runpy.run_path(str(ROOT / "tools/build_plugin.py"))
 
 
 class PluginBuildTests(unittest.TestCase):
+    def test_packaged_notes_include_the_changelog_starter_and_its_relative_links(self):
+        with tempfile.TemporaryDirectory(prefix="packaged notes ") as temporary:
+            output = Path(temporary) / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as archive:
+                inventory = json.loads(archive.read("release-kit/package.json"))["files"]
+                for name in ("examples/changelog/README.md", "examples/changelog/cliff.toml"):
+                    self.assertIn(name, inventory)
+                    payload = archive.read("release-kit/" + name)
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), inventory[name])
+                    self.assertEqual((ROOT / name).read_bytes(), payload)
+                for document, label in (
+                    ("docs/notes.md", "examples/changelog"),
+                    ("examples/changelog/README.md", "heading aliases"),
+                    ("examples/changelog/README.md", "custom generators"),
+                ):
+                    text = archive.read("release-kit/" + document).decode("utf-8")
+                    _, marker, tail = text.partition(f"[{label}](")
+                    self.assertTrue(marker, f"{document} must link to {label}")
+                    target = tail.partition(")")[0].split("#", 1)[0]
+                    self.assertFalse(target.startswith(("https://", "http://", "/")))
+                    resolved = posixpath.normpath(
+                        posixpath.join(posixpath.dirname(document), target)
+                    )
+                    self.assertIn(
+                        resolved, inventory, f"{document} has an unresolved link: {target}"
+                    )
+                    self.assertIn("release-kit/" + resolved, archive.namelist())
+
     def test_windows_runtime_paths_support_long_drive_and_unc_locations(self):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
         with patch.object(sys, "platform", "win32"):

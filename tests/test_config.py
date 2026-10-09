@@ -8,6 +8,36 @@ from releasekit import config
 
 
 class LoadTests(unittest.TestCase):
+    def test_heading_aliases_keep_display_names_and_closed_semantic_roles(self) -> None:
+        with tempfile.TemporaryDirectory() as name:
+            root = Path(name)
+            (root / config.CONFIG_NAME).write_text(
+                '[changelog]\nprofile = "conventional-changelog"\n'
+                '[changelog.section_aliases]\n"Исправлено" = "fixes"\n'
+                '"Главное" = "highlights"\n"Bug Fixes" = "fixes"\n',
+                encoding="utf-8",
+            )
+            self.assertEqual(
+                {"Исправлено": "fixes", "Главное": "highlights", "Bug Fixes": "fixes"},
+                config.load(root).changelog.section_aliases,
+            )
+
+    def test_bad_heading_aliases_are_configuration_errors_even_for_legacy(self) -> None:
+        for payload in (
+            "[changelog]\nsection_aliases = []",
+            '[changelog.section_aliases]\n"" = "fixes"',
+            '[changelog.section_aliases]\n" Исправлено" = "fixes"',
+            '[changelog.section_aliases]\n"Исправлено\\nДругое" = "fixes"',
+            '[changelog.section_aliases]\n"Исправлено" = false',
+            '[changelog.section_aliases]\n"Исправлено" = "unknown"',
+            '[changelog.section_aliases]\n"Features" = "highlights"',
+        ):
+            with self.subTest(payload=payload), tempfile.TemporaryDirectory() as name:
+                root = Path(name)
+                (root / config.CONFIG_NAME).write_text(payload, encoding="utf-8")
+                with self.assertRaisesRegex(config.ConfigError, "section_aliases"):
+                    config.load(root)
+
     def test_changelog_policy_is_opt_in_and_accepts_an_explicit_first_version(self) -> None:
         with tempfile.TemporaryDirectory() as name:
             root = Path(name)

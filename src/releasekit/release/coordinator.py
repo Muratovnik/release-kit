@@ -25,6 +25,7 @@ from .. import (
     progress,
     protection,
     publication,
+    semver,
     storage,
 )
 from ..result import Result
@@ -75,8 +76,12 @@ def fingerprint(value: object) -> str:
 
 def version_tag(value: str) -> tuple[str, str]:
     version = changelog.normalize(value)
-    if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", version):
-        raise ReleaseError("release coordination currently supports stable X.Y.Z / vX.Y.Z only")
+    try:
+        semver.parse(version)
+    except ValueError as error:
+        raise ReleaseError(
+            f"release version must be SemVer, optionally prefixed with v: {error}"
+        ) from error
     return version, "v" + version
 
 
@@ -165,6 +170,7 @@ def notes_for(
         version,
         profile=profile,
         first_version=policy.changelog.first_version,
+        section_aliases=policy.changelog.section_aliases,
     )
     if entry is None:
         raise ReleaseError(f"no changelog entry for {version}")
@@ -191,7 +197,10 @@ def notes_for(
     for line in lines[1:]:
         if line.startswith("### "):
             section = line[4:].strip()
-        if section in changelog._EDITORIAL:
+        if (
+            changelog.section_kind(section, policy.changelog.section_aliases)
+            in changelog.EDITORIAL_KINDS
+        ):
             continue
         for match in changelog._COMMIT_LINK.finditer(line):
             parts = urlsplit(match[2])
@@ -684,7 +693,13 @@ def read_state(runner: Runner, path: Path, tag: str, *, same_version: bool) -> d
         or saved["publication"] not in {"not-pushed", "draft", "published"}
         or saved["verification"] not in {"not-run", "running", "failed", "passed"}
         or saved["cleanup"]
-        not in {"not-run", "passed", "retained-unowned-or-changed-files", "blocked-unsafe-path"}
+        not in {
+            "not-run",
+            "passed",
+            "retained-unowned-or-changed-files",
+            "retained-process-cleanup-unconfirmed",
+            "blocked-unsafe-path",
+        }
     ):
         raise ReleaseError("malformed saved release state")
     for temporary in [saved.get("temporary"), *saved.get("retained_temporaries", [])]:
@@ -859,6 +874,7 @@ def _reconcile(runner: Runner, github: GitHub, state: dict) -> tuple[bool, dict 
                 or observed["id"] != previous["release_id"]
                 or observed["draft"]
                 or observed["prerelease"]
+                != semver.parse(previous["tag"].removeprefix("v")).is_prerelease
             ):
                 raise ReleaseError("previous published release disappeared or changed identity")
         ref = f"refs/tags/{previous['tag']}"
@@ -1308,10 +1324,12 @@ def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str
     directory = value["settings"].get("publisher") == "directory"
     if (
         release["draft"]
-        or release["prerelease"]
+        or release["prerelease"] != semver.parse(value["version"]).is_prerelease
         or (not directory and release.get("immutable") is not True)
     ):
-        raise ReleaseError("release must be published, stable and immutable")
+        raise ReleaseError(
+            "release must be published and immutable with the planned prerelease status"
+        )
     if release["tag_name"] != value["tag"]:
         raise ReleaseError("published release names another tag")
     if (release.get("body") or "").replace("\r\n", "\n").rstrip("\n") != value["notes"]:
@@ -1643,6 +1661,7 @@ def run(
     *,
     publish: bool = False,
     bump: str = "",
+    prerelease: str = "",
     ci_run: int = 0,
     assets: str = "",
     plan_hash: str = "",
@@ -1683,7 +1702,7 @@ def run(
                 or assets
                 or prepare_here
             ):
-                raise ReleaseError("release next accepts only --bump and --root")
+                raise ReleaseError("release next accepts only --bump, --prerelease and --root")
             policy = config.load(root)
             if policy.release is None:
                 raise ReleaseError("configure the opt-in [release] contract first")
@@ -1691,7 +1710,7 @@ def run(
                 remote_identity(runner, policy.release.remote, policy.release.repository)
             github = publisher(runner, policy.release, github)
             value = versions.next_version(
-                runner, github, policy.release, policy.changelog.first_version, bump
+                runner, github, policy.release, policy.changelog.first_version, bump, prerelease
             )
             result.data["next"] = value
             print(
@@ -1704,6 +1723,10 @@ def run(
             return 0
         if bump:
             raise ReleaseError("--bump is accepted only by release next")
+        if prerelease:
+            raise ReleaseError(
+                "--prerelease is accepted only by release next; other actions take an explicit version"
+            )
         _, tag = version_tag(version)
         if accept_ci_attempt and (action != "resume" or accept_ci_attempt < 1):
             raise ReleaseError("--accept-ci-attempt is a positive explicit resume-only choice")

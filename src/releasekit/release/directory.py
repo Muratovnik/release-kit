@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-import re
 import shutil
 
-from .. import canonical, storage
+from .. import canonical, semver, storage
 from .backend import CommandError, ReleaseError
 
 MANIFEST = "relkit-release.json"
@@ -29,7 +28,11 @@ class Directory:
             ) from error
 
     def release(self, tag):
-        if not re.fullmatch(r"v(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", tag):
+        try:
+            number = semver.parse(tag[1:]) if tag.startswith("v") else None
+        except ValueError:
+            number = None
+        if number is None:
             raise ReleaseError("invalid release directory tag")
         folder = storage.inside(self.path, self.path / tag)
         if not folder.exists():
@@ -38,13 +41,17 @@ class Directory:
         if not manifest.is_file() or manifest.stat().st_size > 2 * 1024 * 1024:
             raise ReleaseError("release directory has no valid publication manifest")
         record = json.loads(manifest.read_text(encoding="utf-8"))
-        if record.get("schema") != 1 or record.get("tag") != tag:
+        if (
+            record.get("schema") != 1
+            or record.get("tag") != tag
+            or record.get("version") != str(number)
+        ):
             raise ReleaseError("release directory manifest identity differs")
         return {
             "id": canonical.fingerprint(record),
             "tag_name": tag,
             "draft": False,
-            "prerelease": False,
+            "prerelease": number.is_prerelease,
             "body": record["notes"],
             "record": record,
         }
@@ -52,11 +59,16 @@ class Directory:
     def releases(self):
         if not self.path.exists():
             return []
-        return [
-            self.release(p.name)
-            for p in storage.checked(self.path).iterdir()
-            if re.fullmatch(r"v\d+\.\d+\.\d+", p.name)
-        ]
+        releases = []
+        for path in storage.checked(self.path).iterdir():
+            if not path.name.startswith("v"):
+                continue
+            try:
+                semver.parse(path.name[1:])
+            except ValueError:
+                continue
+            releases.append(self.release(path.name))
+        return releases
 
     def release_by_id(self, identifier):
         """A directory is read straight from disk, so nothing here can lag behind a write.

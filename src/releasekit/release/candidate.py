@@ -10,7 +10,7 @@ import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from .. import canonical, config, processes, storage
+from .. import canonical, config, processes, semver, storage
 from . import settings
 from .backend import Pending, ReleaseError, clean
 
@@ -34,7 +34,8 @@ def inputs(runner, version):
     if observed not in ([version], [tag]):
         raise ReleaseError("candidate version differs from the committed version_file")
     assets = [settings.filename(name.format(version=version, tag=tag)) for name in release.assets]
-    if MANIFEST in assets or len({name.casefold() for name in assets}) != len(assets):
+    folded = {name.casefold() for name in assets}
+    if MANIFEST.casefold() in folded or len(folded) != len(assets):
         raise ReleaseError("candidate assets collide with each other or the candidate manifest")
     return {
         "schema": 1,
@@ -276,7 +277,7 @@ def tag_proof(runner, value):
         runner.git("cat-file", "-t", ref) != "tag"
         or runner.git("rev-parse", ref + "^{commit}") != value["sha"]
     ):
-        raise ReleaseError("promotion requires the annotated stable tag at this source SHA")
+        raise ReleaseError("promotion requires the annotated release tag at this source SHA")
     message = runner.git("for-each-ref", "--format=%(contents)", ref)
     matches = re.findall(
         r"^Release candidate: ([1-9]\d*)/([1-9]\d*) ([a-f0-9]{64})$", message, re.MULTILINE
@@ -310,7 +311,7 @@ def draft(runner, github, version, directory):
         record.get("ci") != {"id": int(run_id), "attempt": int(attempt)}
         or canonical.fingerprint(record) != digest
     ):
-        raise ReleaseError("promoted candidate differs from the stable tag annotation")
+        raise ReleaseError("promoted candidate differs from the release tag annotation")
     if record.get("files") != files or any(
         record.get(key) != expected for key, expected in value.items()
     ):
@@ -319,10 +320,10 @@ def draft(runner, github, version, directory):
     if (
         not release
         or not release["draft"]
-        or release["prerelease"]
+        or release["prerelease"] != semver.parse(value["version"]).is_prerelease
         or release["tag_name"] != value["tag"]
     ):
-        raise ReleaseError("expected an unpublished stable draft")
+        raise ReleaseError("expected an unpublished draft with the planned prerelease status")
     notes = config.load(runner.root).changelog
     from . import changelog
     from .coordinator import source
@@ -332,6 +333,7 @@ def draft(runner, github, version, directory):
         value["version"],
         profile="strict" if notes.profile == "legacy" else notes.profile,
         first_version=notes.first_version,
+        section_aliases=notes.section_aliases,
     )
     if (
         release.get("body", "").replace("\r\n", "\n").rstrip()

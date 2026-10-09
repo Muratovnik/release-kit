@@ -18,7 +18,7 @@ first_version = "1.0.0"
 publisher = "directory"
 directory = ".cache/releases"
 version_file = "VERSION"
-version_pattern = '^([0-9]+\.[0-9]+\.[0-9]+)$'
+version_pattern = '^([^\s]+)$'
 assets = ["application.zip", "SHA256SUMS"]
 checksum_file = "SHA256SUMS"
 checks = [["python", "tools/check.py"]]
@@ -50,7 +50,7 @@ configuration set, has nothing to package. Declare an empty asset set:
 publisher = "github"
 repository = "example/skills"
 version_file = "VERSION"
-version_pattern = '^([0-9]+\.[0-9]+\.[0-9]+)$'
+version_pattern = '^([^\s]+)$'
 assets = []
 checks = [["{python}", "tools/check.py", "--all"]]
 smoke = [["{python}", "tools/check.py"]]
@@ -82,13 +82,62 @@ relkit release status 1.0.0
 relkit release verify 1.0.0
 ```
 
-Prepare runs checks, publication audits, build and smoke before creating a stable
+Prepare runs checks, publication audits, build and smoke before creating a release
 tag. Its receipt binds source SHA, settings, version and all file sizes/digests.
 Each failed preparation retains its attempt and can retry the same version.
 Review the resulting plan before run. Run rechecks current local gates and the
 prepared bytes, creates the annotated local tag and publishes those exact bytes.
 It does not rebuild at publication time. Use `resume VERSION --publish` after an
 interruption; it reconciles the saved destination before advancing.
+
+### Prereleases and the final release
+
+Target projects can publish [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html)
+versions, including `1.0.0-rc`, `1.0.0-rc.2` and `1.0.0-rc.2+build.17`.
+The optional `v` prefix is tag syntax; the recorded version has no prefix.
+`version_pattern` extracts the complete committed version, including any suffix;
+release-kit then validates its SemVer syntax and ordering. A pattern restricted
+to three numbers must be updated before preparing an RC.
+
+To select a numbered RC, use:
+
+```bash
+relkit release next --bump patch --prerelease rc
+relkit release prepare 1.0.0-rc.1
+relkit release plan 1.0.0-rc.1
+relkit release run 1.0.0-rc.1 --publish --plan-hash REVIEWED
+```
+
+This example assumes `first_version = "1.0.0"` and no stable publication yet.
+Commit `VERSION` and its changelog entry for the selected version before prepare.
+After a stable publication, `--bump` chooses the next stable core first; the
+prerelease label then selects `rc.1` or the next number above a published `rc.N`
+of that core. The label must be one nonnumeric ASCII identifier, such as `alpha`,
+`beta` or `rc`. Use an explicit version for other SemVer identifier layouts.
+An occupied unpublished RC is reported as occupied and is not skipped. Choosing
+an earlier channel after a later one was published is refused.
+
+An RC's predecessor is the latest published prerelease with the same `X.Y.Z`,
+or the previous stable release if there is no RC for that core. A final release
+uses the previous stable publication, keeping all changes shipped in its RCs in
+the final notes. Published prereleases for other version cores do not advance
+this boundary. The first declared core admits both its initial RCs and its final
+release; declaring `first_version = "1.0.0-rc.1"` also permits the eventual `1.0.0`.
+
+When generating notes, pass the `previous.tag` from `release next` or the plan
+explicitly as `notes --draft --from-tag TAG`; the newest Git tag may be an RC or
+an abandoned candidate. For example, after stable `0.9.0` and RCs of `1.0.0`,
+`relkit notes 1.0.0 --draft --from-tag v0.9.0` drafts the complete stable range.
+Review, update and commit the changelog before planning again.
+
+Build metadata remains part of the exact version, tag and asset identity but
+does not increase SemVer precedence. A change from `1.0.0-rc.2+build.1` to
+`1.0.0-rc.2+build.2` cannot substitute for a new release number. GitHub delivery
+marks RC releases as prereleases and verifies that status during recovery;
+directory delivery records the same status from the manifest's version.
+The release-kit CLI's own wheel, plugin and updater retain their documented
+stable-version distribution contract; target-project SemVer support does not
+convert arbitrary SemVer identifiers to Python package versions.
 
 ### One invocation
 
