@@ -2,6 +2,18 @@
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/Muratovnik/release-kit/compare/v0.31.0...v0.32.0) (2026-10-09)
+
+### Features
+
+- **release:** support SemVer previews and localized changelog sections ([85f1b1f](https://github.com/Muratovnik/release-kit/commit/85f1b1fe6885bd8d1f624ceb6b53ee54922ad3cc))
+
+### Bug Fixes
+
+- **audit:** preserve publication boundaries and owned scanner state ([e36d253](https://github.com/Muratovnik/release-kit/commit/e36d253fefc657ec322d2d5674886d10aa1a9268))
+- **audit:** preserve literal filenames across Git inventories and link scans ([69e57f2](https://github.com/Muratovnik/release-kit/commit/69e57f2ac68e1334663cf6f81a29595d46af1e55))
+- **runtime:** retain process ownership and verify exact release inputs ([29da007](https://github.com/Muratovnik/release-kit/commit/29da007269636209ebda48b115839940990eab81))
+
 ## [0.31.0](https://github.com/Muratovnik/release-kit/compare/v0.30.0...v0.31.0) (2026-09-26)
 
 ### Highlights
