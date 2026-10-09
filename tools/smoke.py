@@ -170,7 +170,7 @@ def main() -> int:
         print(f"smoke: {problem}", file=sys.stderr)
     if problems:
         return 1
-    print(f"smoke: published release-kit {arguments.version} assets are consistent and runnable")
+    print(f"smoke: release-kit {arguments.version} assets are consistent and runnable")
     return 0
 
 

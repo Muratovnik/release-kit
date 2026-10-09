@@ -37,7 +37,11 @@ identity and precedence are not interchangeable with Python version normalizatio
 Severity describes the consequence of the original behavior: **high** includes
 publication/privacy bypass, unintended execution or deletion, source overwrite,
 and loss of trustworthy recovery ownership; **medium** includes incorrect release
-selection, false qualification, broken recovery inspection, and unusable output.
+selection, false qualification, broken recovery inspection, and unusable output;
+**low** includes presentation ambiguity. R1–R3 are requested capability expansions
+beyond the baseline contract. Other rows identify baseline defects or explicitly
+label corrections needed while integrating the expanded lifecycle. The report
+records 34 findings and capability changes.
 
 ### Release identities and changelog
 
@@ -52,6 +56,7 @@ selection, false qualification, broken recovery inspection, and unusable output.
 | R7 | Medium; preview integration | Adding preview releases exposed an implicit most-recent-tag range that omitted changes already included in earlier candidates from final stable notes. | `notes --draft --from-tag TAG` selects an explicit predecessor. The tag must exist, resolve unambiguously to the exact tag ref, and be an ancestor of HEAD. A conflicting short ref cannot silently choose another history. |
 | R8 | Medium | Packaged notes documentation linked to a changelog starter that was absent from the plugin archive. | Both starter files are packaged and included in the inventory; the real ZIP test resolves the documentation's relative link. |
 | R9 | Medium | Recovery status could not read its own retained-process-cleanup state; a case variant of the reserved candidate receipt name could collide on case-insensitive filesystems. | Receipt validation accepts the documented retained state, and candidate asset checks reserve the receipt name case-insensitively. |
+| R10 | Medium; documentation | The Node/Angular example implied that stock generator output was a stdout draft compatible with the bounded changelog profile, without establishing either output or layout compatibility. | The [Node generator documentation](../notes.md#generators) now declares a project-owned script with exact argv, requires the script or project metadata to select the version and range, and explains the stdout option and stock Angular heading/section differences. The writer must satisfy the selected profile; no version or range is injected into a custom command. This correction was checked against source and documentation only. No Node execution is claimed. |
 
 Implementation: [SemVer](../../src/releasekit/semver.py),
 [release selection](../../src/releasekit/release/versions.py),
@@ -109,6 +114,7 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D8 | High; baseline and lifecycle integration | The updater could roll back and unlock after a candidate-audit timeout while a worker still ran. Guard refresh also needed to propagate the new scanner cleanup result. | Candidate commands use owned process execution. Unconfirmed cleanup preserves the pending transaction, original backup, workspace and lock instead of starting automatic rollback or suggesting an immediate retry. |
 | D9 | Medium; lifecycle integration | The installed projection launcher and bounded package smoke wrappers closed inherited lifetime descriptors; wheel and secret-fixture cleanup could then run after unresolved descendant cleanup. | The interactive launcher preserves descriptor ownership without changing inherited stdin or Ctrl+C behavior. Bounded smoke commands use the shared runner. Unconfirmed cleanup retains their installation/input fixtures; completed ordinary failures keep normal cleanup. |
 | D10 | High; lifecycle integration | A multiprocessing `spawn` worker lost ancestor lifetime descriptors. A real failed test left a child alive, but the distribution check reported ordinary failure and removed its lock. | Each worker receives a separately transferred, identity-validated writer using multiprocessing's existing descriptor transfer. The parent retains its writer through lazy spawning and pool shutdown, then checks EOF. Actual fork/spawn controls preserve the lock on uncertainty; ordinary timeouts still stop workers and release it. |
+| D11 | Low; development status | The development smoke success message described checked CLI bytes as published even when qualifying an unpublished candidate. | The success status no longer asserts publication. Validation and exit behavior are unchanged; the actual CLI smoke against the qualified candidate and scoped Ruff checks passed for this wording-only correction. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
@@ -143,11 +149,134 @@ bypasses; they do not identify a missing payload in the original maintained layo
 
 ## Validation record
 
-Aggregate qualification of the final committed 0.32.0 candidate is pending at this
-report revision. The completed subsystem controls above do not substitute for that
-gate. The final validation record will identify its source revision and results.
-Package qualification checks the same seven artifact files before and after
-execution; a passing source test is not substituted for artifact evidence.
+### Candidate identity and qualification status
+
+The qualified clean remote 0.32.0 candidate is source commit
+`1c139f6e4c3f77592984c75ef8668da6ebc1fcd9`, with Git tree
+`0e385a9b6d8eb83cff48e79dbe724d0f1e012dd5`. The complete canonical
+`working-tree-distribution-check`, report `run-k_cqlusk`, passed all eight phases
+with exit code 0. Its source identity is a clean checkout of that commit.
+
+| Check | Recorded result | Exact evidence |
+| --- | --- | --- |
+| Base source suite | Passed | 755 discovered tests, four explicit skips, 56.353 seconds; Linux x86_64, Python 3.12.14 |
+| Ruff | Passed | Check and format checks passed; 108 files checked for formatting |
+| MCP source/SDK suite | Passed | 75 discovered tests, three explicit skips, 522.697 seconds |
+| Strict release build | Qualified | Seven-file inventory below, built from the candidate commit and matched to the gate inventory |
+| Package checks on the identified seven files | Passed | `cli-smoke`, `onboarding`, `wheel-install`, `changelog`, and `plugin-stdio`: each passed with exit code 0 |
+| Inventory after package execution | Unchanged | Every retained artifact hash matches the gate's before/after inventory |
+| Complete canonical distribution gate | Passed | `base`, `mcp`, `build`, and the five package phases above: eight passed, each exit code 0; report `run-k_cqlusk` |
+| Separate provided-assets control | Passed | Actual `provided-assets-check`, report `run-syjfbktl`: the same five package phases passed with exit code 0 on the same seven hashes; source and artifacts remained unchanged |
+
+No aggregate wall-clock duration was recorded. The individual source-suite times
+above must not be read as the duration of the full distribution gate. The separate
+provided-assets run executed the actual package checks with observational wrappers
+around identity capture and cleanup; those wrappers called the original operations
+and did not replace any check or command. Its cleanup observations are recorded
+below.
+
+The final report and a one-line development smoke success-message correction are
+subsequent changes to this qualified candidate. The actual CLI smoke against the
+qualified assets, with version `0.32.0` and the source checkout, passed with exit
+code 0 after that wording correction; scoped Ruff check and format checks also
+passed. The eight-phase qualification remains bound to `1c139f6e4c3f77592984c75ef8668da6ebc1fcd9`,
+not to the later report/status revision. A strict rebuild and artifact identity
+comparison for that later revision have not yet been recorded here; their actual
+result belongs in the final delivery record.
+
+### Qualified artifact identities
+
+These SHA-256 values identify the strict-built and package-qualified candidate.
+The retained seven-file set matches both actual distribution-check inventories,
+and every file was unchanged after package execution.
+
+| File | SHA-256 |
+| --- | --- |
+| `release-kit-plugin.zip` | `0c4573485e1bb6db9ff9255f6676644715f623c22cb2b0a0058bc2a65366452a` |
+| `release-kit-plugin.zip.sha256` | `b3a5fdacdc3a41c81c900041a4df8b5d2ad1ef84f4ac5090247f6478d887bd18` |
+| `release.json` | `ff6718379324a0451db09f5a91f7c1b2d7614d571f45e41218a644be3fcec40c` |
+| `release_kit-0.32.0-py3-none-any.whl` | `6ef2ff1d2c7b9725a678a8a6333bbf14d6176a6af124860832e902bc133d4b66` |
+| `release_kit-0.32.0-py3-none-any.whl.sha256` | `6eda9bccb2abf0e70648809ce0299ded846bcecbba1ed4044706438e1f3ac982` |
+| `relkit.pyz` | `5b3554a7fb7af19b15ea001f9e3175a1f211d698f5ffd328ba8b32c075225bb2` |
+| `relkit.pyz.sha256` | `ea6549605fa04e02461ea919d884a5a7b91df62b8b57920319df9672cdca198a` |
+
+### First aggregate failure and fixture correction
+
+The first aggregate attempt, at source commit
+`972709b18673b0c8a7ce3cab309fe256ccfbf0ab`, failed with three release-fixture
+failures among 755 tests in 76.579 seconds. The failures occurred at Git push or at
+a subsequent resume blocked by the retained fixture release lock. They did not
+qualify that candidate.
+
+The disposable client repository disabled automatic maintenance, but its bare
+server did not. Native traces and inspection of the specific lifetime pipe
+identified detached `git maintenance` and its `git gc` child in that server,
+still holding the writer after push exited. The EOF refusal therefore reflected
+real surviving work. The fixture now disables automatic maintenance in both its
+owned repositories, including receive-side automatic maintenance. Product process
+cleanup and its immediate uncertainty check were not weakened, and no user
+repository maintenance policy was changed.
+
+A narrow reproduction ran the same three fixture methods through two owned parent
+runners and nine workers: 108 repetitions produced 108 detached maintenance
+launches and two cleanup refusals. Disabling server maintenance produced no such
+launches or refusals in 27 repetitions. After the tracked fixture correction, all
+111 tests in the three affected release modules passed through the same parent and
+worker arrangement, without instrumentation, in 30.326 seconds. These targeted
+results establish the correction's boundary; the candidate qualification table
+above records the subsequent aggregate run separately.
+
+### Cleanup observations and forensic limit
+
+Separately, the first failed run retained its distribution lock. The original lock
+creation identity and final comparison identity are unavailable, so the exact
+reason for that particular retention was not proved. Independent actual-run
+controls confirmed that an ordinary failed check removes an unchanged lock and
+that changed identities are retained. Those controls establish the decision
+boundary, not the missing history of the original run. Its state was preserved,
+and subsequent qualification used a fresh, explicitly owned parent.
+
+The separate actual provided-assets run captured the lock and run-directory
+identities and observed the real `unlink` and `clean_success` operations removing
+those same identities. Both paths were absent immediately after the check's
+`main` returned successfully. In a separate execution 19.619 seconds later, both
+paths were visible again with different inodes and later change times. That
+observation does not establish the responsible actor or mechanism, and the later
+observed state was preserved. It must not be substituted for the missing identity
+history of the first failed run or attributed to product or host behavior without
+further evidence.
+
+An ordinary filesystem negative control made 207 post-deletion observations,
+including four independent stat executions, through 99.515 seconds; the deleted
+paths remained absent. This
+control did not reproduce the later visibility and does not prove its cause. The
+qualification results and immediate identity-checked cleanup are recorded above;
+the unresolved filesystem history remains an explicit forensic limitation.
+
+### Earlier source publication audits
+
+Strict, no-download publication audits also passed at the earlier source commit
+`972709b18673b0c8a7ce3cab309fe256ccfbf0ab`, tree
+`5e0d54924a1f183a382949dae35f4f42adb5185a`, on Linux/Python 3.12.14. The current
+worktree audit completed in 3.983 seconds and the selected-history audit in 14.474
+seconds. Both returned CLI 0 with valid result envelopes, no errors or unconfirmed
+cleanup, and native Betterleaks 1.8.1 and Lychee 0.24.2 exit codes of 0.
+
+The effective policy used `.gitleaks.toml`, structural exclusion `tests/*`, no
+baseline entries, candidate inspection enabled, and owner mode disabled. History
+selection covered HEAD, branches, remotes, tags, and the configured pull-request,
+merge-request, change and notes ref families. Policy and Betterleaks inspected
+that selected history; Lychee checked the current Markdown snapshot, not every
+historical version. The 23 local refs and 20 advertised refs were recorded; source
+and refs remained unchanged, with no advertised-ref mismatches afterward. This is
+bounded source evidence, not a complete inventory of every hosted surface.
+
+These earlier audits are not results for the later qualified commit or the final
+report/status revision. Final packaged publication audits have not yet been
+recorded here; their actual source and artifact identities and outcomes belong in
+the final delivery record.
+
+### Native tool and platform coverage
 
 Native tool controls use Betterleaks 1.8.1, Lychee 0.24.2 and git-cliff 2.14.1.
 The actual scanner matrix distinguishes malformed configuration (CLI 2), completed
@@ -164,6 +293,20 @@ a mocked platform boundary or a skipped conditional test is not native acceptanc
 No real hosted release, installed-user update, user hook, production rollback or
 client registration was performed. Those operations cannot be inferred from the
 local and SDK fixtures.
+
+The existing [manual release workflow](../../.github/workflows/release.yml) declares
+Python 3.11 source checks on Linux, macOS and Windows, one Linux candidate build,
+and package checks on the same downloaded candidate across those OS jobs: seven
+jobs in total. Its configuration is not evidence that those native runs passed.
+Windows/macOS and native Python 3.11 acceptance remain open until actual runs
+identify the reviewed source and checked bytes. The dispatched run's `headSha`
+must match the final remote candidate commit. The workflow neither publishes nor
+supplies native desktop-client discovery proof; that acceptance remains separate from SDK/stdio startup. It also does not
+explicitly select the forkserver context.
+
+The Node/Angular documentation correction in R10 has source/documentation evidence
+only. It adds no Node runtime, npm installation or generated-output execution claim
+to the native coverage recorded here.
 
 Multiprocessing `fork` and `spawn` were exercised with real workers, including
 constructor, initializer, map and shutdown failures. Native `forkserver` could not
