@@ -72,18 +72,26 @@ class PluginBuildTests(unittest.TestCase):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
         namespace = launcher["loadable_base"].__globals__
         directory = PureWindowsPath(r"C:\owned work\runs\run-abcdefgh\plugin space")
-        unavailable = Mock(side_effect=AssertionError("ordinary smoke must not need an alias"))
         with patch.object(sys, "platform", "win32"):
-            destination = smoke["extraction_destination"](directory)
-            package = destination / "release-kit"
-            self.assertEqual(directory, destination.parent)
-            self.assertIn(" ", str(package))
-            self.assertGreater(len(str(package)), 150)
-            with patch.dict(namespace, {"alias_path": unavailable}):
-                self.assertEqual(
-                    package, launcher["loadable_base"](package, package / ".runtime" / "venv")
-                )
-            unavailable.assert_not_called()
+            for parent in (directory, directory / ("review " + "\U0001f680" * 12)):
+                with self.subTest(parent=str(parent)):
+                    destination = smoke["extraction_destination"](parent)
+                    package = destination / "release-kit"
+                    virtualenv = package / ".runtime" / "venv"
+                    self.assertEqual(parent, destination.parent)
+                    self.assertIn(" ", str(package))
+                    self.assertIn("\U0001f680", destination.name)
+                    self.assertGreater(len(str(package).encode("utf-16-le")) // 2, 150)
+                    self.assertLessEqual(
+                        len(str(virtualenv).encode("utf-16-le")) // 2 + launcher["RUNTIME_LEAF"],
+                        launcher["LOADER_LIMIT"],
+                    )
+                    unavailable = Mock(
+                        side_effect=AssertionError("ordinary smoke must not need an alias")
+                    )
+                    with patch.dict(namespace, {"alias_path": unavailable}):
+                        self.assertEqual(package, launcher["loadable_base"](package, virtualenv))
+                    unavailable.assert_not_called()
 
             # An already long caller-owned parent stays owned and may still refuse.
             long_parent = directory / ("already long " * 15).strip()
@@ -98,6 +106,58 @@ class PluginBuildTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual(directory, smoke["extraction_destination"](directory))
 
+    def test_windows_loader_counts_utf16_units_for_original_and_alias_paths(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        namespace = launcher["loadable_base"].__globals__
+        parent = PureWindowsPath(r"C:\owned work")
+        astral_parent = parent / ("p" + "\U0001f642" * 90)
+        astral = astral_parent / "release-kit"
+        ascii_same_units = parent / ("p" + "x" * 180) / "release-kit"
+        bmp = parent / ("p" + "é" * 90) / "release-kit"
+        shorter_unicode = parent / ("p" + "\U0001f642" * 20) / "release-kit"
+        opaque_surrogate = parent / "opaque-\ud800" / "release-kit"
+        deep = astral_parent / ("long" * 40) / "release-kit"
+        unsafe_alias = astral_parent / "RUNTIM~1" / "RELEAS~1"
+        short_alias = PureWindowsPath(r"C:\OWNED~1\RELEAS~1")
+        virtualenv = astral / ".runtime" / "venv"
+        self.assertLess(len(str(virtualenv)) + launcher["RUNTIME_LEAF"], launcher["LOADER_LIMIT"])
+        self.assertGreater(
+            len(str(virtualenv).encode("utf-16-le")) // 2 + launcher["RUNTIME_LEAF"],
+            launcher["LOADER_LIMIT"],
+        )
+        cases = (
+            ("astral path without alias", astral, None, None, 1),
+            ("astral path with short alias", astral, short_alias, short_alias, 1),
+            ("overlong astral alias", deep, unsafe_alias, None, 1),
+            ("deep path with short alias", deep, short_alias, short_alias, 1),
+            ("ASCII of the same UTF-16 length", ascii_same_units, None, None, 1),
+            ("BMP within the budget", bmp, None, bmp, 0),
+            ("non-BMP within the budget", shorter_unicode, None, shorter_unicode, 0),
+            ("opaque WCHAR within the budget", opaque_surrogate, None, opaque_surrogate, 0),
+        )
+        with patch.object(sys, "platform", "win32"):
+            for label, package, alias, expected, calls in cases:
+                lookup = Mock(return_value=alias)
+                with self.subTest(label=label), patch.dict(namespace, {"alias_path": lookup}):
+                    if expected is None:
+                        with self.assertRaisesRegex(
+                            ValueError, "too long for the Windows DLL loader"
+                        ):
+                            launcher["loadable_base"](package, package / ".runtime" / "venv")
+                    else:
+                        self.assertEqual(
+                            expected,
+                            launcher["loadable_base"](package, package / ".runtime" / "venv"),
+                        )
+                    self.assertEqual(calls, lookup.call_count)
+        forbidden = Mock(side_effect=AssertionError("POSIX must not request Windows aliases"))
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch.dict(namespace, {"alias_path": forbidden}),
+        ):
+            self.assertEqual(deep, launcher["loadable_base"](deep, deep / ".runtime" / "venv"))
+        forbidden.assert_not_called()
+
     def test_deep_windows_runtime_uses_a_short_alias_for_compiled_imports(self):
         # A real installation hit this: uv installed the packages and the server
         # then failed with "DLL load failed while importing _cffi_backend".
@@ -107,13 +167,13 @@ class PluginBuildTests(unittest.TestCase):
         virtualenv = root / ".runtime" / "venv"
         alias = Path(tempfile.gettempdir()) / "DEEPPL~1" / "RELEAS~1"
         limit = launcher["LOADER_LIMIT"] - launcher["RUNTIME_LEAF"]
-        self.assertGreater(len(str(virtualenv)), limit)
+        self.assertGreater(launcher["utf16_units"](virtualenv), limit)
         with patch.object(sys, "platform", "win32"):
             with patch.dict(namespace, {"alias_path": lambda path: alias}):
                 base = launcher["loadable_base"](root, virtualenv)
                 self.assertEqual(alias, base)
                 relocated = launcher["relocate"](base, root, virtualenv)
-                self.assertLessEqual(len(str(relocated)), limit)
+                self.assertLessEqual(launcher["utf16_units"](relocated), limit)
                 self.assertEqual(virtualenv.relative_to(root), relocated.relative_to(base))
             # An alias the volume cannot supply must refuse before installing anything.
             for unavailable in (lambda path: None, lambda path: root):
@@ -134,7 +194,7 @@ class PluginBuildTests(unittest.TestCase):
             # Exercise the actual loader boundary even when this volume supplies
             # no short names and GetShortPathNameW returns the original spelling.
             while (
-                len(str(nested / ".runtime" / "venv")) + launcher["RUNTIME_LEAF"]
+                launcher["utf16_units"](nested / ".runtime" / "venv") + launcher["RUNTIME_LEAF"]
                 <= launcher["LOADER_LIMIT"]
             ):
                 nested /= "nested plugin directory"
@@ -145,13 +205,15 @@ class PluginBuildTests(unittest.TestCase):
                 self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
             if (
                 alias is not None
-                and len(str(alias)) + launcher["RUNTIME_LEAF"] <= launcher["LOADER_LIMIT"]
+                and launcher["utf16_units"](alias) + launcher["RUNTIME_LEAF"]
+                <= launcher["LOADER_LIMIT"]
             ):
                 base = launcher["loadable_base"](nested, virtualenv)
                 self.assertEqual(nested.resolve(), base.resolve())
                 relocated = launcher["relocate"](base, nested, virtualenv)
                 self.assertLessEqual(
-                    len(str(relocated)) + launcher["RUNTIME_LEAF"], launcher["LOADER_LIMIT"]
+                    launcher["utf16_units"](relocated) + launcher["RUNTIME_LEAF"],
+                    launcher["LOADER_LIMIT"],
                 )
                 print("Windows runtime path: native short alias fits the DLL loader budget")
             else:

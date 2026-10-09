@@ -111,12 +111,14 @@ def extract(archive_path: Path, destination: Path) -> Path:
 
 
 def extraction_destination(directory: Path) -> Path:
-    """Keep the Windows fixture long and spaced inside the caller's workspace."""
+    """Keep a long Unicode Windows fixture inside the caller's workspace."""
     if sys.platform != "win32":
         return directory
     # Ordinary startup must fit the DLL loader without requiring an 8.3 alias.
-    padding = max(0, 170 - len(str(directory / "plugin space" / "release-kit")))
-    return directory / ("plugin space" + "x" * padding)
+    name = "plugin space \U0001f680"
+    units = len(str(directory / name / "release-kit").encode("utf-16-le", "surrogatepass")) // 2
+    padding = max(0, 170 - units)
+    return directory / (name + "x" * padding)
 
 
 def smoke(archive_path: Path, directory: Path, version: str) -> None:

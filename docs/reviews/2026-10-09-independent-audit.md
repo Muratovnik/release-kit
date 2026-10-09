@@ -30,6 +30,7 @@ identity and precedence are not interchangeable with Python version normalizatio
 | Publication boundaries | Preserve index/history bytes and paths; keep owner privacy mandatory; report scanner failures accurately | Implemented with real Git, archive, filter and native scanner controls |
 | Process and recovery ownership | Stop nested workers before releasing state; retain evidence when termination is uncertain | Implemented with real timeout/cancellation and unconfirmed-cleanup controls |
 | Reproducible packaging and version updates | Reject inputs that differ from the declared commit; restore or retain a failed version transaction | Implemented with real Git inputs and resolver-worker controls |
+| Windows plugin runtime paths | Measure the DLL-loader budget in UTF-16 code units for the original path and any alias | Implemented with actual-loader before/after and fixture-padding controls; native qualification of the changed payload remains separate |
 | Verification and delivery | Reject empty/invalid test verdicts; qualify exact artifacts; preserve an explicit platform evidence boundary | Integrated into the existing source and distribution gates |
 
 ## Findings and corrections
@@ -40,17 +41,18 @@ and loss of trustworthy recovery ownership; **medium** includes incorrect releas
 selection, false qualification, broken recovery inspection, and unusable output;
 **low** includes presentation ambiguity. R1–R3 are requested capability expansions
 beyond the baseline contract; D14 extends CI coverage of an existing opt-in test.
-The remaining 36 entries cover baseline defects, issues exposed while integrating
-corrections, and test or documentation problems: 17 high, 18 medium and one low.
-Together these are 40 review items: three capability expansions, one coverage
-expansion and 36 other issues. Combined baseline/integration rows are labeled
+The remaining 37 entries cover baseline defects, issues exposed while integrating
+corrections, and test or documentation problems: 17 high, 19 medium and one low.
+Together these are 41 review items: three capability expansions, one coverage
+expansion and 37 other issues. Combined baseline/integration rows are labeled
 accordingly. D12 records a false refusal introduced while integrating the expanded
 process-ownership checks. D13 distinguishes original MCP fixtures from source-gate
 and launcher fixtures added during this review; they are not presented as additional
 product vulnerabilities. D15 records a baseline platform assumption exposed by hosted
 macOS execution. D16 groups Windows fixture portability issues and separates
 its original 8.3 test and plugin-smoke padding assumptions from tests added
-during this review.
+during this review. D17 is a separate baseline product defect in the packaged
+Windows launcher's path-length units, not another D16 fixture failure.
 
 ### Release identities and changelog
 
@@ -130,10 +132,12 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D14 | Coverage expansion | The manual Windows source job left the existing real-engine MCP sync acceptance test disabled. A green ordinary matrix therefore did not exercise apply/audit/rollback with `PROCESSOR_*` removed. | The Windows source job provisions all three pinned executable/archive pairs into the exact default cache and enables the existing opt-in. The unchanged test retains its full assertions. Controlled Linux cache/refusal checks passed. Native workflow #5 completed provisioning but failed before MCP; run #6 then executed the named acceptance successfully on Windows. |
 | D15 | Medium; baseline platform assumption | A transient POSIX process-group permission result was treated as immediate terminal cleanup failure. Native macOS ordinary timeout controls failed at this boundary; the original baseline already had the same error handling. | Both helpers treat permission denial as present or unconfirmed and retain the existing bounded polling. Only actual ESRCH, together with the existing lifetime and exit-status checks, permits confirmed cleanup. Real-child transient and persistent-denial controls preserve the distinction; hosted run #6 passed the native macOS source controls without weakening cleanup confirmation. |
 | D16 | Medium; baseline and review-added test fixtures | Windows source and package verification failed on fixture assumptions about Git/text newline conversion, native symlink spelling, mandatory 8.3 shortening and cleanup of an already absent PID. The original plugin smoke also exceeded the loader budget when no short alias was available. | Fixtures establish declared bytes, compare native path semantics, exercise the actual alias-or-refusal contract and accept only the specific Windows absent-PID outcome. The review-added package history fixture writes its expected LF bytes explicitly; ordinary plugin startup keeps a long, spaced fixture path within the loader budget without requiring an alias. Product byte handling, strict-build checks and launcher behavior are unchanged. Original ownership, history, rollback and refusal oracles remain; baseline and review-added cases are distinguished in the native record. |
+| D17 | Medium; baseline product defect | The packaged Windows launcher measured runtime and alias paths with Python character counts instead of UTF-16 code units. Non-BMP names could pass the existing DLL-loader budget while exceeding it in Windows units. | Both loader decisions and the smoke fixture's padding now count UTF-16 units without altering the path. Actual-loader regressions reject the original 291-unit and 297-unit false acceptances, preserve valid aliases and keep the existing threshold and refusal. Focused controls passed on Linux/Python 3.11 and 3.12; native DLL loading and qualification of the changed payload require separate evidence. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
 [MCP executor](../../src/releasekit_mcp/process.py),
 [installed launcher](../../src/releasekit/launcher.py),
+[packaged plugin launcher](../../plugins/release-kit/scripts/launch.py),
 [updater](../../src/releasekit/update.py),
 [release builder](../../tools/build_release.py),
 [version transaction](../../tools/set_version.py),
@@ -163,6 +167,115 @@ plugin input paths. The added strict-build controls close alternative-input
 bypasses; they do not identify a missing payload in the original maintained layout.
 
 ## Validation record
+
+### Windows runtime path units and qualification boundary (D17)
+
+A bounded review after the D16 fixture correction found that the packaged
+Windows launcher used `len(str(path))` in both loader decisions. Python strings
+are [sequences of Unicode code points](https://docs.python.org/3.12/library/stdtypes.html#text-sequence-type-str),
+whereas Windows [represents `WCHAR` values as UTF-16 code units](https://learn.microsoft.com/en-us/windows/win32/learnwin32/working-with-strings).
+Characters outside the Basic Multilingual Plane require two such units.
+Microsoft's [path documentation](https://learn.microsoft.com/en-us/windows/win32/fileio/maximum-file-path-limitation)
+also describes filename strings as sequences of `WCHAR` values. Counting Python
+characters can therefore understate the existing Windows loader budget without
+changing the path or its Unicode normalization.
+
+The exact baseline launcher and the launcher at published `f36bb635` had the
+same SHA-256, `6b1ff9590dd6aa245cb9e5739a52d815f161b1389646bd70ccf9fd812a286b8c`.
+An actual-helper control on Linux/Python 3.11.17 used a Windows path model and a
+controlled alias provider. A runtime path plus the existing compiled-file
+allowance measured 201 Python code points but 291 UTF-16 units; the helper
+accepted it without attempting an alias. An ASCII path of the same 291-unit
+length was refused, and a 201-unit BMP control was accepted. The alias branch
+also accepted a returned path requiring 297 units, while a valid 103-unit alias
+was accepted as expected. All five controls produced the same outcomes on the
+baseline and current whole-file snapshots. The receipt is retained under
+`.cache/review-release-lifecycle/windows-utf16-loader-nd478ew4`.
+
+This confirms a baseline product guard defect, distinct from D16's ordinary
+smoke-fixture padding. The controls did not create those paths on Windows or
+perform a native DLL import. The correction measures both direct and alias paths
+using UTF-16-LE with `surrogatepass`, preserving opaque path contents, the
+existing 260-unit threshold, the 70-unit compiled-file allowance and explicit
+refusal. POSIX behavior is unchanged. The ordinary smoke fixture includes a
+non-BMP character and measures its padding in the same Windows units.
+
+The new actual-loader method failed three assertions against the original
+implementation in 0.020 seconds. The corrected complete plugin-build module
+passed 13 tests on Linux/Python 3.11.17 in 8.676 seconds and Python 3.12.14 in
+4.554 seconds, each including one explicit native Windows 8.3 skip. Controls
+cover both false-acceptance branches, valid aliases, ASCII/BMP/non-BMP paths,
+opaque surrogate contents and unchanged POSIX behavior. A separate control
+restored only code-point padding in an ignored copy of the new Unicode smoke
+fixture: the real corrected loader required an alias for its 267-unit runtime
+and the permanent regression failed. Corrected padding produced 254 units and
+returned the original runtime without an alias; the same test passed. Scoped
+Ruff, format and diff checks passed. These receipts are retained in the
+`correction` directory under the D17 workspace above; its final summary has
+SHA-256 `b15c3233d35df087ab14b8a41b1bad66f4cf08b131cd4ea38baafeaefb84639a`.
+This completes the focused correction evidence, without claiming native DLL
+loading or package acceptance of the changed launcher.
+
+### Hosted qualification at f36bb635 before D17
+
+[Native workflow run #7](https://github.com/Muratovnik/release-kit/actions/runs/37939010141),
+run `37939010141`, attempt 1, `workflow_dispatch`, input `v0.32.0`, checked
+published commit
+`f36bb635de47c7ed5f398b766673b3f997944728`, tree
+`e8db551bc991eb88af6abcb2b646d81916e9837f`, before the D17 correction.
+All three source jobs passed. The overall run completed with failure in the
+Windows package's plugin-stdio phase; it is not an all-platform package pass.
+
+| Actual source job | Native runtime | Base result | MCP result |
+| --- | --- | --- | --- |
+| Linux `113848284019` | Ubuntu 24.04.5, x86_64, CPython 3.11.17 | Passed: 775 tests, four named skips, 40.716 seconds | Passed: 78 tests, three skips, 157.796 seconds |
+| macOS `113848284401` | macOS 26.6.2, arm64, CPython 3.11.9 | Passed: 775 tests, four named skips, 128.743 seconds | Passed: 78 tests, three skips, 167.352 seconds |
+| Windows `113848284287` | Windows Server 2025, AMD64, CPython 3.11.9 | Passed: 775 tests, 20 named skips, 640.313 seconds | Passed: 78 tests, six skips, 321.399 seconds |
+
+All three source jobs passed Ruff lint and the 109-file format check and
+reported MCP SDK 2.1.1. The Windows log again names the real-engine
+`test_update_with_real_engines_without_windows_processor_environment` as
+successful. On Linux and macOS, complete base discovery and the exhaustive four
+Windows-only skips support execution of the explicit forkserver and ordinary
+plugin-path fixture controls. These are source-verified aggregate execution
+inferences, not individually printed base-test successes.
+
+The shared candidate job `113855209495` executed the strict
+`python tools/build_release.py dist` command without `--allow-divergent` and
+uploaded artifact `11620948290`, `release-candidate`, archive size 730340 bytes,
+digest `sha256:ccec6ef82f7e511622975a753a4feff860205b631c9a5245d0802ef7654d0bf7`.
+Its metadata binds the archive to this run and commit. All three package jobs
+downloaded that artifact and logged the matching digest. Their seven input
+hashes match the separately built strict files at `f36bb635` and the earlier
+`1428dbb0` hash table below. Per-file sizes were measured locally; native
+content identity is established by the matching full SHA-256 values, not an
+independent per-runner size measurement.
+
+| Actual package job | Result against the shared candidate | Report |
+| --- | --- | --- |
+| Linux `113855269814` | All five phases passed | `run-tj_vyvaj`, passed |
+| macOS `113855269908` | All five phases passed | `run-6pweiyy9`, passed |
+| Windows `113855269794` | `cli-smoke`, `onboarding`, `wheel-install` and `changelog` passed; `plugin-stdio` exited 1 | `run-yx68yiqj`, failed |
+
+The successful Linux and macOS package logs record MCP 2.1.1 and AnyIO 4.14.2.
+The Windows result supplies actual native acceptance of the D16 changelog
+fixture correction. Its later plugin phase failed during installation of
+`pywin32==312`, before a successful stdio session. The installer reported
+`Trivial strip failed` for an extended-prefix `\\?\D:\...` file and its
+ordinary `D:\...` scripts parent. This observed installation failure is not
+attributed to D17; its cause and correction remain unresolved in this record.
+The successful source and Linux/macOS package reports state `cleanup=removed`;
+the failed Windows package report states `cleanup=retained`. No independent
+later filesystem observation was made on those hosted runners.
+
+Raw logs and normalized receipts are retained under
+`.cache/review-changelog/native-linux-37939010141-gb0y9jyf`,
+`.cache/review-release-lifecycle/native-macos-37939010141-rh7d3j0c` and
+`.cache/review-publication-safety/windows-native-workflow-37939010141-4ixvsrg7`.
+This run qualifies only its recorded source and earlier seven-file set. It
+cannot qualify the later corrected D17 runtime or its changed plugin payload.
+The clean pre-dispatch local snapshot and authorized local edits are separate
+source states. Native desktop-client discovery remains unverified.
 
 ### Native and canonical qualification at 1428dbb0
 
@@ -352,8 +465,9 @@ then passed on Linux/Python 3.11.17 in 13.094 seconds and Python 3.12.14 in
 16.485 seconds. Separate LF/CRLF extraction and export controls confirmed
 unchanged source bytes and preservation of internal line endings under the
 existing terminal-LF export contract. No runtime parser or normalization
-behavior changed. These are controlled local results; corrected native Windows
-package replay and its previously unreached plugin-stdio phase remain pending.
+behavior changed. Run #7 subsequently passed the corrected changelog phase on
+native Windows. It reached plugin-stdio and failed during dependency
+installation, as separately recorded above.
 
 **Plugin startup fixture in D16.** A bounded review of that unreached stdio
 phase found a separate baseline assumption in `tools/smoke_plugin.py`: for an
@@ -374,8 +488,10 @@ preserved the original 180-character behavior and failed that test; the
 3.331 seconds, each with the native Windows 8.3 test explicitly skipped.
 Existing alias and refusal controls remain unchanged. These controlled results
 do not claim native Windows startup or cache installation beyond `MAX_PATH`;
-the corrected hosted package replay remains pending. No runtime launcher code
-or product finding count changed.
+run #7 reached dependency installation but did not complete a Windows stdio
+session. This D16 fixture correction
+changed neither runtime launcher code nor the product finding count; D17's
+separate runtime-unit defect is recorded above.
 
 **D13 — ordinary launcher fixture allowance.** A later precommit Linux
 Python 3.11 base check ran 769 tests in 182.599 seconds and stopped with one
@@ -969,16 +1085,20 @@ attempts and historical successful 3.12 gate remain distinguished above.
 Authenticated hosted workflow #5 later exercised native Linux, macOS and
 Windows source jobs at `93718d0c`: Linux passed, while the macOS and Windows
 base results failed as recorded in D15/D16. Run #6 at `1428dbb0` then passed
-all three native source jobs and the Linux/macOS package jobs; its Windows
-package changelog failure prevents an all-platform package pass. A mocked
-platform boundary or skipped conditional test is not native acceptance.
+all three native source jobs and the Linux/macOS package jobs, but failed its
+Windows package changelog phase. Run #7 at `f36bb635` again passed all three
+source jobs and the Linux/macOS package jobs, and passed Windows changelog;
+its subsequent Windows plugin dependency installation failure still prevents
+an all-platform package pass. Neither run contains the later D17 correction.
+A mocked platform boundary or skipped conditional test is not native acceptance.
 
 The existing [manual release workflow](../../.github/workflows/release.yml)
 declares three Python 3.11 source jobs, one shared Linux candidate build and
 three package jobs consuming the same downloaded candidate. Run #5 did not
 reach that candidate build or expand the package matrix because source
-verification failed. Run #6 built one shared candidate and reached all three
-package jobs, with the Windows failure recorded above. No real hosted release,
+verification failed. Runs #6 and #7 each built one shared candidate and reached
+all three package jobs, with their distinct Windows failures recorded above.
+No real hosted release,
 installed-user update, user hook,
 production rollback, client registration or native desktop-client discovery
 was performed. Those operations cannot be inferred from local/SDK fixtures or
@@ -1011,17 +1131,18 @@ Corrupt-archive and aliased-cache controls refused execution, respectively leavi
 no executable and leaving the aliased target unchanged. That control is real Linux cache
 and control-flow evidence without new downloads or native Windows execution.
 Separately, hosted run #5 completed native Windows provisioning for all three
-tools, but stopped in its base suite before MCP. Run #6 then passed its native
-Windows source gate and explicitly logged the named real-engine MCP test as
-successful; that source acceptance is distinct from its later failed package
-changelog check.
+tools, but stopped in its base suite before MCP. Runs #6 and #7 then passed
+their native Windows source gates and explicitly logged the named real-engine
+MCP test as successful; that source acceptance is distinct from their later
+failed package phases.
 
 The earlier signed-out browser limitation was resolved. Authenticated manual
 dispatch actually ran the jobs recorded above. Run #5's source failures and
-run #6's Windows package failure remain preserved. Native source qualification
-and the named Windows MCP acceptance have passed. Complete Windows package
-acceptance remains open; native desktop-client discovery is an unverified
-scope boundary.
+the distinct Windows package failures in runs #6 and #7 remain preserved.
+Native source qualification and the named Windows MCP acceptance have passed
+for those recorded revisions. Complete Windows package acceptance and native
+qualification of the later D17 payload remain open; native desktop-client
+discovery is an unverified scope boundary.
 
 A read-only preflight resolved all four exact upstream action commits in the
 workflow and verified each `action.yml` Git blob against its pin. All declare the
@@ -1052,9 +1173,9 @@ cannot start: creating an `AF_UNIX` socket raises
 host refusal is not native forkserver acceptance. Hosted Linux run #5 provides
 separate source-verified execution evidence for the explicit forkserver oracle,
 with the aggregate-skip inference qualified above. The macOS run #5 failed log
-could not establish the same result. Run #6's complete Linux and macOS base
-passes identify every skipped test, exclude this oracle from those skips, and
-supply the same source-verified native forkserver execution evidence.
+could not establish the same result. The complete Linux and macOS base passes
+in runs #6 and #7 identify every skipped test, exclude this oracle from those
+skips, and supply the same source-verified native forkserver execution evidence.
 
 The version was synchronized with `tools/set_version.py 0.32.0` and uv 0.12.23.
 Review of the regenerated lock confirmed the same dependency package set, versions,

@@ -58,14 +58,19 @@ def alias_path(path):
         current = current.parent
 
 
+def utf16_units(path):
+    """Count Windows WCHAR units without changing opaque path contents."""
+    return len(str(path).encode("utf-16-le", "surrogatepass")) // 2
+
+
 def loadable_base(root, virtualenv):
     """Choose the base uv receives so compiled imports stay inside the loader limit."""
-    if sys.platform != "win32" or len(str(virtualenv)) + RUNTIME_LEAF <= LOADER_LIMIT:
+    if sys.platform != "win32" or utf16_units(virtualenv) + RUNTIME_LEAF <= LOADER_LIMIT:
         return root
     alias = alias_path(root)
     if alias is not None:
         relocated = alias / virtualenv.relative_to(root)
-        if len(str(relocated)) + RUNTIME_LEAF <= LOADER_LIMIT:
+        if utf16_units(relocated) + RUNTIME_LEAF <= LOADER_LIMIT:
             return alias
     raise ValueError(
         "the runtime path is too long for the Windows DLL loader; "
