@@ -161,21 +161,38 @@ class StorageTests(unittest.TestCase):
         stamp = time.time() - days * 86400
         os.utime(path, (stamp, stamp))
 
-    def test_a_workspace_left_by_an_old_run_is_aged_out_by_the_next_one(self):
-        abandoned = storage.Workspace(self.root).path
-        (abandoned / "child.lock").write_text("never inventoried, never removed")
-        self._age(abandoned, storage.TEMPORARY_RETENTION_DAYS + 1)
-        storage.Workspace(self.root)
-        self.assertFalse(abandoned.exists())
+    def test_new_workspace_preserves_old_unknown_and_changed_recovery_data(self):
+        workspace = storage.Workspace(self.root)
+        changed = workspace.path / "owned.txt"
+        changed.write_text("original")
+        workspace.remember()
+        changed.write_text("user recovery edit")
+        unknown = workspace.path / "unowned.txt"
+        unknown.write_text("unowned evidence")
+        self.assertFalse(workspace.cleanup())
+        foreign = workspace.path.parent / "another-owner"
+        foreign.mkdir()
+        (foreign / "evidence.txt").write_text("foreign evidence")
+        for path in (workspace.path, foreign):
+            self._age(path, 365)
+
+        with storage.temporary(self.root, "next-") as next_workspace:
+            own = next_workspace.path / "owned.txt"
+            own.write_text("temporary")
+            next_workspace.remember(own)
+
+        self.assertFalse(next_workspace.path.exists())
+        self.assertEqual("user recovery edit", changed.read_text())
+        self.assertEqual("unowned evidence", unknown.read_text())
+        self.assertEqual("foreign evidence", (foreign / "evidence.txt").read_text())
 
     def test_a_recent_workspace_is_never_aged_out(self):
         live = storage.Workspace(self.root).path
         (live / "in-progress.txt").write_text("another run is using this")
-        self._age(live, storage.TEMPORARY_RETENTION_DAYS - 1)
         storage.Workspace(self.root)
         self.assertEqual("another run is using this", (live / "in-progress.txt").read_text())
 
-    def test_retention_never_ages_out_what_a_link_points_at(self):
+    def test_workspace_allocation_preserves_old_link_targets(self):
         other = self.root.parent / "elsewhere"
         other.mkdir()
         marker = other / "user.txt"
@@ -196,20 +213,12 @@ class StorageTests(unittest.TestCase):
             if result.returncode:
                 self.skipTest("junctions unavailable")
         try:
-            self._age(link, storage.TEMPORARY_RETENTION_DAYS + 1)
-            self.assertEqual([], storage.prune_temporaries(parent))
+            self._age(link, 365)
+            with storage.temporary(self.root, "next-"):
+                pass
             self.assertEqual("preserved", marker.read_text())
         finally:
             link.rmdir() if not link.is_symlink() else link.unlink()
-
-    def test_the_retention_window_is_configurable_and_never_negative(self):
-        abandoned = storage.Workspace(self.root).path
-        self._age(abandoned, 2)
-        with patch.dict(os.environ, {"RELKIT_TEMPORARY_RETENTION_DAYS": "-1"}):
-            self.assertEqual([], storage.prune_temporaries(abandoned.parent))
-        self.assertTrue(abandoned.is_dir())
-        with patch.dict(os.environ, {"RELKIT_TEMPORARY_RETENTION_DAYS": "1"}):
-            self.assertEqual([abandoned], storage.prune_temporaries(abandoned.parent))
 
     def test_declared_scratch_is_discarded_only_when_asked(self):
         workspace = storage.Workspace(self.root)

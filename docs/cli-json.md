@@ -68,11 +68,19 @@ insufficient, and an unknown remote outcome still needs reconciliation.
 `kind`, `detail`, plus `stale`, `unreadable` and `excluded` string arrays.
 
 `audit` adds `scope` (`worktree`, `staged`, `history`) and `engines`, mapping
-engine names to native exit codes or `null` when not completed. History adds
+engine names to native exit codes or `null` when not completed. Release-kit sets
+Betterleaks' findings exit code to `10`; Lychee uses `2` for link findings.
+Those codes produce audit exit `1`. Other nonzero engine codes mean an
+operational failure and produce audit exit `2`, even if another check found
+publication findings. History adds
 `untracked_present`: untracked entries do not by themselves violate the clean
 tracked-tree precondition; configured worktree candidate checks still apply.
 Native engine diagnostics are not invented structured findings. The top-level
 exit also includes history, guard and overlay failures.
+
+`engine_cleanup_unconfirmed` is an exit `2` refusal: owned engine descendants
+could not be confirmed stopped. The entire scanner workspace is retained. Verify
+those processes and inspect the reported scratch before explicit cleanup.
 
 `notes` returns validated `notes` including its final newline, requested `version`
 and `output` (absolute export path or `null`). An export failure may still return

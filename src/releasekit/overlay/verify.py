@@ -99,8 +99,9 @@ def check(
                 continue
         name = relative.as_posix()
 
-        if not link.exists() and not link.is_symlink():
-            problems.append(Problem(name, MISSING, "re-run the mount script"))
+        if not link.exists():
+            detail = "mount target is unavailable" if _is_link(link) else "re-run the mount script"
+            problems.append(Problem(name, MISSING, detail))
             continue
         if not _is_link(link):
             problems.append(Problem(name, NOT_A_LINK, "a copy, not a link"))

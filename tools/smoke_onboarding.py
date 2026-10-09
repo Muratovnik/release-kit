@@ -109,7 +109,7 @@ def check_secret_detection(root: Path, environment: dict[str, str]) -> None:
         stream.write(f"github_token = {token}\n")
     try:
         rejected = invoke(root, environment, 1, "audit")
-        if rejected["data"]["engines"] != {"betterleaks": 1, "lychee": 0}:
+        if rejected["data"]["engines"] != {"betterleaks": 10, "lychee": 0}:
             raise RuntimeError("real secret scanner did not reject the synthetic credential")
     finally:
         path.unlink()

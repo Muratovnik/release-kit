@@ -260,78 +260,18 @@ def discard_tree(path: Path) -> None:
     _remove(path, directory=True)
 
 
-# A workspace a run left behind is a diagnostic while the failure is fresh, and after
-# that it is a directory nothing will ever read again. Two weeks outlives an
-# investigation and is far longer than any run, so a live workspace is never a
-# candidate, and receipts live beside `tmp`, never inside it.
-TEMPORARY_RETENTION_DAYS = 14
-
-
-def _retention_days() -> float:
-    configured = os.environ.get("RELKIT_TEMPORARY_RETENTION_DAYS", "").strip()
-    if not configured:
-        return TEMPORARY_RETENTION_DAYS
-    try:
-        return float(configured)
-    except ValueError:
-        return TEMPORARY_RETENTION_DAYS
-
-
-def prune_temporaries(parent: Path, *, now: float | None = None) -> list[Path]:
-    """Discard workspaces older than the retention window and report what went.
-
-    Conservative cleanup keeps whatever a run did not inventory, which is correct
-    for one run and unbounded across many: nothing else ever removed these, so a
-    project accumulated them until someone noticed the disk. Age is the only signal
-    used, and a failure outlives the window it plausibly needs.
-    """
-    days = _retention_days()
-    if days < 0:
-        return []
-    cutoff = (time.time() if now is None else now) - days * 86400
-    removed: list[Path] = []
-    try:
-        entries = sorted(parent.iterdir())
-    except OSError:
-        return removed
-    for entry in entries:
-        try:
-            info = entry.lstat()
-            attributes = getattr(info, "st_file_attributes", 0)
-            # Never age out something reached through a link: it is not ours to time.
-            if stat.S_ISLNK(info.st_mode) or attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
-                continue
-            if info.st_mtime >= cutoff:
-                continue
-            if stat.S_ISDIR(info.st_mode):
-                _discard_contents(entry)
-                _remove(entry, directory=True)
-            else:
-                _remove(entry, directory=False)
-        except OSError:
-            # A workspace still held open is simply not removed; the run matters more.
-            continue
-        removed.append(entry)
-    return removed
-
-
 class Workspace:
     """Only files inventoried before a consumer runs are eligible for removal."""
 
     def __init__(self, root: Path, prefix: str = "run-"):
         parent = service_root(root) / "tmp"
         checked(parent).mkdir(parents=True, exist_ok=True)
-        if expired := prune_temporaries(parent):
-            print(
-                f"relkit: discarded {len(expired)} temporary workspace(s) older than "
-                f"{_retention_days():g} days",
-                file=sys.stderr,
-            )
         self.path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
         self.identity = identity(self.path)
         self.files: dict[str, tuple[str, tuple[int, int, int]]] = {}
         self.directories: dict[str, tuple[int, int, int]] = {}
         self.scratches: dict[str, tuple[int, int, int]] = {}
+        self._retain_scratch = False
 
     def remember(self, path: Path | None = None) -> None:
         target = inside(self.path, path) if path is not None else checked(self.path)
@@ -367,11 +307,15 @@ class Workspace:
         target = inside(self.path, path)
         self.scratches[target.relative_to(self.path).as_posix()] = identity(target)
 
+    def retain_scratch(self) -> None:
+        """Preserve child diagnostics when a returned status reports an incomplete run."""
+        self._retain_scratch = True
+
     def cleanup(self, *, discard_scratch: bool = False) -> bool:
         checked(self.path)
         if identity(self.path) != self.identity:
             raise StorageError("temporary directory identity changed; refusing cleanup")
-        if discard_scratch:
+        if discard_scratch and not self._retain_scratch:
             for relative, expected in self.scratches.items():
                 item = inside(self.path, self.path / relative)
                 # A replaced directory is a different one; only what this run made is ours.

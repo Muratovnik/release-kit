@@ -10,6 +10,7 @@ import unittest
 import zipfile
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from releasekit import cli
@@ -130,6 +131,93 @@ class ArchivePngTests(unittest.TestCase):
 
 
 class ScopeTests(unittest.TestCase):
+    def test_a_directory_reparse_point_refuses_worktree_traversal(self):
+        with _repository({"docs/example.md": "public content\n"}) as name:
+            root = Path(name)
+            original = Path.lstat
+
+            def information(path):
+                result = original(path)
+                if path == root / "docs":
+                    return SimpleNamespace(st_mode=result.st_mode, st_file_attributes=0x400)
+                return result
+
+            with patch.object(Path, "lstat", information):
+                with self.assertRaisesRegex(RuntimeError, "junction|reparse"):
+                    audit.scan(root)
+                self.assertTrue(audit.scan(root, staged=True).ok)
+
+    @unittest.skipUnless(os.name == "nt", "native Windows junction control")
+    def test_a_native_junction_refuses_worktree_traversal_but_keeps_staged_scope(self):
+        with _repository({"docs/example.md": "public content\n"}) as name:
+            root = Path(name)
+            private = root / ".git/private-source"
+            private.mkdir()
+            (private / "example.md").write_text("private content\n", encoding="utf-8")
+            (root / "docs/example.md").unlink()
+            mount = root / "docs"
+            mount.rmdir()
+            created = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(mount), str(private)],
+                capture_output=True,
+                check=False,
+            )
+            if created.returncode:
+                self.skipTest("junction creation unavailable")
+            try:
+                with self.assertRaisesRegex(RuntimeError, "junction|reparse"):
+                    audit.scan(root)
+                self.assertTrue(audit.scan(root, staged=True).ok)
+            finally:
+                mount.rmdir()
+
+    def test_a_symlink_parent_does_not_hide_a_skipped_index_entry(self):
+        with _repository(
+            {
+                "docs/example.md": "IndexedOwnerWorkflow\n",
+                "public/example.md": "public content\n",
+            }
+        ) as name:
+            root = Path(name)
+            subprocess.run(
+                ["git", "update-index", "--skip-worktree", "docs/example.md"],
+                cwd=root,
+                check=True,
+            )
+            (root / "docs/example.md").unlink()
+            (root / "docs").rmdir()
+            try:
+                (root / "docs").symlink_to("public", target_is_directory=True)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            report = audit.scan(root, owner_workflows=("IndexedOwnerWorkflow",))
+
+            self.assertEqual(
+                [("docs/example.md", rules.OWNER_WORKFLOW)],
+                [(finding.path, finding.kind) for finding in report.new],
+            )
+
+    def test_worktree_does_not_read_through_a_directory_replaced_by_a_symlink(self):
+        with _repository({"docs/example.md": "public content\n"}) as name:
+            root = Path(name)
+            private = root / ".git/private-source"
+            private.mkdir()
+            (private / "example.md").write_text("SyntheticOwnerWorkflow\n", encoding="utf-8")
+            (root / "docs/example.md").unlink()
+            (root / "docs").rmdir()
+            try:
+                (root / "docs").symlink_to(private, target_is_directory=True)
+            except OSError:
+                self.skipTest("symlinks unavailable")
+
+            self.assertEqual(("docs",), audit.worktree_paths(root))
+            report = audit.scan(root, owner_workflows=("SyntheticOwnerWorkflow",))
+            self.assertEqual(["docs: escapes-repository"], report.failures)
+            self.assertTrue(
+                audit.scan(root, staged=True, owner_workflows=("SyntheticOwnerWorkflow",)).ok
+            )
+
     def test_an_unreadable_publication_candidate_fails_closed(self) -> None:
         with (
             _repository({"kept.md": "clean\n"}) as name,
@@ -284,6 +372,45 @@ class PrivateValueTests(unittest.TestCase):
 
 
 class ExclusionTests(unittest.TestCase):
+    def test_owner_policy_files_cannot_be_excluded_or_baselined(self) -> None:
+        for filename in sorted(rules.DEFAULT_PRIVATE_FILES):
+            with (
+                self.subTest(filename=filename),
+                _repository({filename: "# synthetic policy\n"}) as name,
+            ):
+                root = Path(name)
+                for staged in (False, True):
+                    for options in (
+                        {"exclude": [filename]},
+                        {"baseline": {filename: [rules.PRIVATE_PATH]}},
+                    ):
+                        with self.subTest(staged=staged, options=options):
+                            report = audit.scan(root, staged=staged, **options)
+                            self.assertTrue(
+                                any(f.kind == rules.PRIVATE_PATH for f in report.new),
+                                report,
+                            )
+                _commit(root)
+                self.assertTrue(
+                    any(
+                        "private-path" in f
+                        for f in audit.history_failures(root, exclude=[filename])
+                    )
+                )
+
+    def test_declared_private_paths_keep_structural_adoption_exceptions(self) -> None:
+        relative = "fixture-private/settings.txt"
+        with _repository({relative: "synthetic fixture\n"}) as name:
+            root = Path(name)
+            for options in (
+                {"exclude": [relative]},
+                {"baseline": {relative: [rules.PRIVATE_PATH]}},
+            ):
+                with self.subTest(options=options):
+                    self.assertTrue(
+                        audit.scan(root, private_paths=["fixture-private"], **options).ok
+                    )
+
     def test_an_excluded_path_is_not_scanned(self) -> None:
         """A repository must be able to hold a fixture of what its rules detect."""
         with _repository({"tests/fixture.toml": LEAK}) as name:
@@ -714,6 +841,76 @@ class ProvenanceTests(unittest.TestCase):
 
 
 class ArchiveTests(unittest.TestCase):
+    def test_unsafe_archive_names_cannot_hide_owner_policy_or_compressed_private_values(self):
+        with _repository({}) as name:
+            root = Path(name)
+            artifact = root / "artifact.zip"
+            with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("../.publication-owner.toml", "# synthetic owner policy\n")
+                archive.writestr("../data.txt", "SyntheticPrivateOwnerValue\n")
+            subprocess.run(["git", "add", "artifact.zip"], cwd=root, check=True)
+            for staged in (False, True):
+                for options in (
+                    {"exclude": ("artifact.zip",)},
+                    {
+                        "baseline": {
+                            "artifact.zip": [
+                                audit.ARCHIVE_PATH,
+                                rules.ESCAPES_REPOSITORY,
+                                rules.PRIVATE_PATH,
+                                rules.DECLARED_NAME,
+                            ]
+                        }
+                    },
+                ):
+                    with self.subTest(staged=staged, options=options):
+                        report = audit.scan(
+                            root, staged=staged, names=("SyntheticPrivateOwnerValue",), **options
+                        )
+                        self.assertTrue(
+                            {rules.PRIVATE_PATH, rules.DECLARED_NAME}.issubset(
+                                {finding.kind for finding in report.new}
+                            ),
+                            report.failures,
+                        )
+            _commit(root)
+            failures = audit.history_failures(
+                root, names=("SyntheticPrivateOwnerValue",), exclude=("artifact.zip",)
+            )
+            self.assertTrue(any("private-path" in item for item in failures), failures)
+            self.assertTrue(any("private-value" in item for item in failures), failures)
+            with zipfile.ZipFile(artifact, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                archive.writestr("../data.txt", "public synthetic fixture\n")
+            self.assertTrue(audit.scan(root, exclude=("artifact.zip",)).ok)
+
+    def test_nested_owner_policy_files_cannot_be_excluded_or_baselined(self) -> None:
+        with _repository({}) as name:
+            root = Path(name)
+            nested = io.BytesIO()
+            with zipfile.ZipFile(nested, "w") as archive:
+                for filename in sorted(rules.DEFAULT_PRIVATE_FILES):
+                    archive.writestr("package/" + filename, "# synthetic policy\n")
+            with zipfile.ZipFile(root / "artifact.zip", "w") as archive:
+                archive.writestr("nested.zip", nested.getvalue())
+            subprocess.run(["git", "add", "artifact.zip"], cwd=root, check=True)
+            for staged in (False, True):
+                for options in (
+                    {"exclude": ["artifact.zip"]},
+                    {"baseline": {"artifact.zip": [rules.PRIVATE_PATH]}},
+                ):
+                    with self.subTest(staged=staged, options=options):
+                        report = audit.scan(root, staged=staged, **options)
+                        self.assertTrue(
+                            any(f.kind == rules.PRIVATE_PATH for f in report.new), report
+                        )
+            _commit(root)
+            self.assertTrue(
+                any(
+                    "private-path" in f
+                    for f in audit.history_failures(root, exclude=["artifact.zip"])
+                )
+            )
+
     @staticmethod
     def _archive(entries: dict[str, str]) -> bytes:
         output = io.BytesIO()
@@ -837,6 +1034,128 @@ class ArchiveTests(unittest.TestCase):
 
 
 class HistoryTests(unittest.TestCase):
+    def test_tree_and_blob_targets_of_other_public_refs_are_still_inspected(self):
+        for prefix in (
+            "refs/notes",
+            "refs/pull",
+            "refs/merge-requests",
+            "refs/changes",
+            "refs/remotes/origin",
+        ):
+            with self.subTest(prefix=prefix), _repository({"kept.md": "clean\n"}) as name:
+                root = Path(name)
+                _commit(root)
+                blob = subprocess.run(
+                    ["git", "hash-object", "-w", "--stdin"],
+                    cwd=root,
+                    input="ScopedOwnerWorkflow\n",
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                tree = subprocess.run(
+                    ["git", "mktree"],
+                    cwd=root,
+                    input=f"100644 blob {blob}\tprivate.txt\n",
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                ).stdout.strip()
+                for kind, object_id in (("tree", tree), ("blob", blob)):
+                    with self.subTest(kind=kind):
+                        reference = f"{prefix}/export"
+                        subprocess.run(
+                            ["git", "update-ref", reference, object_id], cwd=root, check=True
+                        )
+                        failures = audit.history_failures(
+                            root, owner_workflows=("ScopedOwnerWorkflow",)
+                        )
+                        self.assertTrue(
+                            any("owner-workflow" in item for item in failures), failures
+                        )
+                        subprocess.run(["git", "update-ref", "-d", reference], cwd=root, check=True)
+
+    def test_tagged_trees_keep_every_path_and_mode_outside_commit_history(self):
+        shared = "Some\nService supplies records.\n"
+        with _repository({"allowed.txt": shared}) as name:
+            root = Path(name)
+            _commit(root)
+            shared_blob = subprocess.run(
+                ["git", "rev-parse", "HEAD:allowed.txt"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            target_blob = subprocess.run(
+                ["git", "hash-object", "-w", "--stdin"],
+                cwd=root,
+                input="../../outside.txt",
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            for mode, blob, relative in (
+                ("100644", shared_blob, "资料/.publication-owner.toml"),
+                ("100644", shared_blob, "restricted/provider.txt"),
+                ("120000", target_blob, "docs/link"),
+            ):
+                subprocess.run(
+                    ["git", "update-index", "--add", "--cacheinfo", f"{mode},{blob},{relative}"],
+                    cwd=root,
+                    check=True,
+                )
+            tree = subprocess.run(
+                ["git", "write-tree"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            subprocess.run(["git", "tag", "exported-tree", tree], cwd=root, check=True)
+            subprocess.run(["git", "reset", "-q", "HEAD"], cwd=root, check=True)
+
+            failures = audit.history_failures(root, providers={"Some Service": ("allowed.txt",)})
+            self.assertTrue(
+                any("资料/.publication-owner.toml: private-path" in item for item in failures),
+                failures,
+            )
+            self.assertTrue(
+                any("restricted/provider.txt: provider-surface" in item for item in failures),
+                failures,
+            )
+            self.assertTrue(
+                any("docs/link: escapes-repository" in item for item in failures),
+                failures,
+            )
+            self.assertTrue(
+                any("private-path" in item for item in audit.history_failures(root, exclude=("*",)))
+            )
+            subprocess.run(
+                ["git", "tag", "-d", "exported-tree"], cwd=root, check=True, capture_output=True
+            )
+            self.assertEqual(
+                [], audit.history_failures(root, providers={"Some Service": ("allowed.txt",)})
+            )
+
+    def test_deleted_unicode_and_whitespace_paths_keep_their_history_rules(self) -> None:
+        directories = ["资料", " leading space"]
+        if os.name != "nt":
+            directories.append("line\nbreak")
+        for directory in directories:
+            relative = directory + "/.publication-owner.toml"
+            with (
+                self.subTest(relative=relative),
+                _repository({relative: "# synthetic policy\n"}) as name,
+            ):
+                root = Path(name)
+                _commit(root)
+                subprocess.run(["git", "rm", "-q", "--", relative], cwd=root, check=True)
+                _commit(root, "test: remove current owner-policy fixture")
+                self.assertTrue(audit.scan(root).ok)
+                failures = audit.history_failures(root)
+                self.assertIn(f"history {relative}: private-path", failures)
+
     def test_replace_refs_and_grafts_invalidate_a_history_verdict(self) -> None:
         with _repository({"kept.md": "clean\n"}) as name:
             root = Path(name)

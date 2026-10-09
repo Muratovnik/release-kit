@@ -123,9 +123,21 @@ python .github/relkit.pyz audit --history
 ```
 
 Worktree scope includes tracked files and untracked/unignored publication candidates.
+Replacing a tracked directory with a symlink publishes the link text; the scanner
+does not read the old child paths through that link.
+Sparse-checkout entries still belong to the index. A symlink that conflicts with
+an indexed sparse path requires manual resolution before engine worktree scanning.
+Directory junctions and other directory reparse points refuse worktree traversal;
+the staged scope can inspect the raw Git index without following those mounts.
 Staged scope reads the Git index: `relkit.toml`, Betterleaks configuration and its
 relative policy files must be indexed. Unstaged policy edits are not part of that
 verdict. Betterleaks scans staged changes; policy and Markdown inspect the index.
+Scanner snapshots read raw Git blobs, preserving link text and indexed line
+endings without running checkout filters such as Git LFS smudge commands.
+Scanner caches and temporary files occupy a separate owned directory. Completed
+scans remove that scratch; operational failures preserve available diagnostic files.
+Timeouts stop owned engine descendants. If their cleanup cannot be confirmed,
+audit refuses with `engine_cleanup_unconfirmed` and retains the entire workspace.
 
 History scope requires a clean **tracked** tree and complete local history. It
 checks current `HEAD`, local/remote branches, tags, Git notes and fetched GitHub
@@ -135,6 +147,8 @@ checkpoint refs are deliberately outside this scope. Untracked/unignored files
 can still be inspected by the worktree candidate pass; they are not magically
 part of Git history. History rejects shallow clones, replace refs and nonempty
 Git grafts, and disables replacement semantics in its Git/scanner processes.
+Public refs pointing directly to a tree or blob are included even when no commit contains
+that object; tree entries retain every path and symlink mode for policy checks.
 
 Fetch host-only refs before a recovery review: local checks cannot inspect objects
 the checkout does not possess. Neither Git history scanning nor its link checker
@@ -160,6 +174,8 @@ history: `.zip`, `.whl`, `.jar`, `.pyz`, Office/OpenDocument packages and
 extensionless ZIPs. Unsafe entry paths/symlinks, malformed or over-budget containers,
 private paths and matching text rules fail, including bounded nested ZIPs and
 Unicode entries. Diagnostics identify the outer artifact and entry.
+Unsafe member names still undergo bounded privacy inspection in memory; no member
+is extracted to a filesystem path.
 
 `forbid_png_metadata`, when enabled, also checks PNG entries and reachable historical
 PNGs/archives. Its structural exclusions remain applicable.

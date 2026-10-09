@@ -402,6 +402,11 @@ def kinds_in_text(
     )
 
 
+def is_owner_policy_path(relative: str) -> bool:
+    """The two private policy filenames are unconditional publication exclusions."""
+    return PurePosixPath(_normalized_value(relative)).name.casefold() in DEFAULT_PRIVATE_FILES
+
+
 def kinds_in_path(
     relative: str,
     *,

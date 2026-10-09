@@ -28,7 +28,7 @@ class SecretSmokeTests(unittest.TestCase):
             observed.append(expected)
             if expected == 1:
                 self.assertRegex(self.path.read_text(), r"github_token = ghp_[0-9a-f]{36}\n")
-                return {"data": {"engines": {"betterleaks": 1, "lychee": 0}}}
+                return {"data": {"engines": {"betterleaks": 10, "lychee": 0}}}
             self.assertFalse(self.path.exists())
             return {"data": {"engines": {"betterleaks": 0, "lychee": 0}}}
 
@@ -37,7 +37,7 @@ class SecretSmokeTests(unittest.TestCase):
         self.assertEqual([1, 0], observed)
 
     def test_zero_exit_or_operational_failure_is_not_secret_detection(self):
-        for engine in (0, 2, None):
+        for engine in (0, 1, 2, None):
             with (
                 self.subTest(engine=engine),
                 patch.object(
@@ -66,8 +66,8 @@ class SecretSmokeTests(unittest.TestCase):
 
     def test_clean_recovery_is_required(self):
         responses = [
-            {"data": {"engines": {"betterleaks": 1, "lychee": 0}}},
-            {"data": {"engines": {"betterleaks": 1, "lychee": 0}}},
+            {"data": {"engines": {"betterleaks": 10, "lychee": 0}}},
+            {"data": {"engines": {"betterleaks": 10, "lychee": 0}}},
         ]
         with (
             patch.object(smoke_onboarding, "invoke", side_effect=responses),

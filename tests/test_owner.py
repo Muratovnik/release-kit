@@ -707,6 +707,32 @@ class ProtectionTests(unittest.TestCase):
 
             self.assertIn("drifted", protection.problem(root) or "")
 
+    def test_an_older_guard_still_requires_a_working_dispatcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            path = protection.install(root)
+            pins = protection.recorded_digests(root)
+            path.write_text(protection._hook_v1(repr(pins)), encoding="utf-8", newline="\n")
+            self.assertIsNone(protection.problem(root))
+            subprocess.run(
+                ["git", "config", "--local", "core.hooksPath", str(root / "missing-hooks")],
+                cwd=root,
+                check=True,
+            )
+            self.assertIn("dispatcher is not installed", protection.problem(root) or "")
+
+    def test_an_older_guard_still_requires_execute_permission(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            self._repository(root)
+            path = protection.install(root)
+            pins = protection.recorded_digests(root)
+            path.write_text(protection._hook_v1(repr(pins)), encoding="utf-8", newline="\n")
+            self.assertIsNone(protection.problem(root))
+            with patch.object(protection.os, "access", return_value=False):
+                self.assertIn("not executable", protection.problem(root) or "")
+
 
 if __name__ == "__main__":
     unittest.main()
