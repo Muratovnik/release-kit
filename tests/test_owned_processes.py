@@ -27,6 +27,34 @@ import check_distribution
 from smoke_onboarding import create_project
 
 
+@contextlib.contextmanager
+def timeout_after_ready(*paths: Path):
+    """Start a real command's operation clock after its fixture has started."""
+    original = subprocess.Popen.communicate
+    waiting = True
+    established = False
+
+    def communicate(process, *args, **kwargs):
+        nonlocal waiting, established
+        if waiting:
+            waiting = False
+            deadline = time.monotonic() + 10
+            while not all(path.is_file() for path in paths):
+                if process.poll() is not None or time.monotonic() >= deadline:
+                    raise AssertionError("fixture did not become ready before its operation")
+                time.sleep(0.01)
+            established = True
+        return original(process, *args, **kwargs)
+
+    # The owned runner still spawns, times out, and cleans its real process. Only
+    # its first communicate waits for startup before forwarding the same timeout.
+    with patch.object(subprocess.Popen, "communicate", communicate):
+        yield
+    # Expected cleanup refusal must not consume a failed startup precondition.
+    if not established:
+        raise AssertionError("fixture readiness did not complete before its operation")
+
+
 class OwnedProcessTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory(prefix="owned processes ")
@@ -49,7 +77,8 @@ class OwnedProcessTests(unittest.TestCase):
         trigger = self.root / "allow-late-write"
         child = (
             "from pathlib import Path\nimport time\n"
-            f"Path({str(ready)!r}).write_text('ready')\n"
+            f"pending=Path({str(ready.with_suffix('.tmp'))!r}); pending.write_text('ready')\n"
+            f"pending.replace({str(ready)!r})\n"
             "deadline=time.monotonic()+20\n"
             f"while not Path({str(trigger)!r}).exists() and time.monotonic()<deadline:\n"
             " time.sleep(0.01)\n"
@@ -91,19 +120,20 @@ class OwnedProcessTests(unittest.TestCase):
 
     def test_timeout_stops_the_child_not_only_the_parent(self):
         command, ready, late = self.tree()
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with timeout_after_ready(ready), self.assertRaises(subprocess.TimeoutExpired):
             processes.run(command, cwd=self.root, env=self.environment, timeout=2)
         self.assert_no_late_write(ready, late)
 
     def test_successful_parent_cannot_leave_background_worker(self):
         command, ready, late = self.tree(exit_parent=True)
-        result = processes.run(command, cwd=self.root, env=self.environment, timeout=5)
+        with timeout_after_ready(ready):
+            result = processes.run(command, cwd=self.root, env=self.environment, timeout=5)
         self.assertEqual(0, result.returncode)
         self.assert_no_late_write(ready, late)
 
     def test_coordinator_keeps_timeout_unknown_but_stops_owned_workers(self):
         command, ready, late = self.tree()
-        with self.assertRaises(Pending):
+        with timeout_after_ready(ready), self.assertRaises(Pending):
             Runner(self.root).call(command, cwd=self.root, timeout=2)
         self.assert_no_late_write(ready, late)
 
@@ -147,7 +177,7 @@ class OwnedProcessTests(unittest.TestCase):
             "finally:\n"
             f" lock.unlink(); Path({str(released)!r}).write_text('done')\n"
         )
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with timeout_after_ready(ready), self.assertRaises(subprocess.TimeoutExpired):
             processes.run(
                 self.command(middle),
                 env=self.environment,
@@ -168,7 +198,7 @@ class OwnedProcessTests(unittest.TestCase):
             command = self.command(
                 f"from releasekit import processes\nprocesses.run({command!r}, timeout=25)\n"
             )
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with timeout_after_ready(ready), self.assertRaises(subprocess.TimeoutExpired):
             processes.run(
                 command,
                 env=self.environment,
@@ -183,7 +213,9 @@ class OwnedProcessTests(unittest.TestCase):
         ready = self.root / "worker-pid"
         worker = (
             "import os,time\nfrom pathlib import Path\n"
-            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            f"pending=Path({str(ready.with_suffix('.tmp'))!r})\n"
+            "pending.write_text(str(os.getpid()))\n"
+            f"pending.replace({str(ready)!r})\n"
             "time.sleep(20)\n"
         )
         relay = (
@@ -194,7 +226,7 @@ class OwnedProcessTests(unittest.TestCase):
             "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
         )
         try:
-            with self.assertRaises(processes.CleanupError):
+            with timeout_after_ready(ready), self.assertRaises(processes.CleanupError):
                 processes.run(
                     self.command(relay),
                     env=self.environment,
@@ -215,19 +247,25 @@ class OwnedProcessTests(unittest.TestCase):
         ready = self.root / "early-worker-pid"
         worker = (
             "import os,time\nfrom pathlib import Path\n"
-            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            f"pending=Path({str(ready.with_suffix('.tmp'))!r})\n"
+            "pending.write_text(str(os.getpid()))\n"
+            f"pending.replace({str(ready)!r})\n"
             "time.sleep(20)\n"
         )
         relay = (
-            "import subprocess\nfrom releasekit import processes\n"
+            "import subprocess,sys\nfrom pathlib import Path\nfrom releasekit import processes\n"
+            f"sys.path.insert(0,{str(ROOT / 'tests')!r})\n"
+            "from test_owned_processes import timeout_after_ready\n"
             "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
             "processes._group=denied\n"
-            f"processes.run({self.command(worker)!r}, timeout=2, env={{}}, "
+            f"with timeout_after_ready(Path({str(ready)!r})):\n"
+            f" processes.run({self.command(worker)!r}, timeout=2, env={{}}, "
             "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
         )
         try:
             with (
                 patch.object(processes, "_GRACE", 0.3),
+                timeout_after_ready(ready),
                 self.assertRaises(processes.CleanupError),
             ):
                 processes.run(
@@ -284,7 +322,7 @@ class OwnedProcessTests(unittest.TestCase):
                     "time.sleep(20)\n"
                 )
                 exception = processes.CleanupError if code == 2 else subprocess.TimeoutExpired
-                with self.assertRaises(exception):
+                with timeout_after_ready(ready), self.assertRaises(exception):
                     processes.run(command, timeout=2, stderr=subprocess.PIPE)
                 self.assertTrue(ready.exists())
 
@@ -299,6 +337,7 @@ class OwnedProcessTests(unittest.TestCase):
         )
         with (
             patch.object(processes, "_GRACE", 0.2),
+            timeout_after_ready(ready),
             self.assertRaisesRegex(processes.CleanupError, "forced or abnormal"),
         ):
             processes.run(command, timeout=2, stderr=subprocess.PIPE)
@@ -328,7 +367,7 @@ class OwnedProcessTests(unittest.TestCase):
         )
         environment = dict(self.environment)
         environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT / "tools")))
-        with self.assertRaises(subprocess.TimeoutExpired):
+        with timeout_after_ready(ready), self.assertRaises(subprocess.TimeoutExpired):
             processes.run(
                 self.command(script),
                 env=environment,
@@ -376,7 +415,9 @@ class OwnedProcessTests(unittest.TestCase):
         ready = self.root / "gate-worker-pid"
         leaf = (
             "import os,time\nfrom pathlib import Path\n"
-            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            f"pending=Path({str(ready.with_suffix('.tmp'))!r})\n"
+            "pending.write_text(str(os.getpid()))\n"
+            f"pending.replace({str(ready)!r})\n"
             "time.sleep(20)\n"
         )
         (suite / "test_gate.py").write_text(
@@ -412,7 +453,7 @@ class OwnedProcessTests(unittest.TestCase):
         environment = dict(self.environment)
         environment["PYTHONPATH"] = os.pathsep.join((str(ROOT / "src"), str(ROOT / "tools")))
         try:
-            with self.assertRaises(processes.CleanupError):
+            with timeout_after_ready(ready), self.assertRaises(processes.CleanupError):
                 processes.run(
                     self.command(script),
                     env=environment,
@@ -491,7 +532,8 @@ class OwnedProcessTests(unittest.TestCase):
         worker = (
             "import os,sys,time\nfrom pathlib import Path\n"
             "root=Path(sys.argv[1]);name=sys.argv[2]\n"
-            "(root/(name+'.pid')).write_text(str(os.getpid()))\n"
+            "pending=root/(name+'.pid.tmp'); pending.write_text(str(os.getpid()))\n"
+            "pending.replace(root/(name+'.pid'))\n"
             "deadline=time.monotonic()+20\n"
             f"while not Path({str(returned)!r}).exists() and time.monotonic()<deadline:\n"
             " time.sleep(0.01)\n"
@@ -500,11 +542,13 @@ class OwnedProcessTests(unittest.TestCase):
         (suite / "test_spawned.py").write_text(
             "import multiprocessing,os,subprocess,sys,time,unittest\nfrom pathlib import Path\n"
             "from releasekit import processes\n"
+            "from test_owned_processes import timeout_after_ready\n"
             "class SpawnedTests(unittest.TestCase):\n"
             " def owned(self,name,other):\n"
             f"  root=Path({str(self.root)!r})\n"
             f"  self.assertEqual({method!r},multiprocessing.get_start_method())\n"
-            "  (root/(name+'.runner')).write_text(str(os.getpid()))\n"
+            "  pending=root/(name+'.runner.tmp'); pending.write_text(str(os.getpid()))\n"
+            "  pending.replace(root/(name+'.runner'))\n"
             "  deadline=time.monotonic()+5\n"
             "  while not (root/(other+'.runner')).exists() and time.monotonic()<deadline:\n"
             "   time.sleep(0.01)\n"
@@ -512,7 +556,8 @@ class OwnedProcessTests(unittest.TestCase):
             f"  if Path({str(denied)!r}).exists():\n"
             "   def refusal(*args): raise PermissionError('controlled spawned worker denial')\n"
             "   processes._group=refusal\n"
-            f"  processes.run([sys.executable,'-S','-c',{worker!r},str(root),name], "
+            "  with timeout_after_ready(root/(name+'.pid')):\n"
+            f"   processes.run([sys.executable,'-S','-c',{worker!r},str(root),name], "
             "timeout=0.5,stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
             " def test_first(self): self.owned('first','second')\n"
             " def test_second(self): self.owned('second','first')\n",
@@ -568,7 +613,12 @@ class OwnedProcessTests(unittest.TestCase):
                         if refuse
                         else contextlib.nullcontext()
                     )
-                    with expected:
+                    with (
+                        timeout_after_ready(
+                            *(self.root / f"{name}.pid" for name in ("first", "second"))
+                        ),
+                        expected,
+                    ):
                         completed = processes.run(
                             self.command(script),
                             env=environment,
@@ -610,8 +660,14 @@ class OwnedProcessTests(unittest.TestCase):
             with self.subTest(index=index):
                 cwd = self.root / str(index)
                 cwd.mkdir()
-                with self.assertRaises(subprocess.TimeoutExpired):
-                    processes.run(self.command("import time; time.sleep(5)"), cwd=cwd, timeout=0.2)
+                ready = self.root / f"cwd-ready-{index}"
+                command = self.command(
+                    "import time\nfrom pathlib import Path\n"
+                    f"Path({str(ready)!r}).touch()\n"
+                    "time.sleep(5)\n"
+                )
+                with timeout_after_ready(ready), self.assertRaises(subprocess.TimeoutExpired):
+                    processes.run(command, cwd=cwd, timeout=0.2)
                 # No retry or pause: the operation boundary must release this cwd.
                 cwd.rmdir()
 
