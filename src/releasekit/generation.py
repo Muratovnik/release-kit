@@ -25,10 +25,26 @@ from .config import ChangelogConfig
 from .release.changelog import normalize
 
 TIMEOUT = 300
+_DIAGNOSTIC_LIMIT = 4096
+_ANSI_COLOR = re.compile(r"\x1b\[[0-9;:]*m")
 
 
 class GenerationError(RuntimeError):
     """A draft could not be produced."""
+
+
+def _failure_detail(stderr: bytes, stdout: bytes) -> str:
+    """Keep the cause and final hint within a 4096-character diagnostic."""
+    for payload in (stderr, stdout):
+        detail = _ANSI_COLOR.sub("", payload.decode("utf-8", errors="replace")).strip()
+        if detail:
+            break
+    if len(detail) <= _DIAGNOSTIC_LIMIT:
+        return detail
+    marker = "\n[... generator output truncated ...]\n"
+    available = _DIAGNOSTIC_LIMIT - len(marker)
+    head = (available + 1) // 2
+    return detail[:head] + marker + detail[-(available - head) :]
 
 
 def command_for(
@@ -147,15 +163,10 @@ def draft(
     except (OSError, subprocess.SubprocessError) as error:
         raise GenerationError(f"could not run {command[0]}: {error}") from error
     if completed.returncode:
-        detail = (
-            (completed.stderr or completed.stdout)
-            .decode("utf-8", errors="replace")
-            .strip()
-            .splitlines()
-        )
+        detail = _failure_detail(completed.stderr, completed.stdout)
         raise GenerationError(
             f"{Path(command[0]).name} exited {completed.returncode}"
-            + (f": {detail[-1]}" if detail else "")
+            + (f": {detail}" if detail else "")
         )
     try:
         text = completed.stdout.decode("utf-8")

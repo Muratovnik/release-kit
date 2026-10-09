@@ -108,6 +108,26 @@ a reader of the release. Put what a reader needs in a `Highlights` section: it i
 exempt from the per-bullet commit link, so hand-written context sits above the
 generated list without breaking the layout.
 
+### Drafting without remote metadata
+
+git-cliff can fetch remote metadata when a remote is configured. To generate from
+local Git commits, enable its [offline mode](https://git-cliff.org/docs/configuration/remote/#offline)
+for that invocation. In a POSIX shell:
+
+```bash
+GIT_CLIFF_OFFLINE=true relkit notes 1.2.0 --draft --from-tag v1.1.0 \
+  --output notes-1.2.0.md
+```
+
+The starter still renders compare and commit URLs from its configured owner and
+repository and the local history. Pull-request titles, labels and other remote
+metadata are unavailable; templates depending on that enrichment may need online
+generation. See git-cliff's [offline limitations](https://git-cliff.org/docs/tips-and-tricks/#handling-remote-git-service-api-rate-limits).
+
+Release-kit may still provision the pinned git-cliff executable if it is missing.
+For a fully offline run, the verified executable must already be in release-kit's
+cache.
+
 ## conventional-changelog layout
 
 Use a level-two version/date heading, for example:

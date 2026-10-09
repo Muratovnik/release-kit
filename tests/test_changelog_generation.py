@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import re
 import subprocess
@@ -123,6 +124,133 @@ class GeneratorBoundaryTests(unittest.TestCase):
                 from_tag="v1.0.0",
             )
         self.assertFalse(marker.exists())
+
+    def test_failed_generator_cli_preserves_multiline_cause_and_hint(self):
+        diagnostic = (
+            b"\x1b[31mERROR\x1b[0m could not get github metadata\n"
+            b"Caused by:\n    invalid peer certificate: UnknownIssuer\n"
+            b"note: run with RUST_BACKTRACE=full for a verbose backtrace.\n"
+        )
+        body = (
+            "import sys\n"
+            "sys.stdout.write('unrelated stdout detail\\n')\n"
+            f"sys.stderr.buffer.write({diagnostic!r})\n"
+            "raise SystemExit(101)\n"
+        )
+        (self.root / "relkit.toml").write_text(
+            "[changelog.generator]\ncommand = "
+            + json.dumps([sys.executable, "-B", "-c", body])
+            + "\n",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [
+                sys.executable,
+                "-B",
+                "-m",
+                "releasekit.cli",
+                "notes",
+                "1.1.0",
+                "--draft",
+                "--root",
+                str(self.root),
+                "--json",
+            ],
+            cwd=self.root,
+            env={
+                **self.environment,
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1] / "src"),
+            },
+            capture_output=True,
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(2, completed.returncode, completed.stderr)
+        result = json.loads(completed.stdout)
+        self.assertEqual(2, result["exit_code"])
+        self.assertEqual("generation_error", result["errors"][0]["code"])
+        message = result["errors"][0]["message"]
+        self.assertIn("exited 101: ERROR could not get github metadata", message)
+        self.assertIn("\nCaused by:\n    invalid peer certificate: UnknownIssuer\n", message)
+        self.assertTrue(message.endswith("run with RUST_BACKTRACE=full for a verbose backtrace."))
+        self.assertNotIn("unrelated stdout detail", message)
+        self.assertNotIn("\x1b", message)
+        self.assertIn(message, completed.stderr.decode("utf-8"))
+
+    def test_failed_generator_bounds_diagnostics_and_keeps_both_ends(self):
+        head = "FIRST cause: UnknownIssuer\n"
+        tail = "\nLAST hint: inspect generator configuration"
+        body = (
+            "import sys\n"
+            f"sys.stderr.buffer.write({head.encode()!r}"
+            " + ('trace Ω\\n' * 6000).encode('utf-8')"
+            f" + {tail.encode()!r})\n"
+            "raise SystemExit(101)\n"
+        )
+        with self.assertRaises(generation.GenerationError) as raised:
+            generation.draft(self.policy(body), "1.1.0", root=self.root)
+        prefix = f"{Path(sys.executable).name} exited 101: "
+        message = str(raised.exception)
+        self.assertTrue(message.startswith(prefix))
+        detail = message[len(prefix) :]
+        self.assertTrue(detail.startswith(head))
+        self.assertTrue(detail.endswith(tail))
+        self.assertIn("truncated", detail)
+        self.assertLessEqual(len(detail), 4096)
+        self.assertNotIn("\ufffd", detail)
+
+    def test_failed_generator_replaces_invalid_utf8_without_losing_the_cause(self):
+        diagnostic = b"\xffinvalid peer certificate\nlast hint\xfe\n"
+        with self.assertRaises(generation.GenerationError) as raised:
+            generation.draft(
+                self.policy(
+                    f"import sys; sys.stderr.buffer.write({diagnostic!r}); raise SystemExit(7)"
+                ),
+                "1.1.0",
+                root=self.root,
+            )
+        self.assertEqual(
+            f"{Path(sys.executable).name} exited 7: \ufffdinvalid peer certificate\nlast hint\ufffd",
+            str(raised.exception),
+        )
+
+    def test_failed_generator_uses_stdout_when_stderr_has_no_text(self):
+        output = b"\x1b[33mstdout cause\x1b[0m\nstdout next step\n"
+        for diagnostic in (b"", b" \n\t", b"\x1b[31m\x1b[0m \n"):
+            with self.subTest(stderr=diagnostic):
+                body = (
+                    "import sys\n"
+                    f"sys.stdout.buffer.write({output!r})\n"
+                    f"sys.stderr.buffer.write({diagnostic!r})\n"
+                    "raise SystemExit(9)\n"
+                )
+                with self.assertRaises(generation.GenerationError) as raised:
+                    generation.draft(self.policy(body), "1.1.0", root=self.root)
+                self.assertEqual(
+                    f"{Path(sys.executable).name} exited 9: stdout cause\nstdout next step",
+                    str(raised.exception),
+                )
+
+    def test_silent_failed_generator_still_reports_its_exit_status(self):
+        with self.assertRaises(generation.GenerationError) as raised:
+            generation.draft(self.policy("raise SystemExit(17)"), "1.1.0", root=self.root)
+        self.assertEqual(f"{Path(sys.executable).name} exited 17", str(raised.exception))
+
+    def test_custom_command_receives_exact_declared_arguments(self):
+        arguments = ("literal with spaces", "--tag=unchanged", "-rc", "κ")
+        policy = config.ChangelogConfig(
+            generator=config.GeneratorConfig(
+                command=(
+                    sys.executable,
+                    "-B",
+                    "-c",
+                    "import json,sys; print(json.dumps(sys.argv[1:]))",
+                    *arguments,
+                )
+            )
+        )
+        output = generation.draft(policy, "1.1.0", root=self.root)
+        self.assertEqual(list(arguments), json.loads(output))
 
     def test_custom_command_output_is_utf8_and_keeps_internal_line_endings(self):
         expected = "## [1.1.0]\r\n\r\nИсправлено: café.\r\n"
