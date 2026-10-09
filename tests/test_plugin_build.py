@@ -100,12 +100,33 @@ class PluginBuildTests(unittest.TestCase):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
         with tempfile.TemporaryDirectory(prefix="alias probe ") as temporary:
             nested = Path(temporary) / "plugin space" / "release-kit"
+            # Exercise the actual loader boundary even when this volume supplies
+            # no short names and GetShortPathNameW returns the original spelling.
+            while (
+                len(str(nested / ".runtime" / "venv")) + launcher["RUNTIME_LEAF"]
+                <= launcher["LOADER_LIMIT"]
+            ):
+                nested /= "nested plugin directory"
             nested.mkdir(parents=True)
-            alias = launcher["alias_path"](nested / ".runtime" / "venv")
-            if alias is None:
-                self.skipTest("this volume does not create 8.3 aliases")
-            self.assertLess(len(str(alias)), len(str(nested / ".runtime" / "venv")))
-            self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
+            virtualenv = nested / ".runtime" / "venv"
+            alias = launcher["alias_path"](virtualenv)
+            if alias is not None:
+                self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
+            if (
+                alias is not None
+                and len(str(alias)) + launcher["RUNTIME_LEAF"] <= launcher["LOADER_LIMIT"]
+            ):
+                base = launcher["loadable_base"](nested, virtualenv)
+                self.assertEqual(nested.resolve(), base.resolve())
+                relocated = launcher["relocate"](base, nested, virtualenv)
+                self.assertLessEqual(
+                    len(str(relocated)) + launcher["RUNTIME_LEAF"], launcher["LOADER_LIMIT"]
+                )
+                print("Windows runtime path: native short alias fits the DLL loader budget")
+            else:
+                with self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"):
+                    launcher["loadable_base"](nested, virtualenv)
+                print("Windows runtime path: no usable native short alias; deep runtime refused")
 
     def test_concurrent_cold_launch_waits_for_runtime_receipt(self):
         with tempfile.TemporaryDirectory(prefix="cold plugin ") as temporary:

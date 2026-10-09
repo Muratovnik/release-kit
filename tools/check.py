@@ -4,7 +4,7 @@ The release coordinator executes configured checks as argv arrays without a shel
 so a gate that needs `src` on the import path needs a runner rather than an exported
 variable. This is that runner, and it runs exactly the list AGENTS.md declares. The
 publication audits are not here: the coordinator runs the worktree and history audits
-itself, and CI provisions no engine downloads.
+itself. Native CI provisions pinned engines for its explicit acceptance tests.
 """
 
 from __future__ import annotations

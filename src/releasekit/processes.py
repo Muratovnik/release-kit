@@ -126,11 +126,16 @@ def termination_handler():
 
 
 def _group(pid: int, signum: int) -> bool:
+    """Attempt a group signal; only ESRCH confirms that the group is gone."""
     try:
         os.killpg(pid, signum)
         return True
     except ProcessLookupError:
         return False
+    except PermissionError:
+        # Darwin also reports EPERM for a group containing only zombies. Keep
+        # either case unconfirmed until the existing bounded poll observes ESRCH.
+        return True
 
 
 def cancellation_exit_confirmed(returncode: int | None) -> bool:

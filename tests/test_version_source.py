@@ -4,9 +4,7 @@ import contextlib
 import hashlib
 import io
 import json
-import os
 import re
-import signal
 import subprocess
 import sys
 import tempfile
@@ -15,6 +13,8 @@ import tomllib
 import unittest
 from pathlib import Path
 from unittest.mock import patch
+
+from process_fixtures import stop_recorded_worker
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -347,11 +347,7 @@ class VersionSourceTests(unittest.TestCase):
             self.assertEqual(before, {path: path.read_bytes() for path in before})
             self.assertEqual([], self.recoveries())
         finally:
-            if ready.is_file():
-                try:
-                    os.kill(int(ready.read_text()), signal.SIGTERM)
-                except ProcessLookupError:
-                    pass
+            stop_recorded_worker(ready)
 
     def test_failed_resolver_keeps_text_diagnostics_and_restores_the_previous_bytes(self):
         before = {path: path.read_bytes() for path in self.transaction_files()}

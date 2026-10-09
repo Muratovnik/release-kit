@@ -80,6 +80,74 @@ class DiscoveryTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "all discovered"):
             check_mcp.run_suite(self.root, stream=io.StringIO())
 
+    def assert_suite_case(self, label, source, expected):
+        folder = self.root / label
+        folder.mkdir()
+        name = self.name + "_" + label
+        self.addCleanup(sys.modules.pop, name, None)
+        (folder / (name + ".py")).write_text(source, encoding="utf-8")
+        stream = io.StringIO()
+        if expected == 2:
+            with self.assertRaisesRegex(ValueError, "all discovered"):
+                check_mcp.run_suite(folder, stream=stream)
+        else:
+            self.assertEqual(expected, check_mcp.run_suite(folder, stream=stream))
+        return stream.getvalue()
+
+    def test_subtest_skips_do_not_replace_completed_case_or_failure_counts(self):
+        for label, passed, failed, expected in (
+            ("all_skipped", False, False, 2),
+            ("mixed", True, False, 0),
+            ("failure", False, True, 1),
+        ):
+            with self.subTest(case=label):
+                source = (
+                    "import unittest\nclass Probe(unittest.TestCase):\n"
+                    "    def test_subtests(self):\n"
+                    "        for value in range(2):\n"
+                    "            with self.subTest(value=value):\n"
+                    f"                if not ({passed!r} and value == 0):\n"
+                    "                    self.skipTest('unavailable case')\n"
+                    "                self.assertTrue(True)\n"
+                )
+                if failed:
+                    source += "    def test_failure(self): self.fail('actual case failure')\n"
+                output = self.assert_suite_case(label, source, expected)
+                if failed:
+                    self.assertIn("actual case failure", output)
+
+    def test_suite_setup_skips_and_failures_keep_their_distinct_verdicts(self):
+        for scope in ("class", "module"):
+            for skipped in (False, True):
+                label = f"{scope}_{skipped}"
+                with self.subTest(scope=scope, skipped=skipped):
+                    exception = "unittest.SkipTest" if skipped else "RuntimeError"
+                    if scope == "class":
+                        source = (
+                            "import unittest\nclass Probe(unittest.TestCase):\n"
+                            "    @classmethod\n    def setUpClass(cls):\n"
+                            f"        raise {exception}('controlled setup outcome')\n"
+                            "    def test_case(self): self.assertTrue(True)\n"
+                        )
+                    else:
+                        source = (
+                            "import unittest\ndef setUpModule():\n"
+                            f"    raise {exception}('controlled setup outcome')\n"
+                            "class Probe(unittest.TestCase):\n"
+                            "    def test_case(self): self.assertTrue(True)\n"
+                        )
+                    self.assert_suite_case(label, source, 2 if skipped else 1)
+
+    def test_expected_failure_is_execution_and_unexpected_success_still_fails(self):
+        for passes in (False, True):
+            with self.subTest(passes=passes):
+                source = (
+                    "import unittest\nclass Probe(unittest.TestCase):\n"
+                    "    @unittest.expectedFailure\n    def test_known_failure(self):\n"
+                    f"        self.assertTrue({passes!r})\n"
+                )
+                self.assert_suite_case(f"expected_{passes}", source, 1 if passes else 0)
+
     def test_import_failure_is_not_reported_as_empty_or_success(self):
         self.write_test(self.root, "raise ImportError('missing integration dependency')\n")
         self.assertEqual(1, check_mcp.run_suite(self.root, stream=io.StringIO()))

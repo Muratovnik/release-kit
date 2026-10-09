@@ -161,10 +161,11 @@ class EngineCommandTests(unittest.TestCase):
                 self.skipTest("symlinks unavailable")
             snapshot = root / ".git/snapshot"
             snapshot.mkdir()
+            expected_link = os.readlink(root / "docs")
 
             engines._materialize_worktree(root, snapshot, include_candidates=True)
 
-            self.assertEqual(str(private), (snapshot / "docs").read_text(encoding="utf-8"))
+            self.assertEqual(expected_link, (snapshot / "docs").read_text(encoding="utf-8"))
             self.assertFalse((snapshot / "docs").is_symlink())
             self.assertEqual([snapshot / "docs"], list(snapshot.rglob("*")))
 

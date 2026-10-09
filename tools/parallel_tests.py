@@ -29,6 +29,31 @@ IMPORT_PATHS = (str(ROOT / "src"), str(ROOT / "tests"))
 MAX_WORKERS = 16
 
 
+class CompletedCasesMixin:
+    """Track completed unittest cases without comparing methods with subtest skips."""
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.completed = False
+
+    def addSuccess(self, test):
+        self.completed = True
+        super().addSuccess(test)
+
+    def addExpectedFailure(self, test, err):
+        self.completed = True
+        super().addExpectedFailure(test, err)
+
+    def addSubTest(self, test, subtest, err):
+        if err is None:
+            self.completed = True
+        super().addSubTest(test, subtest, err)
+
+
+class SourceResult(CompletedCasesMixin, unittest.TestResult):
+    pass
+
+
 def _writer_record(descriptor, expected=None):
     import fcntl
 
@@ -102,22 +127,23 @@ def identifiers(start: Path, paths: tuple[str, ...]) -> list[str]:
     return sorted(found)
 
 
-def _execute(work: tuple[str, tuple[str, ...]]) -> tuple[str, float, list, list, list]:
+def _execute(work: tuple[str, tuple[str, ...]]) -> tuple[str, float, list, list, list, bool]:
     identifier, paths = work
     _extend(paths)
-    result = unittest.TestResult()
+    result = SourceResult()
     started = time.monotonic()
     try:
         unittest.defaultTestLoader.loadTestsFromName(identifier).run(result)
     except Exception as error:  # noqa: BLE001 - a load failure is a test failure here
-        return identifier, time.monotonic() - started, [], [f"{identifier}: {error!r}"], []
+        return identifier, time.monotonic() - started, [], [f"{identifier}: {error!r}"], [], False
     return (
         identifier,
         time.monotonic() - started,
         [text for _, text in result.failures]
         + [f"unexpected success: {test.id()}" for test in result.unexpectedSuccesses],
         [text for _, text in result.errors],
-        [reason for _, reason in result.skipped],
+        [(test.id(), reason) for test, reason in result.skipped],
+        result.completed,
     )
 
 
@@ -143,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
     print(f"tests: {len(names)} across {jobs} process(es)", flush=True)
     failures: list[str] = []
     errors: list[str] = []
-    skipped = 0
+    skipped: list[tuple[str, str]] = []
+    completed = False
     started = time.monotonic()
     work = [(name, paths) for name in names]
     # A row of dots says the suite is alive but not how much of it is left. On a
@@ -166,10 +193,13 @@ def main(argv: list[str] | None = None) -> int:
                 }
             pool = ProcessPoolExecutor(max_workers=jobs, **options)
             outcomes = pool.map(_execute, work)
-        for done, (_, _, test_failures, test_errors, test_skips) in enumerate(outcomes, start=1):
+        for done, (_, _, test_failures, test_errors, test_skips, test_completed) in enumerate(
+            outcomes, start=1
+        ):
             failures.extend(test_failures)
             errors.extend(test_errors)
-            skipped += len(test_skips)
+            skipped.extend(test_skips)
+            completed = completed or test_completed
             mark = "F" if test_failures else ("E" if test_errors else ".")
             if live:
                 sys.stdout.write(f"\r[{done}/{len(names)}] {len(failures) + len(errors)} failing ")
@@ -194,6 +224,8 @@ def main(argv: list[str] | None = None) -> int:
     total = time.monotonic() - started
 
     print(f"\n{'-' * 70}\nRan {len(names)} tests in {total:.3f}s\n", flush=True)
+    for identifier, reason in skipped:
+        print(f"SKIP {identifier}: {reason}", flush=True)
     for report in (*failures, *errors):
         print(report, flush=True)
     if failures or errors:
@@ -207,10 +239,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(f"FAILED ({detail})", flush=True)
         return 1
-    if skipped == len(names):
+    if not completed:
         print("tests: all discovered tests were skipped; source was not qualified", flush=True)
         return 2
-    print(f"OK{f' (skipped={skipped})' if skipped else ''}", flush=True)
+    print(f"OK{f' (skipped={len(skipped)})' if skipped else ''}", flush=True)
     return 0
 
 

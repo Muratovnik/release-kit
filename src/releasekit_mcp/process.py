@@ -26,11 +26,17 @@ runpy.run_path(path, run_name='__main__')
 
 
 def _group(pid, signum):
+    """Signal or probe a group; True means present or unconfirmed, not delivered."""
     try:
         os.killpg(pid, signum)
         return True
     except ProcessLookupError:
         return False
+    except PermissionError:
+        # Darwin can report EPERM while an exiting group contains only zombies.
+        # Wait within the existing deadline; only ESRCH establishes disappearance.
+        # A persistent refusal remains unconfirmed and retains recovery state.
+        return True
 
 
 async def _stop(process, job, lifetime=None):

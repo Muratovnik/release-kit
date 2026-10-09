@@ -79,6 +79,100 @@ class ParallelRunnerTests(unittest.TestCase):
                             expected, quiet(["--jobs", str(jobs), "--start-dir", str(folder)])
                         )
 
+    def test_completed_cases_define_qualification_despite_subtest_skips(self):
+        skipped = (
+            "    def test_skips(self):\n"
+            "        for case in ('first', 'second'):\n"
+            "            with self.subTest(case=case):\n"
+            "                self.skipTest('controlled unsupported case')\n"
+        )
+        passed = "    def test_passes(self): self.assertEqual(4, 2 + 2)\n"
+        cases = (
+            ("all_subtests", skipped + "    test_also_skips = test_skips\n", 2),
+            (
+                "mixed_subtests",
+                (
+                    "    def test_cases(self):\n"
+                    "        with self.subTest(case='unsupported'):\n"
+                    "            self.skipTest('controlled unsupported case')\n"
+                    "        with self.subTest(case='executed'):\n"
+                    "            self.assertEqual(4, 2 + 2)\n"
+                )
+                + skipped,
+                0,
+            ),
+            ("mixed_methods", skipped + passed, 0),
+            (
+                "expected_failure_only",
+                (
+                    "    @unittest.expectedFailure\n"
+                    "    def test_known_failure(self): self.assertEqual(5, 2 + 2)\n"
+                )
+                + skipped,
+                0,
+            ),
+            (
+                "failure_and_skips",
+                skipped + "    def test_fails(self): self.assertEqual(5, 2 + 2)\n",
+                1,
+            ),
+            (
+                "class_setup_skip",
+                "    @classmethod\n"
+                "    def setUpClass(cls): raise unittest.SkipTest('unsupported class')\n"
+                + passed
+                + skipped,
+                2,
+            ),
+            (
+                "module_setup_skip",
+                passed
+                + skipped
+                + "\ndef setUpModule(): raise unittest.SkipTest('unsupported module')\n",
+                2,
+            ),
+        )
+        for name, source, expected in cases:
+            with tempfile.TemporaryDirectory(prefix="runner subtests ") as temporary:
+                folder = Path(temporary)
+                (folder / f"test_completion_{name}.py").write_text(
+                    "import unittest\nclass SampleTests(unittest.TestCase):\n" + source,
+                    encoding="utf-8",
+                )
+                for jobs in (1, 2):
+                    with self.subTest(case=name, jobs=jobs):
+                        self.assertEqual(
+                            expected, quiet(["--jobs", str(jobs), "--start-dir", str(folder)])
+                        )
+
+    def test_skipped_subtest_ids_and_reasons_reach_the_captured_log(self):
+        with tempfile.TemporaryDirectory(prefix="runner skip report ") as temporary:
+            folder = Path(temporary)
+            (folder / "test_skip_report.py").write_text(
+                "import unittest\n"
+                "class SampleTests(unittest.TestCase):\n"
+                "    def test_cases(self):\n"
+                "        with self.subTest(feature='unavailable'):\n"
+                "            self.skipTest('no native fixture capability')\n"
+                "        with self.subTest(feature='available'):\n"
+                "            self.assertEqual(4, 2 + 2)\n"
+                "    def test_ordinary(self): self.assertTrue(True)\n",
+                encoding="utf-8",
+            )
+            for jobs in (1, 2):
+                output = io.StringIO()
+                with self.subTest(jobs=jobs), contextlib.redirect_stdout(output):
+                    self.assertEqual(
+                        0,
+                        parallel_tests.main(["--jobs", str(jobs), "--start-dir", str(folder)]),
+                    )
+                self.assertIn(
+                    "SKIP test_skip_report.SampleTests.test_cases (feature='unavailable'): "
+                    "no native fixture capability",
+                    output.getvalue(),
+                )
+                self.assertNotIn("(feature='available')", output.getvalue())
+
     def test_discovery_matches_stdlib_unittest(self):
         start = ROOT / "tests"
         paths = (*parallel_tests.IMPORT_PATHS, str(start))

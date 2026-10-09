@@ -124,6 +124,76 @@ class OwnedProcessTests(unittest.TestCase):
             processes.run(command, cwd=self.root, env=self.environment, timeout=2)
         self.assert_no_late_write(ready, late)
 
+    @unittest.skipIf(os.name == "nt", "POSIX process-group permission boundary")
+    def test_transient_group_permission_error_waits_for_disappearance(self):
+        native = os.killpg
+        for denied_signal in (signal.SIGTERM, 0):
+            with self.subTest(signal=denied_signal):
+                ready = self.root / f"permission-ready-{denied_signal}"
+                release = self.root / f"permission-exit-{denied_signal}"
+                command = self.command(
+                    "import os,time\nfrom pathlib import Path\n"
+                    f"pending=Path({str(ready.with_suffix('.tmp'))!r})\n"
+                    "pending.write_text(str(os.getpid()))\n"
+                    f"pending.replace({str(ready)!r})\n"
+                    f"while not Path({str(release)!r}).exists(): time.sleep(0.01)\n"
+                )
+                denied, disappeared, signals = [], [], []
+
+                def observed(
+                    pid,
+                    signum,
+                    *,
+                    denied_signal=denied_signal,
+                    denied=denied,
+                    disappeared=disappeared,
+                    signals=signals,
+                    release=release,
+                ):
+                    signals.append(signum)
+                    if signum == denied_signal and not denied:
+                        denied.append(pid)
+                        # A signal denial need not keep a process alive. Let the
+                        # real child exit independently, then require native ESRCH.
+                        release.touch()
+                        raise PermissionError(errno.EPERM, "controlled transient group state")
+                    try:
+                        return native(pid, signum)
+                    except ProcessLookupError:
+                        disappeared.append(signum)
+                        raise
+
+                try:
+                    with (
+                        patch.object(os, "killpg", observed),
+                        timeout_after_ready(ready),
+                        self.assertRaises(subprocess.TimeoutExpired),
+                    ):
+                        processes.run(command, env=self.environment, timeout=0.05)
+                    self.assertEqual([int(ready.read_text())], denied)
+                    self.assertIn(0, disappeared, "only native absence confirms group cleanup")
+                    self.assertNotIn(signal.SIGKILL, signals)
+                    with self.assertRaises(ProcessLookupError):
+                        native(int(ready.read_text()), 0)
+                finally:
+                    if ready.is_file():
+                        try:
+                            native(int(ready.read_text()), signal.SIGKILL)
+                        except ProcessLookupError:
+                            pass
+
+    @unittest.skipIf(os.name == "nt", "POSIX non-permission signal errors")
+    def test_other_group_errors_are_not_treated_as_presence(self):
+        for signum in (0, signal.SIGTERM, signal.SIGKILL):
+            with self.subTest(signal=signum):
+                error = OSError(errno.EINVAL, "controlled non-permission error")
+                with (
+                    patch.object(os, "killpg", side_effect=error),
+                    self.assertRaises(OSError) as seen,
+                ):
+                    processes._group(123, signum)
+                self.assertIs(error, seen.exception)
+
     def test_successful_parent_cannot_leave_background_worker(self):
         command, ready, late = self.tree(exit_parent=True)
         with timeout_after_ready(ready):
@@ -406,6 +476,67 @@ class OwnedProcessTests(unittest.TestCase):
         self.assertEqual("unconfirmed", report["process_cleanup"])
         self.assertEqual("cleanup-unconfirmed", report["checks"][0]["status"])
         self.assertEqual("failed", report["status"])
+
+    @unittest.skipIf(os.name == "nt", "POSIX denied group must retain its distribution lock")
+    def test_persistent_group_permission_error_retains_distribution_lock(self):
+        source = self.checked_source()
+        command, ready, late = self.tree()
+        run_stages = check_distribution.run_stages
+        stop = processes._stop
+        denied, children = [], []
+
+        def refusal(pid, signum):
+            denied.append((pid, signum))
+            raise PermissionError(errno.EPERM, "controlled persistent group denial")
+
+        def short_stage(commands, **kwargs):
+            kwargs["timeout"] = 0.05
+            with timeout_after_ready(ready):
+                try:
+                    return run_stages(commands, **kwargs)
+                except processes.CleanupError as error:
+                    failure = error
+            raise failure
+
+        def observed_stop(child, *args, **kwargs):
+            if child not in children:
+                children.append(child)
+            return stop(child, *args, **kwargs)
+
+        try:
+            with (
+                patch.object(check_distribution, "ROOT", source),
+                patch.object(check_distribution, "source_checks", return_value=[("base", command)]),
+                patch.object(check_distribution.shutil, "which", return_value="uv"),
+                patch.object(check_distribution, "run_stages", short_stage),
+                patch.object(processes, "_GRACE", 0.05),
+                patch.object(processes, "_stop", observed_stop),
+                patch.object(os, "killpg", refusal),
+                patch.object(sys, "path", list(sys.path)),
+                patch.dict(os.environ, self.environment, clear=True),
+                contextlib.redirect_stdout(io.StringIO()),
+                contextlib.redirect_stderr(io.StringIO()),
+            ):
+                self.assertEqual(1, check_distribution.main(["--source-only"]))
+            self.assertTrue(ready.is_file())
+            self.assertEqual({0, signal.SIGTERM, signal.SIGKILL}, {sig for _, sig in denied})
+            state = source / ".cache/release-kit-checks"
+            self.assertTrue((state / "check.lock").is_file())
+            report = json.loads(next((state / "reports").glob("*.json")).read_text())
+            self.assertEqual("unconfirmed", report["process_cleanup"])
+            self.assertEqual("cleanup-unconfirmed", report["checks"][0]["status"])
+            # The descendant closes inherited lifetime descriptors, but still
+            # belongs to this denied group and can use the retained workspace.
+            (self.root / "allow-late-write").touch()
+            deadline = time.monotonic() + 5
+            while not late.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(late.exists(), "the retained lock must protect a real live worker")
+        finally:
+            for pid in {pid for pid, _ in denied}:
+                processes._group(pid, signal.SIGKILL)
+            for child in children:
+                child.wait(timeout=5)
 
     @unittest.skipIf(os.name == "nt", "POSIX sequential source-gate cleanup propagation")
     def test_source_gate_preserves_failed_sequential_worker_cleanup(self):

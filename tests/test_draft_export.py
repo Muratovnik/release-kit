@@ -21,7 +21,8 @@ class DraftOutputSafetyTests(unittest.TestCase):
         self.draft = "## [1.2.0]\n\nA reviewed draft.\n"
         self.original = b"# Changelog\r\n\r\n## [1.1.0]\r\n\r\nKeep the old release.\r\n"
         (self.root / "generator.py").write_text(
-            "import sys\nsys.stdout.write(" + repr(self.draft) + ")\n", encoding="utf-8"
+            "import sys\nsys.stdout.buffer.write(" + repr(self.draft.encode("utf-8")) + ")\n",
+            encoding="utf-8",
         )
         (self.root / "relkit.toml").write_text(
             '[changelog]\nprofile = "strict"\n[changelog.generator]\ncommand = '

@@ -112,6 +112,112 @@ async def cancel_after_ready(ready, operation):
 
 
 class LifetimeTests(Fixture):
+    @unittest.skipIf(os.name == "nt", "POSIX process group permission transition")
+    def test_macos_eperm_waits_for_process_group_disappearance(self):
+        for deny_initial_signal in (False, True):
+            with self.subTest(deny_initial_signal=deny_initial_signal):
+
+                async def scenario(deny_initial_signal=deny_initial_signal):
+                    lifetime = processes.LifetimePipe(dict(os.environ))
+                    child = None
+                    try:
+                        child = await anyio.open_process(
+                            [sys.executable, "-I", "-c", "pass"],
+                            cwd=self.root,
+                            env=lifetime.environment,
+                            start_new_session=True,
+                            pass_fds=lifetime.descriptors,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        lifetime.spawned()
+                        with anyio.fail_after(5):
+                            await child.wait()
+                        self.assertTrue(lifetime.finished())
+                        killpg = os.killpg
+                        probes = 0
+                        absence_observed = False
+
+                        def finishing_group(pid, signum):
+                            nonlocal probes, absence_observed
+                            self.assertEqual(child.pid, pid)
+                            if signum == signal.SIGTERM:
+                                if deny_initial_signal:
+                                    raise PermissionError("controlled macOS group teardown")
+                                return
+                            if signum == 0 and probes < 3:
+                                probes += 1
+                                raise PermissionError("controlled macOS group teardown")
+                            try:
+                                killpg(pid, signum)
+                            except ProcessLookupError:
+                                absence_observed = True
+                                raise
+
+                        # Keep only the group probe in its Darwin teardown state;
+                        # the child status and lifetime EOF are actual OS evidence.
+                        with patch.object(os, "killpg", finishing_group):
+                            await process._stop(child, None, lifetime)
+                        self.assertEqual(3, probes)
+                        self.assertTrue(absence_observed, "EPERM must never mean gone")
+                    finally:
+                        if child is not None:
+                            await child.aclose()
+                        lifetime.close()
+
+                self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process group permission refusal")
+    def test_persistent_eperm_does_not_confirm_live_process_cleanup(self):
+        async def scenario():
+            lifetime = processes.LifetimePipe(dict(os.environ))
+            child = None
+            try:
+                child = await anyio.open_process(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        "import sys; print('ready', flush=True); sys.stdin.buffer.read(1)",
+                    ],
+                    cwd=self.root,
+                    env=lifetime.environment,
+                    start_new_session=True,
+                    pass_fds=lifetime.descriptors,
+                    stderr=subprocess.DEVNULL,
+                )
+                lifetime.spawned()
+                with anyio.fail_after(5):
+                    self.assertEqual(b"ready\n", await child.stdout.receive())
+                signals = []
+
+                def denied_group(pid, signum):
+                    self.assertEqual(child.pid, pid)
+                    signals.append(signum)
+                    raise PermissionError("controlled persistent permission refusal")
+
+                with (
+                    patch.object(os, "killpg", denied_group),
+                    patch.object(process, "_GRACE", 0.1),
+                    self.assertRaises(process.CleanupError),
+                ):
+                    await process._stop(child, None, lifetime)
+                self.assertIsNone(child.returncode)
+                self.assertFalse(lifetime.finished())
+                self.assertIn(signal.SIGKILL, signals)
+            finally:
+                if child is not None:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    with anyio.fail_after(5):
+                        await child.wait()
+                        await child.aclose()
+                lifetime.close()
+
+        self.run_async(scenario)
+
     @unittest.skipIf(os.name == "nt", "POSIX asynchronous exit notification")
     def test_pending_native_exit_notification_is_not_forced_cleanup(self):
         for exit_code in (0, 130, 7):

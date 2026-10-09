@@ -12,7 +12,11 @@ import time
 import unittest
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
+
+import process_fixtures
+from process_fixtures import stop_recorded_worker
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
@@ -47,13 +51,6 @@ class SmokeProcessTests(unittest.TestCase):
             f"if Path({str(trigger)!r}).exists(): Path({str(late)!r}).write_text('survived')\n"
         )
         return [sys.executable, "-B", "-c", source], ready, trigger, late
-
-    def stop_recorded_worker(self, ready):
-        if ready.is_file():
-            try:
-                os.kill(int(ready.read_text()), signal.SIGTERM)
-            except ProcessLookupError:
-                pass
 
     def test_onboarding_executes_candidate_argv_and_reads_its_utf8_json(self):
         self.candidate(
@@ -113,7 +110,7 @@ class SmokeProcessTests(unittest.TestCase):
             time.sleep(0.3)
             self.assertFalse(late.exists(), "worker survived a completed smoke invocation")
         finally:
-            self.stop_recorded_worker(ready)
+            stop_recorded_worker(ready)
 
     @unittest.skipIf(os.name == "nt", "POSIX cleanup-denial propagation; Job tests cover Windows")
     def test_all_candidate_wrappers_propagate_inner_cleanup_failure(self):
@@ -159,7 +156,68 @@ class SmokeProcessTests(unittest.TestCase):
                         "an inner cleanup failure must not become an ordinary candidate failure",
                     )
                 finally:
-                    self.stop_recorded_worker(ready)
+                    stop_recorded_worker(ready)
+
+    def test_recorded_worker_cleanup_distinguishes_missing_pid_from_other_errors(self):
+        ready = self.root / "recorded-pid"
+        ready.write_text("123")
+        for platform, code, accepted in (
+            ("nt", 87, True),
+            ("nt", 5, False),
+            ("nt", 6, False),
+            ("posix", 87, False),
+            ("posix", None, False),
+        ):
+            with self.subTest(platform=platform, winerror=code):
+                error = OSError("controlled native cleanup error")
+                if code is not None:
+                    error.winerror = code
+                boundary = SimpleNamespace(name=platform, kill=None)
+                with (
+                    patch.object(process_fixtures, "os", boundary),
+                    patch.object(boundary, "kill", side_effect=error) as kill,
+                ):
+                    if accepted:
+                        stop_recorded_worker(ready)
+                    else:
+                        with self.assertRaises(OSError) as seen:
+                            stop_recorded_worker(ready)
+                        self.assertIs(error, seen.exception)
+                    kill.assert_called_once_with(123, signal.SIGTERM)
+        with patch.object(process_fixtures.os, "kill", side_effect=ProcessLookupError):
+            stop_recorded_worker(ready)
+
+    def test_recorded_worker_cleanup_requires_a_positive_pid(self):
+        ready = self.root / "recorded-pid"
+        with patch.object(process_fixtures.os, "kill") as kill:
+            stop_recorded_worker(ready)
+            kill.assert_not_called()
+            for value in ("0", "-1", "not a PID"):
+                with self.subTest(value=value):
+                    ready.write_text(value)
+                    with self.assertRaises(ValueError):
+                        stop_recorded_worker(ready)
+            kill.assert_not_called()
+
+    def test_recorded_worker_cleanup_handles_live_and_finished_native_children(self):
+        ready = self.root / "recorded-pid"
+        child = subprocess.Popen(
+            [sys.executable, "-B", "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        try:
+            ready.write_text(str(child.pid))
+            stop_recorded_worker(ready)
+            child.wait(timeout=5)
+            self.assertIsNotNone(child.returncode)
+        finally:
+            if child.poll() is None:
+                child.kill()
+            child.wait(timeout=5)
+        # Release Windows' process handle before checking the now absent PID.
+        del child
+        stop_recorded_worker(ready)
 
     def test_wheel_cleanup_retains_unknown_workers_but_uninstalls_after_completed_failure(self):
         for unconfirmed in (False, True):

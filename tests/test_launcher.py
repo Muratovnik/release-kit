@@ -17,6 +17,7 @@ from releasekit import __version__, launcher, processes
 ROOT = Path(__file__).resolve().parents[1]
 # Runs the installed command's entry point exactly as the console script does.
 ENTRY = "from releasekit.launcher import main; raise SystemExit(main())"
+COMMAND_TIMEOUT = 120
 
 
 def _script_projection(root: Path, script: str) -> Path:
@@ -118,7 +119,7 @@ class InstalledCommandTests(unittest.TestCase):
             env={**self.environment, **extra},
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=COMMAND_TIMEOUT,
             check=False,
         )
 
@@ -165,7 +166,7 @@ class InstalledCommandTests(unittest.TestCase):
                     [sys.executable, "-c", ENTRY, *argv],
                     cwd=subdirectory,
                     env=self.environment,
-                    timeout=5,
+                    timeout=COMMAND_TIMEOUT,
                     stdout=subprocess.PIPE,
                     stderr=subprocess.PIPE,
                 )

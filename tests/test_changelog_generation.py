@@ -175,7 +175,10 @@ class GeneratorBoundaryTests(unittest.TestCase):
         self.assertTrue(message.endswith("run with RUST_BACKTRACE=full for a verbose backtrace."))
         self.assertNotIn("unrelated stdout detail", message)
         self.assertNotIn("\x1b", message)
-        self.assertIn(message, completed.stderr.decode("utf-8"))
+        self.assertEqual(
+            f"relkit notes: {message}".splitlines(),
+            completed.stderr.decode("utf-8").splitlines(),
+        )
 
     def test_failed_generator_bounds_diagnostics_and_keeps_both_ends(self):
         head = "FIRST cause: UnknownIssuer\n"
