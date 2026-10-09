@@ -15,6 +15,7 @@
 - **runtime:** retain process ownership and verify exact release inputs ([29da007](https://github.com/Muratovnik/release-kit/commit/29da007269636209ebda48b115839940990eab81))
 - **mcp:** avoid false cleanup failures after process termination ([f72ecf1](https://github.com/Muratovnik/release-kit/commit/f72ecf115aa4e0a96c9d1a76d828d80366f89dc3))
 - **notes:** preserve actionable generator failure diagnostics ([4fe6f80](https://github.com/Muratovnik/release-kit/commit/4fe6f804f3cc11473557fee47af87e88955a295b))
+- **runtime:** handle transient group denial and preserve test verdicts ([a2027d5](https://github.com/Muratovnik/release-kit/commit/a2027d5dd2cdb6668c5c840aeefc6f648844ea72))
 
 ## [0.31.0](https://github.com/Muratovnik/release-kit/compare/v0.30.0...v0.31.0) (2026-09-26)
 
