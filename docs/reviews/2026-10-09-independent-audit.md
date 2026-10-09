@@ -55,7 +55,7 @@ vulnerability.
 | --- | --- | --- | --- |
 | R1 | Capability expansion | The documented stable-only contract rejected release candidates throughout release selection, preparation and publication. | Shared strict SemVer parsing retains build identity and applies SemVer precedence. `release next --bump minor --prerelease rc` selects `rc.N` from published history. Bare `-rc` and explicit full SemVer are supported; malformed numeric identifiers and non-ASCII digits are refused. |
 | R2 | Capability expansion | Stable-only predecessor selection did not support preview channels and cumulative final releases. | GitHub and directory adapters verify the exact version, tag and prerelease channel. The stable final release compares with the preceding published stable version; previews use the preceding published preview of the same core, or the stable predecessor. Occupied unpublished tags are reported rather than skipped. |
-| R3 | Capability expansion | Changelog validation tied semantic section roles to English headings, making a Russian changelog fail the same release checks. | `[changelog.section_aliases]` maps local headings to semantic roles. English history remains valid. Unknown roles, malformed aliases and redefinitions of built-in English meanings are refused. The CLI, candidate and coordinator use the same mapping. |
+| R3 | Capability expansion | The `conventional-changelog` profile tied semantic section roles to English headings, making a Russian changelog fail that profile’s release checks. | `[changelog.section_aliases]` maps local headings to semantic roles. English history remains valid. Unknown roles, malformed aliases and redefinitions of built-in English meanings are refused. The CLI, candidate and coordinator use the same mapping. |
 | R4 | High | Draft export replaced the original source path with a generated-source label, bypassing the source overwrite guard. | The actual configured changelog and policy remain protected, including hardlink/symlink aliases. A distinct export succeeds without changing source bytes or line endings. |
 | R5 | High | git-cliff configuration or ambient prepend settings could write files while a draft was expected on stdout; configured template commands could execute. | The maintained adapter forces stdout, disables template execution, removes ambient prepend behavior and runs through owned-process cleanup. Explicit custom generator commands remain trusted project code. |
 | R6 | Medium | The supplied template used an invalid first-release comparison, loosely matched commit types, and omitted some breaking changes and mixed-case Conventional Commit types. | Initial releases use a release-tag link. Exact, case-insensitive type matching preserves `feat`/`fix`/`perf`/`revert` and excludes unrelated names. Breaking changes survive uncommon types, `!`, and either supported breaking footer spelling. |
@@ -159,6 +159,61 @@ bypasses; they do not identify a missing payload in the original maintained layo
 
 ## Validation record
 
+### Final packaged payload qualification at cc7c26e
+
+The revised packaged payload was built from clean published commit
+`cc7c26e4711bd5acc342b230358345fdfb6223ef`, Git tree
+`c9a89d7ebc62da15fe26d6184a99b23fa5d2eabe`, version 0.32.0. Its delta from the
+fully source-qualified `b2cec0f2` is limited to the manual Windows workflow,
+one compatibility wording correction in packaged `docs/mcp.md`, and this report.
+Runtime and test sources are unchanged. The documentation correctly names the
+executor, which is the bundled CLI in installed plugin mode, as the component
+whose version controls Actions next/prepare support; the threshold is unchanged.
+
+A separate strict build, without `--allow-divergent`, passed with exit 0 in
+2.554 seconds. The documentation change updated the plugin ZIP, its sidecar and
+`release.json`; the wheel, zipapp and their sidecars stayed byte-identical to the
+initially qualified set. The complete revised seven-file set was then supplied
+to two real `--assets` checks with `--version 0.32.0`.
+
+| Check | Linux Python 3.11.17 | Linux Python 3.12.14 |
+| --- | --- | --- |
+| Actual provided-assets qualification | Five phases passed, exit 0; 164.498 seconds | Five phases passed, exit 0; 135.311 seconds |
+| Distribution report | `run-wxhf5r0x` | `run-olpxorvn` |
+| SDK identity | MCP 2.1.1; AnyIO 4.14.2 | MCP 2.1.1; AnyIO 4.14.2 |
+| Artifact comparison | All seven match the strict-built set; unchanged after checks | All seven match the strict-built set; unchanged after checks |
+
+Each run executed `cli-smoke`, `onboarding`, `wheel-install`, `changelog` and
+`plugin-stdio` against the supplied files. These were provided-assets checks;
+the complete source suites remain associated with the separate `b2cec0f2` runs
+below. Source identity and all 25 local refs were unchanged before and after both
+runs. Independent comparisons matched each report to the actual seven strict
+files, including sizes and hashes. Both reports record successful cleanup, and
+the immediate driver observations found the lock and workspace absent.
+
+An initial Python 3.12 wrapper invocation refused preflight in 0.328 seconds
+because its explicit owned work directory had not been created. No product phase
+ran; the unchanged check then ran successfully from a fresh, correctly prepared
+owned parent. That preserved setup failure is not another product finding.
+
+### Final qualified artifact identities
+
+| File | SHA-256 |
+| --- | --- |
+| `release-kit-plugin.zip` | `119ed7e81340781e14ebe1b27d8136b6988d8972ee835944a7b0433a32708790` |
+| `release-kit-plugin.zip.sha256` | `7ec34c3d3cccdd3c0fce2531cdc3484ad1c0dbbb0c70aca39c104f4bff22205d` |
+| `release.json` | `43301a05185b8d9a3c5235d59c6e54c461d3d8d54d33719327ebb47c1597d986` |
+| `release_kit-0.32.0-py3-none-any.whl` | `8efb4ce6866307b606736d68013243e16d77cdf3ed8764affc78b9c855cb302b` |
+| `release_kit-0.32.0-py3-none-any.whl.sha256` | `26d8c7aa1ef9f05e04fde26325fb762c3a7ad333c84b6c401516b9a2f02bd75c` |
+| `relkit.pyz` | `909b0a9ac01ea76ca69faef58811cea9aec2effad272d4614bc69613fb3ffce7` |
+| `relkit.pyz.sha256` | `17a188b0e8e3ea31ca8f32b8885f8d8cb341522a22a0321306c55d2c326cc8ef` |
+
+These are the revised payload identities qualified on both Linux interpreters.
+A subsequent report-only revision can carry this package evidence only after a
+strict rebuild matches all seven files. Its final remote identity and publication
+audits belong to the PR delivery record, separately from the exact qualification
+commits recorded here.
+
 ### Canonical source and package qualification at b2cec0f2
 
 The complete canonical Linux checks ran against clean source commit
@@ -210,12 +265,11 @@ installed plugin mode, as the version-gated component for Actions next/prepare;
 it does not change the existing version threshold or runtime behavior. Runtime
 and test sources remain those qualified at `b2cec0f2`.
 
-Because `docs/mcp.md` is packaged, the wording correction changes the distributed
-payload. The seven-file set below remains the initially qualified set; it cannot
-qualify the revised payload by assumption. A new strict-built set and actual
-five-phase provided-assets checks on both Python 3.11 and Python 3.12 are pending.
-Their identities and results will be recorded separately from the complete
-source-suite runs above. Workflow configuration and its bounded Linux provisioning
+Because `docs/mcp.md` is packaged, the wording correction changed the distributed
+payload. The seven-file set below remains the initially qualified set. The
+revised strict-built set and its actual five-phase provided-assets checks on both
+Python versions are recorded above under `cc7c26e`; they establish that payload's
+own package evidence. Workflow configuration and its bounded Linux provisioning
 controls are recorded below.
 
 ### Initially qualified 0.32.0 artifact identities at b2cec0f2
@@ -257,9 +311,11 @@ baseline entries, candidate inspection enabled and owner mode disabled. Policy
 and Betterleaks inspect selected history; Lychee operates offline against the
 current Markdown snapshot and local links. These results do not claim checks of
 every historical Markdown version, external HTTP availability or every hosted
-surface. They qualify this exact candidate and scope. The later workflow,
-packaged-documentation and report revision needs its own source identity, strict
-artifact inventory, provided-assets qualification and final publication audit.
+surface. They qualify this exact candidate and scope. The later `cc7c26e`
+workflow/documentation revision has its own strict inventory and provided-assets
+qualification above. Final remote-revision publication audits are recorded
+separately in the PR delivery evidence; the earlier audits remain bound to their
+original source and ref identities.
 
 ### Earlier Python 3.11 source-fixture failure at 28eff54
 
@@ -608,8 +664,10 @@ tag boundaries.
 
 Native execution evidence includes Linux x86_64 on Python 3.12.14 and the
 provisioned Python 3.11.17. Both complete integrated Linux gates passed at the
-exact `b2cec0f2fafccae396147583e75d399a508bb6dd` candidate. The earlier failed 3.11
-attempts and historical successful 3.12 gate remain distinguished above.
+exact `b2cec0f2fafccae396147583e75d399a508bb6dd` candidate. Both five-phase
+provided-assets checks also passed for the revised `cc7c26e` payload. The earlier
+failed 3.11 attempts and historical successful 3.12 gate remain distinguished
+above.
 Windows Job Objects/junctions and native macOS execution need their existing platform gates;
 a mocked platform boundary or a skipped conditional test is not native acceptance.
 No real hosted release, installed-user update, user hook, production rollback or
