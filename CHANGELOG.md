@@ -7,6 +7,7 @@
 ### Features
 
 - **release:** support SemVer previews and localized changelog sections ([85f1b1f](https://github.com/Muratovnik/release-kit/commit/85f1b1fe6885bd8d1f624ceb6b53ee54922ad3cc))
+- release unified CLI and MCP 0.32.0 ([bdee16c](https://github.com/Muratovnik/release-kit/commit/bdee16cd107f3e937f83077618cbac71ec6e3250))
 
 ### Bug Fixes
 
