@@ -119,6 +119,20 @@ class CandidateTests(ReleaseFixture):
         self.commit()
         self.assertNotIn("candidate", coordinator.plan(self.runner, "1.0.0", github=self.github))
 
+    def test_candidate_manifest_name_is_reserved_on_case_insensitive_hosts(self):
+        policy = self.root / "relkit.toml"
+        policy.write_text(
+            policy.read_text()
+            .replace(
+                'assets = ["application.bin", "SHA256SUMS"]',
+                'assets = ["RELKIT-CANDIDATE.JSON"]',
+            )
+            .replace('checksum_file = "SHA256SUMS"\n', "")
+        )
+        self.commit()
+        with self.assertRaisesRegex(ReleaseError, "collide"):
+            candidate.inputs(self.runner, "1.0.0")
+
     def test_checksum_manifest_extra_file_and_failed_matrix_leg_block_preparation(self):
         self.github.failed_jobs = ("publish",)
         self.assertNotEqual(0, self.prepare()[0])

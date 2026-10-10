@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from test_release import FakeGitHub, ReleaseFixture
 
-from releasekit import config
+from releasekit import config, semver
 from releasekit.release import coordinator, settings
 from releasekit.release.backend import GitHub, Pending, ReleaseError
 
@@ -63,7 +63,7 @@ class LocalGitHub(FakeGitHub):
             "target_commitish": sha,
             "name": title,
             "draft": True,
-            "prerelease": False,
+            "prerelease": semver.parse(tag.removeprefix("v")).is_prerelease,
             "immutable": False,
             "body": notes.read_text(encoding="utf-8"),
         }

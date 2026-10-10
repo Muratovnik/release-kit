@@ -63,6 +63,70 @@ class ReleaseCleanupTests(ReleaseFixture):
         self.assertEqual(before, lock.read_bytes())
         self.assertEqual(saved, json.loads(receipt.read_text()))
 
+    def fail_native_audit(self, error):
+        policy = self.root / "relkit.toml"
+        policy.write_text(
+            policy.read_text().replace("check_secrets = false", "check_secrets = true"),
+            encoding="utf-8",
+        )
+        self.commit()
+        result = Result()
+        with (
+            patch.object(coordinator.publication.toolchain, "prepare"),
+            patch.object(
+                coordinator.publication.engines, "betterleaks", side_effect=error
+            ) as engine,
+        ):
+            code, output = self.invoke(result=result)
+        engine.assert_called_once()
+        return code, output, result
+
+    def test_audit_engine_cleanup_error_retains_release_lock_and_receipt(self):
+        code, output, result = self.fail_native_audit(
+            processes.CleanupError("controlled native engine cleanup denial")
+        )
+        self.assertEqual(1, code, output)
+        self.assertEqual("release_cleanup_unconfirmed", result.errors[0]["code"])
+        self.assertIsNone(result.next_action)
+        self.assertTrue((storage.service_root(self.root) / "release.lock").is_file())
+        saved = self.receipt()
+        self.assertEqual("worktree-audit", saved["stage"])
+        self.assertEqual("unconfirmed", saved["process_cleanup"])
+        self.assertEqual("retained-process-cleanup-unconfirmed", saved["cleanup"])
+        self.assertTrue(Path(saved["temporary"]).is_dir())
+
+    def test_completed_audit_engine_error_releases_release_lock(self):
+        code, output, result = self.fail_native_audit(RuntimeError("completed engine failure"))
+        self.assertEqual(1, code, output)
+        self.assertEqual("release_error", result.errors[0]["code"])
+        self.assertFalse((storage.service_root(self.root) / "release.lock").exists())
+        self.assertNotIn("process_cleanup", self.receipt())
+
+    def test_status_can_read_its_own_unconfirmed_cleanup_receipt(self):
+        with patch.object(coordinator, "_prepare", side_effect=self.fail_command):
+            code, output = self.invoke()
+        self.assertEqual(1, code, output)
+        receipt = coordinator._state_path(self.root, "v1.0.0")
+        before = receipt.read_bytes()
+        result = Result()
+        code, output = self.invoke("status", publish=False, result=result)
+        self.assertEqual(0, code, output)
+        self.assertEqual("unconfirmed", result.data["release"]["process_cleanup"])
+        self.assertEqual(before, receipt.read_bytes())
+        self.assertIsNone(result.next_action)
+
+    def test_operator_recovery_can_resume_a_cleanup_unconfirmed_receipt(self):
+        with patch.object(coordinator, "_prepare", side_effect=self.fail_command):
+            code, output = self.invoke()
+        self.assertEqual(1, code, output)
+        # The injected failure spawned no process. This models the documented
+        # operator recovery after independently confirming descendant termination.
+        (storage.service_root(self.root) / "release.lock").unlink()
+        code, output = self.invoke("resume")
+        self.assertEqual(0, code, output)
+        self.assertTrue(self.marker.is_file())
+        self.assertNotIn("process_cleanup", self.receipt())
+
     def test_resume_retains_ownership_if_a_new_command_cannot_be_reaped(self):
         with patch.object(coordinator, "_prepare", side_effect=Pending("interrupted probe")):
             code, output = self.invoke()

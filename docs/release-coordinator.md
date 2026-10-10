@@ -19,8 +19,9 @@ verification and its local receipts. **The project's tag-triggered GitHub Action
 workflow is the sole publisher.** release-kit never creates/edits a GitHub release,
 uploads assets, reruns CI, commits changes or repairs a tag.
 
-The first version supports github.com, stable `vX.Y.Z` tags and a regular checkout
-with its `.git` directory inside the project. It requires complete history, matching
+The adapter supports github.com, SemVer `vX.Y.Z` tags with optional prerelease and
+build suffixes, and a regular checkout with its `.git` directory inside the project.
+It requires complete history, matching
 local/remote published tags, ordinary portable source files (no links/submodules), an active
 workflow and GitHub CLI 2.98.0 or newer. `gh` is an explicitly provisioned native
 integration, not an automatically installed runtime dependency.
@@ -57,7 +58,7 @@ Network failures, expired CI artifacts, permission changes and delayed signature
 can still require recovery; preparation is not an atomic transaction with GitHub.
 Projects without `candidate_jobs` retain the earlier tag-first workflow and its
 post-publication detection window. Adopt the candidate workflow and policy together.
-Reusable signer workflows, alternative signature schemes, prereleases, automatic
+Reusable signer workflows, alternative signature schemes, automatic
 build dispatch and multi-platform local execution are not supported by this version.
 Artifacts for every platform are verified; application smoke runs only on the
 current explicitly declared host platform.
@@ -77,7 +78,7 @@ remote = "origin"
 workflow = ".github/workflows/release.yml"
 required_jobs = ["publish"]
 version_file = "VERSION"
-version_pattern = '^([0-9]+\.[0-9]+\.[0-9]+)$'
+version_pattern = '^([^\s]+)$'
 changelog = "CHANGELOG.md"
 assets = ["example-{version}.zip", "SHA256SUMS"]
 checksum_file = "SHA256SUMS"
@@ -144,10 +145,30 @@ ancestry, local/remote published-tag drift, or a deleted/replaced release known 
 local receipts requires explicit reconciliation. A release deleted before this
 checkout ever observed it cannot be distinguished from an unpublished tag.
 
+`relkit release next --bump patch --prerelease rc` chooses `rc.1` or the next
+published `rc.N` counter for that target core. Other nonnumeric ASCII labels,
+such as `alpha` and `beta`, are accepted; an explicit version can use the full
+[SemVer 2.0.0 syntax](https://semver.org/spec/v2.0.0.html), including a bare `-rc`.
+Unpublished occupied tags are reported without advancing the number. Build
+metadata is retained in exact identities and ignored for precedence, so changing
+only `+build` cannot advance a release. `version_pattern` must capture the suffix
+as well as the three core numbers.
+
+An explicit RC uses the latest published prerelease of the same core as its
+predecessor, falling back to the latest stable release. A final version uses the
+previous stable release, even when RCs were published in between. Its notes must
+therefore include the changes from those RCs. The initial `first_version` core
+permits both initial prereleases and the final version. Publication receipts
+detect a disappeared or relabeled release across both channels.
+
 Curate and commit the requested version and notes before preparation. The heading
 compares against the published predecessor. Commit-linked changes from skipped
 candidate entries must appear in the new entry; editorial summaries still require
 human curation. Old saved plans retain their original predecessor and fingerprint.
+When drafting with git-cliff, use `notes VERSION --draft --from-tag TAG`, taking
+`TAG` from `previous.tag` in `next` or the plan. This fixes the range at the
+publication boundary even when newer RC or abandoned tags are present. See
+[prerelease examples](local-releases.md#prereleases-and-the-final-release).
 
 For tagless preparation, configure `candidate_jobs` with every build, platform
 smoke and packaging job that must pass; `candidate_artifact` defaults to
@@ -180,7 +201,7 @@ or host requires preparation again. Each attempt remains under the project's
 service directory `candidates/TAG/`; `ready.json` selects the latest successful one.
 
 At publication, local checks run again and the candidate is downloaded/revalidated
-before creating the stable annotation. The annotation records run, attempt and
+before creating the release annotation. The annotation records run, attempt and
 manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
 DIRECTORY` to retrieve exactly those bytes into an empty directory, then creates
 the draft. `relkit release draft VERSION --assets DIRECTORY` checks the promoted
@@ -188,6 +209,9 @@ files, committed notes and full remote inventory before CI lifts the draft. Thes
 helpers never publish. The publisher should not rebuild and silently substitute
 other bytes. Branch build/SBOM provenance keeps its branch identity; a separate tag
 promotion attestation must not claim the original build ran under a tag.
+For a prerelease tag, CI must create a draft marked as a prerelease; the draft
+and published verifiers reject a channel mismatch. The local GitHub adapter sets
+that flag itself.
 
 This uses native [workflow dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 and [run artifact downloads](https://cli.github.com/manual/gh_run_download), with
@@ -271,10 +295,11 @@ While CI runs, the coordinator polls the selected workflow run with a backoff fr
 completes and about once a minute in between. Reconciling on every poll would
 spend an hour-long wait against GitHub's secondary rate limits.
 
-Planning compares only the stable `vX.Y.Z` tags between the local checkout and the
-remote, and names the ones that disagree. A personal local tag or a pre-release
-candidate is not a reason to refuse to plan; a stable tag outside the release
-ancestry still is.
+Planning compares published stable tags between the local checkout and remote,
+and also published prerelease tags of the selected core when planning an RC.
+Unpublished candidate tags do not define a predecessor. A relevant published tag
+outside the release ancestry or with different local/remote identity requires
+explicit reconciliation.
 
 `abandon` is the sanctioned end of an attempt that will never publish, for example
 a tag that CI rejected and that the owner then deleted from the remote. It needs
@@ -371,10 +396,10 @@ anywhere else are still never claimed retroactively. Project commands should
 clean their own outputs. Logs may contain private command output and must be
 reviewed before sharing.
 
-Workspaces a run leaves behind are aged out when a later run starts, after
-fourteen days by default. `RELKIT_TEMPORARY_RETENTION_DAYS` changes that window
-and a negative value disables it. Receipts, logs and rollback backups live beside
-`tmp/` rather than inside it and are never aged out.
+Later runs preserve retained workspaces regardless of age. A timestamp cannot
+establish ownership or whether recovery data is still needed. Inspect the reported
+directory and reconcile its owned processes before explicitly removing reviewed
+residue. Receipts, logs and rollback backups are retained separately from `tmp/`.
 
 Exit codes: `0` published and verified (cleanup can separately report retained
 files); `1` a recorded run failed a check; `2` invalid request/preconditions;
@@ -387,3 +412,7 @@ GitHub. Its exit `0` means the read succeeded, not that the published release is
 currently valid. `release abandon` exits `0` once the outcome is recorded and `2`
 when it is refused. All commands accept the opt-in [structured CLI contract](cli-json.md);
 recorded publication, verification and cleanup remain separate fields.
+Status can also inspect a receipt whose process cleanup is unconfirmed. The
+retained release lock continues to block execution until the operator confirms
+that the owned commands and descendants have stopped and removes that exact lock;
+reading the receipt does not authorize another run.

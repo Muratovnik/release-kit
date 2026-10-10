@@ -2,34 +2,41 @@ from __future__ import annotations
 
 import json
 import os
+import signal
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import __version__, launcher
+from releasekit import __version__, launcher, processes
 
 ROOT = Path(__file__).resolve().parents[1]
 # Runs the installed command's entry point exactly as the console script does.
 ENTRY = "from releasekit.launcher import main; raise SystemExit(main())"
+COMMAND_TIMEOUT = 120
+
+
+def _script_projection(root: Path, script: str) -> Path:
+    path = root / ".github" / "relkit.pyz"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with zipfile.ZipFile(path, "w") as archive:
+        archive.writestr("__main__.py", script)
+    return path
 
 
 def _projection(root: Path, record: Path, code: int = 7) -> Path:
     """A stand-in pinned projection that records how it was invoked."""
-    path = root / ".github" / "relkit.pyz"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with zipfile.ZipFile(path, "w") as archive:
-        archive.writestr(
-            "__main__.py",
-            "import json, os, sys\n"
-            f"with open({str(record)!r}, 'w', encoding='utf-8') as stream:\n"
-            "    json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd()}, stream)\n"
-            f"raise SystemExit({code})\n",
-        )
-    return path
+    return _script_projection(
+        root,
+        "import json, os, sys\n"
+        f"with open({str(record)!r}, 'w', encoding='utf-8') as stream:\n"
+        "    json.dump({'argv': sys.argv[1:], 'cwd': os.getcwd()}, stream)\n"
+        f"raise SystemExit({code})\n",
+    )
 
 
 def _git_init(root: Path) -> Path:
@@ -112,7 +119,7 @@ class InstalledCommandTests(unittest.TestCase):
             env={**self.environment, **extra},
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=COMMAND_TIMEOUT,
             check=False,
         )
 
@@ -142,6 +149,126 @@ class InstalledCommandTests(unittest.TestCase):
         invocation = json.loads(record.read_text(encoding="utf-8"))
         self.assertEqual(argv, invocation["argv"])
         self.assertEqual(subdirectory, Path(invocation["cwd"]).resolve())
+
+    def test_managed_projection_calls_preserve_status_arguments_and_cwd(self):
+        repository = _git_init(self.scratch / "project")
+        subdirectory = repository / "web"
+        subdirectory.mkdir()
+        record = self.scratch / "record.json"
+        cases = (
+            (["audit", "--", "with space"], 7, repository),
+            (["protect", "check", "--root", ".."], 0, subdirectory),
+        )
+        for argv, code, expected_cwd in cases:
+            with self.subTest(argv=argv):
+                _projection(repository, record, code=code)
+                completed = processes.run(
+                    [sys.executable, "-c", ENTRY, *argv],
+                    cwd=subdirectory,
+                    env=self.environment,
+                    timeout=COMMAND_TIMEOUT,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                )
+                self.assertEqual(code, completed.returncode, completed.stderr)
+                invocation = json.loads(record.read_text(encoding="utf-8"))
+                self.assertEqual(argv, invocation["argv"])
+                self.assertEqual(expected_cwd, Path(invocation["cwd"]).resolve())
+
+    def failing_cleanup_projection(self):
+        repository = _git_init(self.scratch / "project")
+        ready = self.scratch / "worker-pid"
+        worker = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "time.sleep(20)\n"
+        )
+        _script_projection(
+            repository,
+            "import subprocess,sys\nfrom releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled projection cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run([sys.executable,'-S','-c',{worker!r}], timeout=0.5, "
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n",
+        )
+
+        def stop_worker():
+            if ready.is_file():
+                try:
+                    os.killpg(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+        self.addCleanup(stop_worker)
+        return repository, ready
+
+    @unittest.skipIf(os.name == "nt", "POSIX lifetime propagation across the pinned projection")
+    def test_a_projection_cannot_hide_its_own_failed_nested_cleanup(self):
+        repository, ready = self.failing_cleanup_projection()
+        with self.assertRaises(processes.CleanupError):
+            processes.run(
+                [sys.executable, "-c", ENTRY, "audit"],
+                cwd=repository,
+                env=self.environment,
+                timeout=5,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        self.assertTrue(ready.is_file(), "the cleanup fault must concern a started child")
+
+    @unittest.skipIf(os.name == "nt", "POSIX projection lifetime diagnostic")
+    def test_unconfirmed_projection_cleanup_has_an_explicit_launcher_diagnostic(self):
+        repository, ready = self.failing_cleanup_projection()
+        completed = self.run_installed(["audit"], repository)
+        self.assertTrue(ready.is_file(), "the cleanup fault must concern a started child")
+        self.assertEqual(2, completed.returncode, completed.stderr)
+        self.assertIn("relkit: projection process cleanup is unconfirmed", completed.stderr)
+
+    @unittest.skipIf(os.name == "nt", "POSIX terminal group interruption policy")
+    def test_projection_stdin_and_interrupt_cleanup_wait_are_preserved(self):
+        repository = _git_init(self.scratch / "project")
+        ready = self.scratch / "ready"
+        interrupted = self.scratch / "interrupted"
+        record = self.scratch / "input.txt"
+        _script_projection(
+            repository,
+            "import signal,sys\nfrom pathlib import Path\n"
+            "signal.signal(signal.SIGINT, "
+            f"lambda *args: Path({str(interrupted)!r}).touch())\n"
+            f"Path({str(ready)!r}).touch()\n"
+            f"Path({str(record)!r}).write_text(sys.stdin.readline())\n"
+            "raise SystemExit(7)\n",
+        )
+        process = subprocess.Popen(
+            [sys.executable, "-c", ENTRY, "audit"],
+            cwd=repository,
+            env=self.environment,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            start_new_session=True,
+        )
+        try:
+            deadline = time.monotonic() + 5
+            while not ready.exists() and process.poll() is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(ready.exists(), "the projection must be waiting for input")
+            os.killpg(process.pid, signal.SIGINT)
+            deadline = time.monotonic() + 5
+            while not interrupted.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertTrue(interrupted.exists(), "the projection must receive the interrupt")
+            self.assertIsNone(process.poll(), "the launcher must let projection cleanup finish")
+            _, errors = process.communicate(input=b"synthetic terminal input\n", timeout=5)
+            self.assertEqual(7, process.returncode, errors)
+            self.assertEqual("synthetic terminal input\n", record.read_text())
+        finally:
+            if process.poll() is None:
+                os.killpg(process.pid, signal.SIGKILL)
+                process.wait()
+            for stream in (process.stdin, process.stdout, process.stderr):
+                if stream is not None:
+                    stream.close()
 
     def test_without_a_pinned_projection_the_installed_version_answers(self):
         outside = self.scratch / "outside"

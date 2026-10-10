@@ -116,6 +116,11 @@ python .github/relkit.pyz audit --history
 索引：`relkit.toml`、Betterleaks 配置及其相对路径的策略文件都必须已入索引。未暂存的策略
 改动不属于该结论。Betterleaks 扫描已暂存的改动；策略与 Markdown 检查索引内容。
 
+链接检查保留 Markdown 文件名的确切含义，包括 Unicode、空格、开头的 `#`、作为字面量的
+通配符字符，以及文件系统允许的换行符。相对链接仍从原来的父目录解析。普通文件名通过本次
+运行拥有的列表传递；含换行符的文件名通过大小受限的参数批次传递，所有批次共用 600 秒的
+引擎时限。任意批次出现执行错误都会使审计拒绝通过。
+
 历史范围需要干净的**被跟踪**工作树和完整的本地历史。它检查当前 `HEAD`、本地与远端分支、
 标签、Git notes，以及已拉取的 GitHub pull request、GitLab merge request 和 Gerrit change
 引用。引用名称、附注标签的消息与打标签者身份，与提交和 blob 一同被检查。客户端生成的合成

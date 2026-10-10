@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import unittest
 from pathlib import Path
+from typing import ClassVar
 
 from releasekit import config
 from releasekit.release import changelog
@@ -118,6 +119,84 @@ class StrictEntryTests(unittest.TestCase):
                 self.assertEqual(selected, changelog.entry_for(text, "1.2.0", profile="strict"))
 
 
+class LocalizedSectionTests(unittest.TestCase):
+    HEADER = "## [1.2.0-rc.1](https://example.invalid/compare/v1.1.0...v1.2.0-rc.1) (2026-01-05)"
+    ALIASES: ClassVar = {
+        "Главное": "highlights",
+        "Исправлено": "fixes",
+        "Несовместимые изменения": "breaking",
+    }
+
+    def test_russian_headings_preserve_curated_text_and_english_history(self):
+        selected = (
+            self.HEADER + "\r\n\r\n### Главное\r\n\r\nОписание для читателя.  \r\n"
+            "\r\n### Исправлено\r\n\r\n"
+            "- Ошибка исправлена ([abc1234](https://example.invalid/commit/abc1234567)).\r\n"
+            "\r\n### Несовместимые изменения\r\n\r\nИспользуйте новую настройку."
+        )
+        older = (
+            "## [1.1.0](https://example.invalid/compare/v1.0.0...v1.1.0) (2025-12-01)\n\n"
+            "### Features\n\n- Earlier feature ([def5678](https://example.invalid/commit/def56789))."
+        )
+        source = "# История\r\n\r\n" + selected + "\r\n\r\n" + older + "\n"
+        self.assertEqual(
+            selected,
+            changelog.entry_for(
+                source,
+                "v1.2.0-rc.1",
+                profile="conventional-changelog",
+                section_aliases=self.ALIASES,
+            ),
+        )
+        self.assertEqual(
+            older,
+            changelog.entry_for(
+                source, "1.1.0", profile="conventional-changelog", section_aliases=self.ALIASES
+            ),
+        )
+
+    def test_translating_an_ordinary_heading_does_not_remove_its_commit_rule(self):
+        text = self.HEADER + "\n\n### Исправлено\n\n- Изменение без ссылки.\n"
+        with self.assertRaisesRegex(changelog.ChangelogError, "commit link") as caught:
+            changelog.entry_for(
+                text,
+                "1.2.0-rc.1",
+                profile="conventional-changelog",
+                section_aliases=self.ALIASES,
+            )
+        self.assertEqual(5, caught.exception.line)
+        with self.assertRaisesRegex(changelog.ChangelogError, "unsupported"):
+            changelog.entry_for(text, "1.2.0-rc.1", profile="conventional-changelog")
+
+    def test_aliases_support_any_language_and_multiple_names_for_one_kind(self):
+        for title in ("修复", "Corrections", "Исправления ошибок"):
+            with self.subTest(title=title):
+                text = (
+                    self.HEADER + f"\n\n### {title}\n\n"
+                    "- Change ([abc1234](https://example.invalid/commit/abc1234567))."
+                )
+                self.assertEqual(
+                    text,
+                    changelog.entry_for(
+                        text,
+                        "1.2.0-rc.1",
+                        profile="conventional-changelog",
+                        section_aliases={
+                            name: "fixes" for name in ("修复", "Corrections", "Исправления ошибок")
+                        },
+                    ),
+                )
+
+    def test_alias_cannot_turn_an_english_ordinary_section_into_editorial_content(self):
+        with self.assertRaisesRegex(ValueError, "cannot redefine"):
+            changelog.entry_for(
+                self.HEADER + "\n\n### Features\n\nUnlinked prose.",
+                "1.2.0-rc.1",
+                profile="conventional-changelog",
+                section_aliases={"Features": "highlights"},
+            )
+
+
 class VueLikeTests(unittest.TestCase):
     HEADER = "## [1.2.0](https://example.invalid/compare/v1.1.0...v1.2.0) (2026-01-05)"
     CHANGE = "- a useful change ([abc1234](https://example.invalid/commit/abc1234567))"
@@ -168,6 +247,24 @@ class VueLikeTests(unittest.TestCase):
                 with self.assertRaises(changelog.ChangelogError):
                     changelog.entry_for(
                         text, "1.2.0", profile="conventional-changelog", first_version="1.0.0"
+                    )
+
+    def test_first_version_core_covers_initial_candidates_and_stable_final(self):
+        for first, target in (("0.1.0", "0.1.0-rc.1"), ("0.1.0-rc.1", "0.1.0")):
+            with self.subTest(first=first, target=target):
+                text = self.notes(
+                    "### Features\n\n" + self.CHANGE,
+                    header=f"## [{target}](https://example.invalid/releases/tag/v{target}) (2026-01-05)",
+                )
+                self.assertEqual(
+                    text.rstrip(),
+                    changelog.entry_for(
+                        text, target, profile="conventional-changelog", first_version=first
+                    ),
+                )
+                with self.assertRaisesRegex(changelog.ChangelogError, "compare link is required"):
+                    changelog.entry_for(
+                        text, target, profile="conventional-changelog", first_version="0.2.0"
                     )
 
     def test_scope_and_pull_request_are_optional_and_both_bullet_styles_work(self) -> None:

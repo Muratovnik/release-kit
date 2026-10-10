@@ -9,7 +9,7 @@ import subprocess
 from pathlib import Path
 from urllib.parse import quote
 
-from .. import processes, storage
+from .. import processes, semver, storage
 
 
 class ReleaseError(RuntimeError):
@@ -196,7 +196,7 @@ class GitHub:
                     "name": title,
                     "body": notes.read_text(encoding="utf-8"),
                     "draft": True,
-                    "prerelease": False,
+                    "prerelease": semver.parse(tag.removeprefix("v")).is_prerelease,
                 }
             ),
             encoding="utf-8",

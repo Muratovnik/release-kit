@@ -6,16 +6,19 @@ import io
 import json
 import os
 import runpy
+import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
+import time
 import unittest
 import warnings
 import zipfile
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import __version__, distribution, protection, update
+from releasekit import __version__, distribution, engines, processes, protection, toolchain, update
 
 ROOT = Path(__file__).resolve().parents[1]
 POLICY = "[exposure]\ncheck_secrets = false\ncheck_links = false\n"
@@ -143,7 +146,8 @@ class DistributionTests(unittest.TestCase):
         # filter, both of which call these two contents equal.
         sys.path.insert(0, str(ROOT / "tools"))
         try:
-            diverged = runpy.run_path(str(ROOT / "tools/build_release.py"))["diverged"]
+            release_builder = runpy.run_path(str(ROOT / "tools/build_release.py"))
+            diverged = release_builder["diverged"]
         finally:
             sys.path.remove(str(ROOT / "tools"))
         with tempfile.TemporaryDirectory() as temporary:
@@ -157,6 +161,11 @@ class DistributionTests(unittest.TestCase):
                 subprocess.run(["git", *arguments], cwd=root, check=True)
             (root / ".gitattributes").write_bytes(b"* text=auto eol=lf\n")
             (root / "sample.py").write_bytes(b"print(1)\n")
+            for name in release_builder["REQUIRED_INPUTS"]:
+                path = root / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(b"Committed release input\n")
+            (root / "pyproject.toml").write_bytes(b'[project]\nreadme = "README.md"\n')
             subprocess.run(["git", "add", "-A"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "chore: sample"], cwd=root, check=True)
 
@@ -755,6 +764,193 @@ class UpdateTests(UpdateFixture):
         self.assertIn("projection changed during validation", output)
         self.assertEqual(old_hook, self.hook.read_bytes())
         self.assertEqual(changed, self.projection.read_bytes())
+
+
+class UpdateLifecycleTests(UpdateFixture):
+    def candidate_audit(self, body, *, version="0.32.0"):
+        source = (
+            "import sys\ndef main():\n"
+            "    if '--version' in sys.argv:\n"
+            f"        print('release-kit {version} (lifecycle fixture)')\n"
+            "        return 0\n" + textwrap.indent(body, "    ")
+        )
+        compile(source, "candidate fixture", "exec")
+        with zipfile.ZipFile(io.BytesIO(artifact_bytes(version))) as archive:
+            entries = {name: archive.read(name) for name in archive.namelist()}
+        entries["releasekit/cli.py"] = source.encode()
+        self.candidate.write_bytes(archive_bytes(entries))
+
+    def audit_envelope(self, code, error_code=None):
+        result = update.Result()
+        if error_code:
+            result.error(error_code, "controlled audit outcome")
+        payload = result.envelope(["audit"], str(self.root), code)
+        payload["tool_version"] = "0.32.0"
+        return payload
+
+    def assert_uncertain(self, result, *, pending=True):
+        self.assertEqual("update_cleanup_unconfirmed", result.errors[-1]["code"])
+        self.assertEqual("unconfirmed", result.data["process_cleanup"])
+        self.assertIsNone(result.next_action)
+        self.assertTrue((self.root / ".git/relkit-update.lock").is_file())
+        workspace = Path(result.data["retained_scratch"])
+        self.assertTrue(workspace.is_dir())
+        self.assertTrue(workspace.is_relative_to(self.root / ".git/relkit/tmp"))
+        if pending:
+            receipt = self.receipt()
+            self.assertEqual("pending", receipt["state"])
+            self.assertEqual("unconfirmed", receipt["process_cleanup"])
+            self.assertEqual(str(workspace), receipt["temporary"])
+            backup = self.root / ".git" / receipt["backup"]
+            self.assertTrue(backup.is_dir())
+        return workspace
+
+    @unittest.skipIf(os.name == "nt", "POSIX cooperative candidate termination fixture")
+    def test_candidate_timeout_stops_worker_before_automatic_rollback(self):
+        ready, trigger, late = (
+            self.directory / name for name in ("worker-ready", "trigger", "late")
+        )
+        child = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready)!r}).write_text(str(os.getpid()))\n"
+            "deadline=time.monotonic()+15\n"
+            f"while not Path({str(trigger)!r}).exists() and time.monotonic()<deadline:\n"
+            " time.sleep(.01)\n"
+            f"if Path({str(trigger)!r}).exists(): Path({str(late)!r}).write_text('survived')\n"
+        )
+        self.candidate_audit(
+            "import signal,subprocess,time\n"
+            f"child=subprocess.Popen([sys.executable,'-c',{child!r}],stdin=subprocess.DEVNULL,"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+            "def stopped(*_):\n"
+            " child.terminate();child.wait(timeout=3);raise SystemExit(0)\n"
+            "signal.signal(signal.SIGTERM,stopped)\n"
+            "time.sleep(20)\n",
+            version="0.6.0",
+        )
+        original_run = update._run
+
+        def bounded(command, root, **kwargs):
+            if "audit" in command:
+                kwargs["timeout"] = 1
+            return original_run(command, root, **kwargs)
+
+        try:
+            with patch.object(update, "_run", side_effect=bounded):
+                code, output = self.invoke()
+            self.assertEqual(2, code, output)
+            self.assertTrue(ready.is_file(), "candidate worker never started")
+            trigger.touch()
+            deadline = time.monotonic() + 0.3
+            while not late.exists() and time.monotonic() < deadline:
+                time.sleep(0.01)
+            self.assertFalse(late.exists(), "worker survived rollback and lock release")
+            self.assertEqual(self.old, self.projection.read_bytes())
+            self.assertEqual("rolled-back", self.receipt()["state"])
+            self.assertFalse((self.root / ".git/relkit-update.lock").exists())
+        finally:
+            if ready.exists():
+                try:
+                    os.kill(int(ready.read_text()), signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
+
+    def test_candidate_cleanup_refusal_preserves_transaction_without_rollback(self):
+        old_hook = self.guard()
+        payload = self.audit_envelope(2, "engine_cleanup_unconfirmed")
+        self.candidate_audit(f"print({json.dumps(payload)!r})\nreturn 2\n")
+        candidate = self.candidate.read_bytes()
+        result = update.Result()
+        code, output = self.invoke(result=result)
+        self.assertEqual(2, code, output)
+        workspace = self.assert_uncertain(result)
+        self.assertEqual(candidate, self.projection.read_bytes())
+        self.assertEqual(candidate, (workspace / "candidate.pyz").read_bytes())
+        self.assertEqual(old_hook, self.hook.read_bytes())
+        backup = self.root / ".git" / self.receipt()["backup"]
+        self.assertEqual(self.old, (backup / "relkit.pyz").read_bytes())
+        self.assertEqual(old_hook, (backup / "pre-push").read_bytes())
+
+    def test_runtime_cleanup_error_before_install_retains_lock_and_verified_candidate(self):
+        original_run = processes.run
+
+        def unknown(command, **kwargs):
+            if "--version" in command:
+                raise processes.CleanupError("controlled runtime cleanup denial")
+            return original_run(command, **kwargs)
+
+        result = update.Result()
+        with patch.object(processes, "run", side_effect=unknown):
+            code, output = self.invoke(result=result)
+        self.assertEqual(2, code, output)
+        workspace = self.assert_uncertain(result, pending=False)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertEqual(self.new, (workspace / "candidate.pyz").read_bytes())
+        self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
+
+    def test_guard_refresh_preserves_real_publication_cleanup_uncertainty(self):
+        old_hook = self.guard()
+        self.policy.write_text("[exposure]\ncheck_secrets=true\ncheck_links=false\n")
+        (self.root / ".betterleaks.toml").write_text("# controlled scanner policy\n")
+        result = update.Result()
+        with (
+            patch.object(toolchain, "prepare"),
+            patch.object(
+                engines, "betterleaks", side_effect=processes.CleanupError("scanner still owned")
+            ) as scanner,
+            patch.object(update, "_restore", wraps=update._restore) as restore,
+        ):
+            code, output = self.invoke(refresh_guard=True, result=result)
+        self.assertEqual(2, code, output)
+        scanner.assert_called_once()
+        self.assert_uncertain(result)
+        restore.assert_not_called()
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertEqual(old_hook, self.hook.read_bytes())
+
+    def test_modern_candidate_success_and_ordinary_failure_keep_normal_transaction_rules(self):
+        for exit_code, error_code, state in (
+            (2, "engine_error", "rolled-back"),
+            (0, None, "installed"),
+        ):
+            with self.subTest(exit_code=exit_code):
+                payload = self.audit_envelope(exit_code, error_code)
+                self.candidate_audit(
+                    "assert '--json' in sys.argv\n"
+                    f"print({json.dumps(payload)!r})\nreturn {exit_code}\n"
+                )
+                result = update.Result()
+                code, output = self.invoke(result=result)
+                self.assertEqual(exit_code, code, output)
+                self.assertEqual(state, self.receipt()["state"])
+                expected = self.old if exit_code else self.candidate.read_bytes()
+                self.assertEqual(expected, self.projection.read_bytes())
+                self.assertFalse((self.root / ".git/relkit-update.lock").exists())
+                self.assertEqual([], list((self.root / ".git/relkit/tmp").glob("download-*")))
+
+    def test_modern_candidate_requires_a_matching_audit_result(self):
+        for changed in (
+            {"tool_version": "0.31.0"},
+            {"root": str(self.directory)},
+            {"exit_code": 2, "status": "refused"},
+            {"schema_version": 999},
+        ):
+            with self.subTest(changed=changed):
+                payload = {**self.audit_envelope(0), **changed}
+                self.candidate_audit(f"print({json.dumps(payload)!r})\nreturn 0\n")
+                code, output = self.invoke()
+                self.assertEqual(2, code, output)
+                self.assertIn("invalid or mismatched result", output)
+                self.assertEqual("rolled-back", self.receipt()["state"])
+                self.assertEqual(self.old, self.projection.read_bytes())
+                self.assertFalse((self.root / ".git/relkit-update.lock").exists())
+
+    def test_command_text_api_preserves_utf8_replacement_and_universal_newlines(self):
+        output = update._run(
+            [sys.executable, "-c", "import os;os.write(1,b'first\\r\\nsecond\\rlast\\xff')"],
+            self.root,
+        )
+        self.assertEqual("first\nsecond\nlast\ufffd", output)
 
 
 class GitHubSourceTests(unittest.TestCase):

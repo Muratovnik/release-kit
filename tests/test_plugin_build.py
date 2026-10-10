@@ -4,6 +4,7 @@ import hashlib
 import io
 import json
 import os
+import posixpath
 import runpy
 import subprocess
 import sys
@@ -12,9 +13,9 @@ import tomllib
 import unittest
 import zipfile
 from concurrent.futures import ThreadPoolExecutor, TimeoutError
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from threading import Event
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from releasekit import __version__, distribution, storage
 from releasekit.plugin import Bundle
@@ -25,6 +26,35 @@ BUILDER = runpy.run_path(str(ROOT / "tools/build_plugin.py"))
 
 
 class PluginBuildTests(unittest.TestCase):
+    def test_packaged_notes_include_the_changelog_starter_and_its_relative_links(self):
+        with tempfile.TemporaryDirectory(prefix="packaged notes ") as temporary:
+            output = Path(temporary) / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as archive:
+                inventory = json.loads(archive.read("release-kit/package.json"))["files"]
+                for name in ("examples/changelog/README.md", "examples/changelog/cliff.toml"):
+                    self.assertIn(name, inventory)
+                    payload = archive.read("release-kit/" + name)
+                    self.assertEqual(hashlib.sha256(payload).hexdigest(), inventory[name])
+                    self.assertEqual((ROOT / name).read_bytes(), payload)
+                for document, label in (
+                    ("docs/notes.md", "examples/changelog"),
+                    ("examples/changelog/README.md", "heading aliases"),
+                    ("examples/changelog/README.md", "custom generators"),
+                ):
+                    text = archive.read("release-kit/" + document).decode("utf-8")
+                    _, marker, tail = text.partition(f"[{label}](")
+                    self.assertTrue(marker, f"{document} must link to {label}")
+                    target = tail.partition(")")[0].split("#", 1)[0]
+                    self.assertFalse(target.startswith(("https://", "http://", "/")))
+                    resolved = posixpath.normpath(
+                        posixpath.join(posixpath.dirname(document), target)
+                    )
+                    self.assertIn(
+                        resolved, inventory, f"{document} has an unresolved link: {target}"
+                    )
+                    self.assertIn("release-kit/" + resolved, archive.namelist())
+
     def test_windows_runtime_paths_support_long_drive_and_unc_locations(self):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
         with patch.object(sys, "platform", "win32"):
@@ -37,6 +67,209 @@ class PluginBuildTests(unittest.TestCase):
         with patch.object(sys, "platform", "linux"):
             self.assertEqual("/example/cache", launcher["process_path"]("/example/cache"))
 
+    def test_windows_plugin_smoke_stays_within_loader_budget_without_an_alias(self):
+        smoke = runpy.run_path(str(ROOT / "tools/smoke_plugin.py"))
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        namespace = launcher["loadable_base"].__globals__
+        directory = PureWindowsPath(r"C:\owned work\runs\run-abcdefgh\plugin space")
+        with patch.object(sys, "platform", "win32"):
+            for parent in (directory, directory / ("review " + "\U0001f680" * 12)):
+                with self.subTest(parent=str(parent)):
+                    destination = smoke["extraction_destination"](parent)
+                    package = destination / "release-kit"
+                    virtualenv = package / ".runtime" / "venv"
+                    self.assertEqual(parent, destination.parent)
+                    self.assertIn(" ", str(package))
+                    self.assertIn("\U0001f680", destination.name)
+                    self.assertGreater(len(str(package).encode("utf-16-le")) // 2, 150)
+                    self.assertLessEqual(
+                        len(str(virtualenv).encode("utf-16-le")) // 2 + launcher["RUNTIME_LEAF"],
+                        launcher["LOADER_LIMIT"],
+                    )
+                    unavailable = Mock(
+                        side_effect=AssertionError("ordinary smoke must not need an alias")
+                    )
+                    with patch.dict(namespace, {"alias_path": unavailable}):
+                        launcher["check_installer_cache"](package / ".runtime" / "cache")
+                        self.assertEqual(package, launcher["loadable_base"](package, virtualenv))
+                    unavailable.assert_not_called()
+
+            # An already long caller-owned parent stays owned and may still refuse.
+            long_parent = directory / ("already long " * 15).strip()
+            destination = smoke["extraction_destination"](long_parent)
+            self.assertEqual(long_parent, destination.parent)
+            package = destination / "release-kit"
+            with self.assertRaisesRegex(ValueError, "Windows installer normalization limit"):
+                launcher["check_installer_cache"](package / ".runtime" / "cache")
+            with (
+                patch.dict(namespace, {"alias_path": lambda path: None}),
+                self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"),
+            ):
+                launcher["loadable_base"](package, package / ".runtime" / "venv")
+        with patch.object(sys, "platform", "linux"):
+            self.assertEqual(directory, smoke["extraction_destination"](directory))
+
+    def test_windows_installer_checks_physical_disk_cache_in_utf16_units(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        parent = PureWindowsPath(r"C:\owned work")
+
+        def package_path(units, name="plugin space"):
+            package = parent / name / "release-kit"
+            padding = units - len(str(package).encode("utf-16-le", "surrogatepass")) // 2
+            self.assertGreaterEqual(padding, 0)
+            return parent / (name + "x" * padding) / "release-kit"
+
+        safe = package_path(165)
+        over = package_path(166)
+        previous_smoke = package_path(170)
+        unicode_safe = package_path(165, "plugin space " + "\U0001f680" * 12)
+        unicode_over = package_path(166, "plugin space " + "\U0001f680" * 12)
+        # This is the actual locked wheel entry whose uv normalization failed.
+        entry = (
+            PureWindowsPath("archive-v0")
+            / "YQwpXvgRhrzjsCGr"
+            / "pywin32-312.data"
+            / "scripts"
+            / "pywin32_postinstall.py"
+        )
+        with patch.object(sys, "platform", "win32"):
+            for package, expected in ((safe, 260), (over, 261), (previous_smoke, 265)):
+                leaf = package / ".runtime" / "cache" / entry
+                self.assertEqual(
+                    expected,
+                    len(launcher["process_path"](leaf).encode("utf-16-le")) // 2,
+                )
+            cases = (
+                ("disk at the measured limit", safe, True),
+                ("disk over the limit", over, False),
+                ("old 170-unit smoke root", previous_smoke, False),
+                ("non-BMP at the limit", unicode_safe, True),
+                ("non-BMP over the limit", unicode_over, False),
+                ("opaque WCHAR", parent / "opaque-\ud800" / "release-kit", True),
+                ("verbatim disk at the limit", PureWindowsPath("\\\\?\\" + str(safe)), True),
+                ("verbatim disk over the limit", PureWindowsPath("\\\\?\\" + str(over)), False),
+                ("UNC", PureWindowsPath(r"\\server\share") / ("long" * 100), True),
+                ("verbatim UNC", PureWindowsPath(r"\\?\UNC\server\share") / ("long" * 100), True),
+            )
+            forbidden = Mock(side_effect=AssertionError("a physical cache must not use aliases"))
+            with patch.dict(launcher["loadable_base"].__globals__, {"alias_path": forbidden}):
+                for label, package, allowed in cases:
+                    with self.subTest(label=label):
+                        cache = package / ".runtime" / "cache"
+                        if allowed:
+                            launcher["check_installer_cache"](cache)
+                        else:
+                            with self.assertRaisesRegex(
+                                ValueError, "Windows installer normalization limit"
+                            ):
+                                launcher["check_installer_cache"](cache)
+                # The earlier loader check allowed this root; its independent
+                # alias policy cannot establish the physical cache budget.
+                self.assertEqual(
+                    previous_smoke,
+                    launcher["loadable_base"](previous_smoke, previous_smoke / ".runtime" / "venv"),
+                )
+            forbidden.assert_not_called()
+        with patch.object(sys, "platform", "linux"):
+            launcher["check_installer_cache"](previous_smoke / ".runtime" / "cache")
+
+    def test_windows_installer_refuses_before_creating_runtime_or_lock(self):
+        with tempfile.TemporaryDirectory(prefix="installer budget ") as temporary:
+            folder = Path(temporary)
+            output = folder / "plugin.zip"
+            BUILDER["build_plugin"](output)
+            with zipfile.ZipFile(output) as archive:
+                archive.extractall(folder)
+            package = folder / "release-kit"
+            launcher = runpy.run_path(str(package / "scripts/launch.py"))
+            cache = package / ".runtime" / "cache"
+            physical = PureWindowsPath(r"D:\owned work") / ("plugin " + "x" * 137) / "release-kit"
+            self.assertEqual(170, len(str(physical).encode("utf-16-le")) // 2)
+            checked = storage.inside
+
+            def windows_cache(root, path):
+                result = checked(root, path)
+                # Supply the native path spelling only at the checked cache boundary;
+                # payload verification and all no-mutation assertions use real files.
+                return physical / ".runtime" / "cache" if path == cache else result
+
+            with (
+                patch.object(sys, "path", list(sys.path)),
+                patch.object(sys, "platform", "win32"),
+                patch("shutil.which", return_value="uv"),
+                patch.object(storage, "inside", side_effect=windows_cache),
+                patch.object(
+                    storage,
+                    "environment",
+                    side_effect=AssertionError("cache refusal must precede runtime environment"),
+                ) as environment,
+                patch("subprocess.call", side_effect=AssertionError("uv must not start")) as invoke,
+            ):
+                with self.assertRaisesRegex(ValueError, "Windows installer normalization limit"):
+                    launcher["main"]([])
+                environment.assert_not_called()
+                invoke.assert_not_called()
+                self.assertFalse((package / ".runtime").exists())
+                self.assertFalse((package / ".runtime.lock").exists())
+                # Read-only package inspection does not initialize an installer.
+                with patch.object(sys, "stdout", io.StringIO()) as output:
+                    self.assertEqual(0, launcher["main"](["--check"]))
+                self.assertTrue(json.loads(output.getvalue())["valid"])
+                self.assertFalse((package / ".runtime").exists())
+                self.assertFalse((package / ".runtime.lock").exists())
+
+    def test_windows_loader_counts_utf16_units_for_original_and_alias_paths(self):
+        launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
+        namespace = launcher["loadable_base"].__globals__
+        parent = PureWindowsPath(r"C:\owned work")
+        astral_parent = parent / ("p" + "\U0001f642" * 90)
+        astral = astral_parent / "release-kit"
+        ascii_same_units = parent / ("p" + "x" * 180) / "release-kit"
+        bmp = parent / ("p" + "é" * 90) / "release-kit"
+        shorter_unicode = parent / ("p" + "\U0001f642" * 20) / "release-kit"
+        opaque_surrogate = parent / "opaque-\ud800" / "release-kit"
+        deep = astral_parent / ("long" * 40) / "release-kit"
+        unsafe_alias = astral_parent / "RUNTIM~1" / "RELEAS~1"
+        short_alias = PureWindowsPath(r"C:\OWNED~1\RELEAS~1")
+        virtualenv = astral / ".runtime" / "venv"
+        self.assertLess(len(str(virtualenv)) + launcher["RUNTIME_LEAF"], launcher["LOADER_LIMIT"])
+        self.assertGreater(
+            len(str(virtualenv).encode("utf-16-le")) // 2 + launcher["RUNTIME_LEAF"],
+            launcher["LOADER_LIMIT"],
+        )
+        cases = (
+            ("astral path without alias", astral, None, None, 1),
+            ("astral path with short alias", astral, short_alias, short_alias, 1),
+            ("overlong astral alias", deep, unsafe_alias, None, 1),
+            ("deep path with short alias", deep, short_alias, short_alias, 1),
+            ("ASCII of the same UTF-16 length", ascii_same_units, None, None, 1),
+            ("BMP within the budget", bmp, None, bmp, 0),
+            ("non-BMP within the budget", shorter_unicode, None, shorter_unicode, 0),
+            ("opaque WCHAR within the budget", opaque_surrogate, None, opaque_surrogate, 0),
+        )
+        with patch.object(sys, "platform", "win32"):
+            for label, package, alias, expected, calls in cases:
+                lookup = Mock(return_value=alias)
+                with self.subTest(label=label), patch.dict(namespace, {"alias_path": lookup}):
+                    if expected is None:
+                        with self.assertRaisesRegex(
+                            ValueError, "too long for the Windows DLL loader"
+                        ):
+                            launcher["loadable_base"](package, package / ".runtime" / "venv")
+                    else:
+                        self.assertEqual(
+                            expected,
+                            launcher["loadable_base"](package, package / ".runtime" / "venv"),
+                        )
+                    self.assertEqual(calls, lookup.call_count)
+        forbidden = Mock(side_effect=AssertionError("POSIX must not request Windows aliases"))
+        with (
+            patch.object(sys, "platform", "linux"),
+            patch.dict(namespace, {"alias_path": forbidden}),
+        ):
+            self.assertEqual(deep, launcher["loadable_base"](deep, deep / ".runtime" / "venv"))
+        forbidden.assert_not_called()
+
     def test_deep_windows_runtime_uses_a_short_alias_for_compiled_imports(self):
         # A real installation hit this: uv installed the packages and the server
         # then failed with "DLL load failed while importing _cffi_backend".
@@ -46,13 +279,13 @@ class PluginBuildTests(unittest.TestCase):
         virtualenv = root / ".runtime" / "venv"
         alias = Path(tempfile.gettempdir()) / "DEEPPL~1" / "RELEAS~1"
         limit = launcher["LOADER_LIMIT"] - launcher["RUNTIME_LEAF"]
-        self.assertGreater(len(str(virtualenv)), limit)
+        self.assertGreater(launcher["utf16_units"](virtualenv), limit)
         with patch.object(sys, "platform", "win32"):
             with patch.dict(namespace, {"alias_path": lambda path: alias}):
                 base = launcher["loadable_base"](root, virtualenv)
                 self.assertEqual(alias, base)
                 relocated = launcher["relocate"](base, root, virtualenv)
-                self.assertLessEqual(len(str(relocated)), limit)
+                self.assertLessEqual(launcher["utf16_units"](relocated), limit)
                 self.assertEqual(virtualenv.relative_to(root), relocated.relative_to(base))
             # An alias the volume cannot supply must refuse before installing anything.
             for unavailable in (lambda path: None, lambda path: root):
@@ -70,12 +303,35 @@ class PluginBuildTests(unittest.TestCase):
         launcher = runpy.run_path(str(ROOT / "plugins/release-kit/scripts/launch.py"))
         with tempfile.TemporaryDirectory(prefix="alias probe ") as temporary:
             nested = Path(temporary) / "plugin space" / "release-kit"
+            # Exercise the actual loader boundary even when this volume supplies
+            # no short names and GetShortPathNameW returns the original spelling.
+            while (
+                launcher["utf16_units"](nested / ".runtime" / "venv") + launcher["RUNTIME_LEAF"]
+                <= launcher["LOADER_LIMIT"]
+            ):
+                nested /= "nested plugin directory"
             nested.mkdir(parents=True)
-            alias = launcher["alias_path"](nested / ".runtime" / "venv")
-            if alias is None:
-                self.skipTest("this volume does not create 8.3 aliases")
-            self.assertLess(len(str(alias)), len(str(nested / ".runtime" / "venv")))
-            self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
+            virtualenv = nested / ".runtime" / "venv"
+            alias = launcher["alias_path"](virtualenv)
+            if alias is not None:
+                self.assertEqual(nested.resolve(), alias.parent.parent.resolve())
+            if (
+                alias is not None
+                and launcher["utf16_units"](alias) + launcher["RUNTIME_LEAF"]
+                <= launcher["LOADER_LIMIT"]
+            ):
+                base = launcher["loadable_base"](nested, virtualenv)
+                self.assertEqual(nested.resolve(), base.resolve())
+                relocated = launcher["relocate"](base, nested, virtualenv)
+                self.assertLessEqual(
+                    launcher["utf16_units"](relocated) + launcher["RUNTIME_LEAF"],
+                    launcher["LOADER_LIMIT"],
+                )
+                print("Windows runtime path: native short alias fits the DLL loader budget")
+            else:
+                with self.assertRaisesRegex(ValueError, "too long for the Windows DLL loader"):
+                    launcher["loadable_base"](nested, virtualenv)
+                print("Windows runtime path: no usable native short alias; deep runtime refused")
 
     def test_concurrent_cold_launch_waits_for_runtime_receipt(self):
         with tempfile.TemporaryDirectory(prefix="cold plugin ") as temporary:

@@ -1,17 +1,26 @@
 """Process ownership and publication routing tests; no hosted service is used."""
 
+import asyncio
 import hashlib
 import io
 import json
 import os
+import signal
+import subprocess
+import sys
 import unittest
 import zipfile
+from contextlib import ExitStack, contextmanager
+from pathlib import Path
+from unittest.mock import patch
 
 import anyio
 from test_stdio import Fixture
 
-from releasekit import __version__, distribution
+from releasekit import __version__, distribution, processes
 from releasekit_mcp import process
+
+SOURCE = Path(__file__).resolve().parents[2] / "src"
 
 
 def alive(pid):
@@ -45,7 +54,408 @@ def replace_cli(fixture, source):
     fixture.digest = hashlib.sha256(stream.getvalue()).hexdigest()
 
 
+async def await_ready(ready):
+    """A fixture startup failure must not satisfy an operation-timeout assertion."""
+    try:
+        with anyio.fail_after(10):
+            while not ready.is_file():
+                await anyio.sleep(0.01)
+    except TimeoutError as error:
+        raise AssertionError(f"fixture did not become ready: {ready.name}") from error
+
+
+@contextmanager
+def timeout_after_ready(ready):
+    """Forward bootstrap I/O, then start execute's timeout on a ready fixture."""
+    open_process = anyio.open_process
+    established = False
+    with ExitStack() as patches:
+
+        async def open_ready(*args, **kwargs):
+            child = await open_process(*args, **kwargs)
+            close = child.stdin.aclose
+            waiting = True
+
+            async def close_ready():
+                nonlocal waiting, established
+                await close()
+                if waiting:
+                    waiting = False
+                    await await_ready(ready)
+                    established = True
+
+            patches.enter_context(patch.object(child.stdin, "aclose", close_ready))
+            return child
+
+        patches.enter_context(patch.object(anyio, "open_process", open_ready))
+        yield
+        if not established:
+            raise AssertionError("fixture readiness did not complete before its operation")
+
+
+async def cancel_after_ready(ready, operation):
+    finished = False
+
+    async def run(*, task_status):
+        nonlocal finished
+        with anyio.CancelScope() as scope:
+            task_status.started(scope)
+            await operation()
+        finished = True
+
+    async with anyio.create_task_group() as commands:
+        scope = await commands.start(run)
+        await await_ready(ready)
+        if finished:
+            raise AssertionError("fixture completed before cancellation was requested")
+        scope.cancel()
+
+
 class LifetimeTests(Fixture):
+    @unittest.skipIf(os.name == "nt", "POSIX process group permission transition")
+    def test_macos_eperm_waits_for_process_group_disappearance(self):
+        for deny_initial_signal in (False, True):
+            with self.subTest(deny_initial_signal=deny_initial_signal):
+
+                async def scenario(deny_initial_signal=deny_initial_signal):
+                    lifetime = processes.LifetimePipe(dict(os.environ))
+                    child = None
+                    try:
+                        child = await anyio.open_process(
+                            [sys.executable, "-I", "-c", "pass"],
+                            cwd=self.root,
+                            env=lifetime.environment,
+                            start_new_session=True,
+                            pass_fds=lifetime.descriptors,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        lifetime.spawned()
+                        with anyio.fail_after(5):
+                            await child.wait()
+                        self.assertTrue(lifetime.finished())
+                        killpg = os.killpg
+                        probes = 0
+                        absence_observed = False
+
+                        def finishing_group(pid, signum):
+                            nonlocal probes, absence_observed
+                            self.assertEqual(child.pid, pid)
+                            if signum == signal.SIGTERM:
+                                if deny_initial_signal:
+                                    raise PermissionError("controlled macOS group teardown")
+                                return
+                            if signum == 0 and probes < 3:
+                                probes += 1
+                                raise PermissionError("controlled macOS group teardown")
+                            try:
+                                killpg(pid, signum)
+                            except ProcessLookupError:
+                                absence_observed = True
+                                raise
+
+                        # Keep only the group probe in its Darwin teardown state;
+                        # the child status and lifetime EOF are actual OS evidence.
+                        with patch.object(os, "killpg", finishing_group):
+                            await process._stop(child, None, lifetime)
+                        self.assertEqual(3, probes)
+                        self.assertTrue(absence_observed, "EPERM must never mean gone")
+                    finally:
+                        if child is not None:
+                            await child.aclose()
+                        lifetime.close()
+
+                self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX process group permission refusal")
+    def test_persistent_eperm_does_not_confirm_live_process_cleanup(self):
+        async def scenario():
+            lifetime = processes.LifetimePipe(dict(os.environ))
+            child = None
+            try:
+                child = await anyio.open_process(
+                    [
+                        sys.executable,
+                        "-I",
+                        "-c",
+                        "import sys; print('ready', flush=True); sys.stdin.buffer.read(1)",
+                    ],
+                    cwd=self.root,
+                    env=lifetime.environment,
+                    start_new_session=True,
+                    pass_fds=lifetime.descriptors,
+                    stderr=subprocess.DEVNULL,
+                )
+                lifetime.spawned()
+                with anyio.fail_after(5):
+                    self.assertEqual(b"ready\n", await child.stdout.receive())
+                signals = []
+
+                def denied_group(pid, signum):
+                    self.assertEqual(child.pid, pid)
+                    signals.append(signum)
+                    raise PermissionError("controlled persistent permission refusal")
+
+                with (
+                    patch.object(os, "killpg", denied_group),
+                    patch.object(process, "_GRACE", 0.1),
+                    self.assertRaises(process.CleanupError),
+                ):
+                    await process._stop(child, None, lifetime)
+                self.assertIsNone(child.returncode)
+                self.assertFalse(lifetime.finished())
+                self.assertIn(signal.SIGKILL, signals)
+            finally:
+                if child is not None:
+                    try:
+                        os.killpg(child.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    with anyio.fail_after(5):
+                        await child.wait()
+                        await child.aclose()
+                lifetime.close()
+
+        self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX asynchronous exit notification")
+    def test_pending_native_exit_notification_is_not_forced_cleanup(self):
+        for exit_code in (0, 130, 7):
+            with self.subTest(exit_code=exit_code):
+
+                async def scenario(exit_code=exit_code):
+                    ready = self.root / f"exit-ready-{exit_code}"
+                    lifetime = processes.LifetimePipe(dict(os.environ))
+                    child = None
+                    pending = []
+                    deliver = None
+                    try:
+                        child = await anyio.open_process(
+                            [
+                                sys.executable,
+                                "-I",
+                                "-c",
+                                (
+                                    "import sys\nfrom pathlib import Path\n"
+                                    f"Path({str(ready)!r}).touch()\n"
+                                    "sys.stdin.buffer.read(1)\n"
+                                    f"raise SystemExit({exit_code})\n"
+                                ),
+                            ],
+                            cwd=self.root,
+                            env=lifetime.environment,
+                            start_new_session=True,
+                            pass_fds=lifetime.descriptors,
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                        )
+                        lifetime.spawned()
+                        with anyio.fail_after(5):
+                            while not ready.is_file():
+                                await anyio.sleep(0.01)
+                        deliver = child._transport._process_exited
+                        # The real watcher reaps the child. Hold only delivery of
+                        # its actual status until teardown reaches an await.
+                        with patch.object(child._transport, "_process_exited", pending.append):
+                            await child.stdin.send(b"1")
+                            await child.stdin.aclose()
+                            with anyio.fail_after(5):
+                                while not pending:
+                                    await anyio.sleep(0.01)
+                            self.assertEqual([exit_code], pending)
+                            self.assertIsNone(child.returncode)
+                            with self.assertRaises(ProcessLookupError):
+                                os.killpg(child.pid, 0)
+                            self.assertTrue(lifetime.finished())
+                            asyncio.get_running_loop().call_soon(deliver, pending.pop())
+                            with patch.object(child, "kill", wraps=child.kill) as kill:
+                                if exit_code == 7:
+                                    with self.assertRaisesRegex(process.CleanupError, "abnormal"):
+                                        await process._stop(child, None, lifetime)
+                                else:
+                                    await process._stop(child, None, lifetime)
+                                kill.assert_not_called()
+                        self.assertEqual(exit_code, child.returncode)
+                    finally:
+                        if pending:
+                            deliver(pending.pop())
+                        if child is not None:
+                            try:
+                                os.killpg(child.pid, signal.SIGKILL)
+                            except ProcessLookupError:
+                                pass
+                            with anyio.fail_after(5):
+                                await child.wait()
+                                await child.aclose()
+                        lifetime.close()
+
+                self.run_async(scenario)
+
+    def test_timeout_and_cancellation_stop_deeply_nested_releasekit_commands(self):
+        for cancel in (False, True):
+            with self.subTest(cancel=cancel):
+                ready = self.root / "nested-ready.json"
+                pending_ready = self.root / "nested-ready.tmp"
+                trigger = self.root / "nested-trigger"
+                late = self.root / "nested-late"
+                child = (
+                    "import os,json,time\nfrom pathlib import Path\n"
+                    f"Path({str(pending_ready)!r}).write_text(json.dumps(os.getpid()))\n"
+                    f"Path({str(pending_ready)!r}).replace({str(ready)!r})\n"
+                    "deadline=time.monotonic()+20\n"
+                    f"while not Path({str(trigger)!r}).exists() and time.monotonic()<deadline:\n"
+                    " time.sleep(0.01)\n"
+                    f"if Path({str(trigger)!r}).exists(): Path({str(late)!r}).write_text('survived')\n"
+                )
+                script = self.root / "nested.py"
+                nested = child
+                for _ in range(3):
+                    nested = (
+                        "import sys\n"
+                        f"sys.path.insert(0,{str(SOURCE)!r})\n"
+                        "from releasekit import processes\n"
+                        f"processes.run([sys.executable,'-c',{nested!r}], timeout=25)\n"
+                    )
+                script.write_text(nested)
+                digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+                async def scenario(
+                    cancel=cancel,
+                    script=script,
+                    digest=digest,
+                    ready=ready,
+                    pending_ready=pending_ready,
+                    trigger=trigger,
+                    late=late,
+                ):
+                    try:
+                        if cancel:
+                            await cancel_after_ready(
+                                ready,
+                                lambda: process.execute(
+                                    script, digest, [], self.root, dict(os.environ), 30
+                                ),
+                            )
+                        else:
+                            with timeout_after_ready(ready), self.assertRaises(TimeoutError):
+                                await process.execute(
+                                    script, digest, [], self.root, dict(os.environ), 2
+                                )
+                        self.assertTrue(ready.is_file(), "the nested command must have started")
+                        trigger.touch()
+                        await anyio.sleep(0.3)
+                        self.assertFalse(late.exists(), "nested command survived MCP cleanup")
+                        self.assertTrue(alive(os.getpid()))
+                    finally:
+                        # A failing regression still reaps only its own recorded fixture.
+                        if ready.is_file():
+                            pid = json.loads(ready.read_text())
+                            if alive(pid):
+                                try:
+                                    os.kill(pid, signal.SIGTERM)
+                                except ProcessLookupError:
+                                    pass
+                        for path in (ready, pending_ready, trigger, late):
+                            path.unlink(missing_ok=True)
+
+                self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX abnormal relay outcome")
+    def test_failed_nested_cleanup_is_reported_even_after_the_relay_exits(self):
+        ready = self.root / "unknown-worker-pid"
+        child = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready.with_suffix('.tmp'))!r}).write_text(str(os.getpid()))\n"
+            f"Path({str(ready.with_suffix('.tmp'))!r}).replace({str(ready)!r})\n"
+            "time.sleep(20)\n"
+        )
+        script = self.root / "unknown.py"
+        script.write_text(
+            "import subprocess,sys\n"
+            f"sys.path.insert(0,{str(SOURCE)!r})\n"
+            "from releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run([sys.executable,'-c',{child!r}],timeout=25,"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            try:
+                with timeout_after_ready(ready), self.assertRaises(process.CleanupError):
+                    await process.execute(script, digest, [], self.root, dict(os.environ), 2)
+                self.assertTrue(ready.is_file())
+            finally:
+                if ready.is_file():
+                    try:
+                        os.killpg(int(ready.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+        self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX nested lifetime")
+    def test_inner_timeout_is_unconfirmed_before_the_outer_deadline(self):
+        ready = self.root / "early-worker-pid"
+        child = (
+            "import os,time\nfrom pathlib import Path\n"
+            f"Path({str(ready.with_suffix('.tmp'))!r}).write_text(str(os.getpid()))\n"
+            f"Path({str(ready.with_suffix('.tmp'))!r}).replace({str(ready)!r})\n"
+            "time.sleep(20)\n"
+        )
+        script = self.root / "early-unknown.py"
+        script.write_text(
+            "import subprocess,sys\n"
+            f"sys.path.insert(0,{str(SOURCE)!r})\n"
+            "from releasekit import processes\n"
+            "def denied(*args): raise PermissionError('controlled cleanup denial')\n"
+            "processes._group=denied\n"
+            f"processes.run([sys.executable,'-c',{child!r}],timeout=2,env={{}},"
+            "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            try:
+                with (
+                    timeout_after_ready(ready),
+                    patch.object(process, "_GRACE", 0.3),
+                    self.assertRaises(process.CleanupError),
+                ):
+                    await process.execute(script, digest, [], self.root, dict(os.environ), 8)
+                self.assertTrue(ready.is_file())
+            finally:
+                if ready.is_file():
+                    try:
+                        os.killpg(int(ready.read_text()), signal.SIGTERM)
+                    except ProcessLookupError:
+                        pass
+
+        self.run_async(scenario)
+
+    @unittest.skipIf(os.name == "nt", "POSIX forced relay termination")
+    def test_forced_termination_reports_unconfirmed_cleanup(self):
+        script = self.root / "ignoring-term.py"
+        script.write_text(
+            "import signal,time\nfrom pathlib import Path\n"
+            "signal.signal(signal.SIGTERM,signal.SIG_IGN)\n"
+            "Path('ignoring-ready').touch()\n"
+            "time.sleep(20)\n"
+        )
+        digest = hashlib.sha256(script.read_bytes()).hexdigest()
+
+        async def scenario():
+            with (
+                timeout_after_ready(self.root / "ignoring-ready"),
+                patch.object(process, "_GRACE", 0.2),
+                self.assertRaisesRegex(process.CleanupError, "forced or abnormal"),
+            ):
+                await process.execute(script, digest, [], self.root, dict(os.environ), 2)
+            self.assertTrue((self.root / "ignoring-ready").is_file())
+
+        self.run_async(scenario)
+
     def test_stdio_request_cancellation_stops_cli_and_keeps_server_usable(self):
         replace_cli(
             self,
@@ -55,7 +465,8 @@ from . import __version__
 def main():
     if 'notes' in sys.argv:
         child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)'])
-        pathlib.Path('pids.json').write_text(json.dumps([os.getpid(),child.pid]))
+        pathlib.Path('pids.tmp').write_text(json.dumps([os.getpid(),child.pid]))
+        pathlib.Path('pids.tmp').replace('pids.json')
         time.sleep(120)
     print(json.dumps({'schema_version':1,'tool_version':__version__,'command':['version'],
                      'root':None,'status':'ok','exit_code':0,'data':{},'errors':[],
@@ -66,9 +477,10 @@ def main():
 
         async def scenario():
             async with self.client(mode="legacy") as client:
-                with anyio.move_on_after(0.7) as scope:
-                    await client.call_tool("relkit_notes", {"request": {"version": "1.0.0"}})
-                self.assertTrue(scope.cancel_called)
+                await cancel_after_ready(
+                    self.root / "pids.json",
+                    lambda: client.call_tool("relkit_notes", {"request": {"version": "1.0.0"}}),
+                )
                 await self.assert_stopped()
                 result = await client.call_tool("relkit_version", {"request": {}})
                 self.assertFalse(result.is_error, result)
@@ -81,7 +493,8 @@ def main():
             "import subprocess,sys,time,json,os,pathlib\n"
             "child=subprocess.Popen([sys.executable,'-c','import time;time.sleep(120)'],"
             "stdout=subprocess.DEVNULL,stderr=subprocess.DEVNULL)\n"
-            "pathlib.Path('pids.json').write_text(json.dumps([os.getpid(),child.pid]))\n"
+            "pathlib.Path('pids.tmp').write_text(json.dumps([os.getpid(),child.pid]))\n"
+            "pathlib.Path('pids.tmp').replace('pids.json')\n"
             + ("print('done')\n" if finish else "time.sleep(120)\n")
         )
         return script, hashlib.sha256(script.read_bytes()).hexdigest()
@@ -96,7 +509,10 @@ def main():
         path, digest = self.sleeper()
 
         async def scenario():
-            with self.assertRaises(TimeoutError):
+            with (
+                timeout_after_ready(self.root / "pids.json"),
+                self.assertRaises(TimeoutError),
+            ):
                 await process.execute(path, digest, [], self.root, dict(os.environ), 0.7)
             await self.assert_stopped()
             self.assertTrue(alive(os.getpid()))
@@ -111,7 +527,7 @@ def main():
             for index in range(3):
                 cwd = self.root / f"child cwd {index}"
                 cwd.mkdir()
-                with self.assertRaises(TimeoutError):
+                with timeout_after_ready(cwd / "pids.json"), self.assertRaises(TimeoutError):
                     await process.execute(path, digest, [], cwd, dict(os.environ), 0.7)
                 marker = cwd / "pids.json"
                 self.assertTrue(marker.is_file(), "the descendant must have started")
@@ -124,9 +540,10 @@ def main():
         path, digest = self.sleeper()
 
         async def scenario():
-            with anyio.move_on_after(0.7) as scope:
-                await process.execute(path, digest, [], self.root, dict(os.environ), 30)
-            self.assertTrue(scope.cancel_called)
+            await cancel_after_ready(
+                self.root / "pids.json",
+                lambda: process.execute(path, digest, [], self.root, dict(os.environ), 30),
+            )
             await self.assert_stopped()
 
         self.run_async(scenario)

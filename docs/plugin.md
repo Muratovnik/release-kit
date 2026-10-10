@@ -119,14 +119,31 @@ lock at `.runtime.lock`. The lock file stays in place; do not delete it while
 clients may be starting. Waiting is bounded to 150 seconds. Servers release this
 lock before running, so multiple clients can remain connected independently.
 A missing or mismatched receipt in an existing `.runtime/` still refuses startup;
-install a fresh complete package instead of claiming that directory. Windows
-runtime paths use the extended path format so nested caches and installed wheels
-can exceed the legacy path limit without changing global system settings. The DLL
-loader keeps that limit regardless of the extended prefix or an enabled long-path
-policy, so a deeply installed runtime loads its compiled dependencies through the
-volume's short path alias for the same directory. The payload stays where it was
-installed; only the path spelling changes. Where the volume supplies no alias,
-startup refuses with the reason before installing anything.
+install a fresh complete package instead of claiming that directory.
+
+Windows startup checks the DLL-loader path and the physical disk-cache path
+before runtime initialization. The DLL budget is measured in UTF-16 code units.
+A deeply installed runtime can use the volume's short path alias for the same
+directory; the payload stays in place. If no usable alias fits that budget,
+startup refuses before installing dependencies. An extended prefix or enabled
+long-path policy does not remove this loader limit.
+
+The cache remains owned by the installed plugin at `.runtime/cache`. Its physical
+disk path must also leave room for the locked dependencies' wheel-script paths.
+The uv installer can normalize a short parent and a longer child differently;
+extended path spelling does not make every nested cache operation compatible.
+An 8.3 alias cannot guarantee a short physical cache path after canonicalization.
+The launcher checks this separate cache budget before initialization and asks for
+a shorter installation path when it does not fit. It does not relocate the cache
+or change system path settings. This disk-path check adds no new restriction on
+UNC paths; their existing path and loader checks still apply.
+
+The current disk-cache limit is 180 UTF-16 code units for the physical path
+without its four-unit extended prefix. With the default `.runtime/cache` layout,
+that allows a physical plugin directory of at most 165 units. These are Windows
+units, so a character outside the Basic Multilingual Plane counts twice. The
+budget reserves space for the maintained installer's archive path and the locked
+wheel scripts; it is separate from the DLL-loader allowance above.
 
 In a fresh client session, verify the release-kit skill and tools are discovered,
 including `relkit_project`, `relkit_sync`, `relkit_audit` and `relkit_release`.
@@ -218,6 +235,7 @@ Native elicitation must reach the human and must not be auto-approved.
 | Hash/version mismatch | Reinstall the complete reviewed version into a fresh path; do not edit manifest versions or inventory to suppress the error |
 | Runtime ownership/lock drift | Preserve the old directory and diagnostics; install into a fresh explicitly approved writable location |
 | Runtime path too long for the DLL loader | Reinstall into a shorter directory; no extended prefix or long-path policy lifts this Windows loader limit, and the short path alias is unavailable on volumes that disable it |
+| Windows cache path is too long, or an older launcher reports `Trivial strip failed` while installing a wheel script | Preserve the failed installation and diagnostics, then install the complete package into a fresh, shorter writable path. The physical `.runtime/cache` path must fit the installer's budget; changing only its extended-prefix or 8.3 spelling is insufficient. uv 0.12.24 uses dunce 1.0.5 normalization at this boundary; see the [upstream path implementation](https://docs.rs/dunce/1.0.5/src/dunce/lib.rs.html). |
 | Downloads fail | Check dependency-host access; do not relax the lock or enable source builds as a workaround |
 | Old version persists | Reload/restart the client and check component versions; creating a new task alone does not restart the MCP process |
 | Project inspection refuses | Check canonical root, normal `.git`, tracked policy/projection and supported version; do not bind a parent/sibling instead |

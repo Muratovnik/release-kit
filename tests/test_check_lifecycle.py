@@ -133,6 +133,19 @@ class CheckLifecycleTests(unittest.TestCase):
         self.assertEqual("removed", report["cleanup"])
         self.assertFalse(Path(report["workspace"]).exists())
 
+    def test_successful_package_fixtures_are_removed_with_their_run(self):
+        code, _, _ = self.invoke(
+            "import os\nfrom pathlib import Path\n"
+            "root=Path(os.environ['TMP']).parent\n"
+            "for name in ('wheel install', 'changelog space'):\n"
+            " fixture=root/name;fixture.mkdir()\n"
+            " (fixture/'owned-output.txt').write_text('temporary package check')\n"
+        )
+        self.assertEqual(0, code)
+        report = self.reports()[0]
+        self.assertEqual("removed", report["cleanup"])
+        self.assertFalse(Path(report["workspace"]).exists())
+
     def test_busy_sdk_environment_is_not_mutated_or_unlocked_by_another_run(self):
         self.assertEqual(0, self.invoke()[0])
         lock = self.state / "check.lock"

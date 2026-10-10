@@ -33,6 +33,13 @@ Git ownership error against the exact intended repository before any exception.
 Use `relkit_release` action `next` with `bump = patch|minor|major` and no version
 when selecting a new release number. It uses published stable releases; an occupied
 tag is a separate conflict, never permission to skip a number or delete a ref.
+With executor 0.32.0+, add `prerelease = "rc"` to select the next published `rc.N`
+sequence for that same stable bump. Explicit actions accept full SemVer versions,
+including a bare `-rc` and build metadata. An RC uses the latest published preview
+of its core as predecessor; a final uses the previous stable release and includes
+the complete set of changes since it. The CLI's `notes VERSION --draft --from-tag TAG`
+uses that reviewed predecessor for generation across intermediate tags. MCP notes
+reads committed changelog entries; its export confirmation contract is unchanged.
 Local preparation (`publisher = "directory"` or `"github"`) uses action `prepare`
 with `version` and no `ci_run`. It executes the committed build/check/smoke without
 creating a tag. Directory delivery needs no hosting account, remote or CLI. GitHub

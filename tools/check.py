@@ -4,18 +4,21 @@ The release coordinator executes configured checks as argv arrays without a shel
 so a gate that needs `src` on the import path needs a runner rather than an exported
 variable. This is that runner, and it runs exactly the list AGENTS.md declares. The
 publication audits are not here: the coordinator runs the worktree and history audits
-itself, and CI provisions no engine downloads.
+itself. Native CI provisions pinned engines for its explicit acceptance tests.
 """
 
 from __future__ import annotations
 
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "src"))
+from releasekit import processes
+
+GATE_TIMEOUT_SECONDS = 3600
 GATES = (
     # Same discovery, same tests, spread over processes; see tools/parallel_tests.py.
     ["tools/parallel_tests.py"],
@@ -51,8 +54,13 @@ def main() -> int:
     }
     for arguments in GATES:
         print(f"check: python {' '.join(arguments)}", flush=True)
-        completed = subprocess.run(
-            [sys.executable, *arguments], cwd=ROOT, env=environment, check=False
+        # Relay cancellation so a nested cleanup failure reaches the check owner.
+        completed = processes.run(
+            [sys.executable, *arguments],
+            cwd=ROOT,
+            env=environment,
+            check=False,
+            timeout=GATE_TIMEOUT_SECONDS,
         )
         if completed.returncode != 0:
             return completed.returncode

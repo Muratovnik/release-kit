@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import engines, owner, protection, toolchain
+from . import engines, owner, processes, protection, toolchain
 from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
@@ -189,6 +189,7 @@ def run(
         print(f"relkit audit: {len(report.baselined)} baselined finding(s) remain")
 
     engine_failures: list[str] = []
+    engine_errors: list[str] = []
     engine_results = result.data["engines"] = {"betterleaks": None, "lychee": None}
     # Provision the engines before either scan starts. Each verifies its own archive
     # and executable, and doing that one after the other put the whole of the second
@@ -213,8 +214,12 @@ def run(
                 include_candidates=settings.exposure.include_candidates and not staged,
                 allow_download=allow_download,
             )
-            if engine_results["betterleaks"]:
+            if engine_results["betterleaks"] == engines.BETTERLEAKS_FINDINGS_EXIT:
                 engine_failures.append("Betterleaks failed")
+            elif engine_results["betterleaks"]:
+                engine_errors.append(
+                    f"Betterleaks could not complete (exit {engine_results['betterleaks']})"
+                )
         if settings.exposure.check_links:
             engine_results["lychee"] = engines.lychee(
                 root,
@@ -222,16 +227,33 @@ def run(
                 include_candidates=settings.exposure.include_candidates,
                 allow_download=allow_download,
             )
-            if engine_results["lychee"]:
+            if engine_results["lychee"] == engines.LYCHEE_FINDINGS_EXIT:
                 engine_failures.append("Lychee failed")
+            elif engine_results["lychee"]:
+                engine_errors.append(f"Lychee could not complete (exit {engine_results['lychee']})")
     except (OSError, RuntimeError) as error:
-        result.error("engine_error", error)
+        for engine_error in engine_errors:
+            result.error("engine_error", engine_error)
+        code = (
+            "engine_cleanup_unconfirmed"
+            if isinstance(error, processes.CleanupError)
+            else "engine_error"
+        )
+        result.error(code, error)
         for failure in sorted(set(failures + engine_failures)):
             result.error("check_failed", failure)
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
 
     failures.extend(engine_failures)
+    if engine_errors:
+        for engine_error in engine_errors:
+            result.error("engine_error", engine_error)
+            print(f"relkit audit: {engine_error}", file=sys.stderr)
+        for failure in sorted(set(failures)):
+            result.error("check_failed", failure)
+            print(f"  {failure}", file=sys.stderr)
+        return 2
     if failures:
         print("relkit audit: failed", file=sys.stderr)
         for failure in sorted(dict.fromkeys(failures)):

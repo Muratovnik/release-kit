@@ -13,7 +13,7 @@ import tempfile
 from pathlib import Path
 from urllib.parse import quote
 
-from . import __version__, canonical, config, distribution, protection, storage
+from . import __version__, canonical, config, distribution, processes, protection, storage
 from .result import Result
 
 PROJECTION = protection.PROJECTION_PATH
@@ -30,17 +30,24 @@ class UpdateError(Exception):
     """An update cannot be completed safely; do not weaken policy to proceed."""
 
 
+class _CommandError(UpdateError):
+    def __init__(self, command: list[str], result: subprocess.CompletedProcess[str]):
+        self.returncode = result.returncode
+        self.stdout = result.stdout
+        detail = (result.stderr or result.stdout).strip()[-2000:]
+        super().__init__(f"{command[0]} failed (exit {result.returncode}): {detail}")
+
+
 def _run(
     command: list[str], root: Path, *, timeout: int = 180, environment: dict[str, str] | None = None
 ) -> str:
     try:
-        result = subprocess.run(
+        completed = processes.run(
             command,
             cwd=root,
             check=False,
-            capture_output=True,
-            encoding="utf-8",
-            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             timeout=timeout,
             env={
                 **(environment if environment is not None else os.environ),
@@ -49,10 +56,76 @@ def _run(
         )
     except (OSError, subprocess.TimeoutExpired) as error:
         raise UpdateError(f"{command[0]} could not complete: {error}") from error
+    # Preserve this wrapper's text-mode API, including universal Windows newlines.
+    result = subprocess.CompletedProcess(
+        completed.args,
+        completed.returncode,
+        completed.stdout.decode("utf-8", errors="replace")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n"),
+        completed.stderr.decode("utf-8", errors="replace")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n"),
+    )
     if result.returncode:
-        detail = (result.stderr or result.stdout).strip()[-2000:]
-        raise UpdateError(f"{command[0]} failed (exit {result.returncode}): {detail}")
+        raise _CommandError(command, result)
     return result.stdout
+
+
+def _candidate_audit(
+    root: Path,
+    path: Path,
+    candidate: distribution.Artifact,
+    *,
+    allow_download: bool,
+    environment: dict[str, str],
+) -> None:
+    command = [sys.executable, str(path), "audit", "--root", str(root)]
+    structured = distribution.version_tuple(candidate.version) >= (0, 8, 0)
+    if structured:
+        command.append("--json")
+    if not allow_download:
+        command.append("--no-download")
+    failure = None
+    try:
+        output = _run(command, root, environment=environment)
+        code = 0
+    except _CommandError as error:
+        if not structured:
+            raise
+        failure = error
+        output, code = error.stdout, error.returncode
+    if structured:
+        try:
+            value = json.loads(output)
+        except (UnicodeError, ValueError) as error:
+            raise UpdateError("candidate audit returned invalid JSON") from error
+        if (
+            not isinstance(value, dict)
+            or value.get("schema_version") != 1
+            or value.get("tool_version") != candidate.version
+            or value.get("command") != ["audit"]
+            or value.get("root") != str(root)
+            or type(value.get("exit_code")) is not int
+            or value.get("exit_code") != code
+            or code not in (0, 1, 2, 3)
+            or value.get("status") != {0: "ok", 1: "failed", 2: "refused", 3: "pending"}[code]
+            or not isinstance(value.get("data"), dict)
+            or not isinstance(value.get("errors"), list)
+            or not isinstance(value.get("warnings"), list)
+            or not all(
+                isinstance(item, dict)
+                and isinstance(item.get("code"), str)
+                and isinstance(item.get("message"), str)
+                for item in [*value.get("errors", []), *value.get("warnings", [])]
+            )
+        ):
+            raise UpdateError("candidate audit returned an invalid or mismatched result")
+        for error in value["errors"]:
+            if error["code"] == "engine_cleanup_unconfirmed":
+                raise processes.CleanupError(error["message"])
+    if failure is not None:
+        raise failure
 
 
 def _safe_path(path: Path, root: Path) -> Path:
@@ -387,6 +460,9 @@ def run(
     root = root.resolve()
     lock: Path | None = None
     locked = False
+    cleanup_unconfirmed = False
+    workspace: storage.Workspace | None = None
+    receipt_path: Path | None = None
     result = result or Result()
     receipt = None
     try:
@@ -661,7 +737,8 @@ def run(
                     # the old projection here would reintroduce the migration gap.
                     from . import publication
 
-                    if publication.run(
+                    audit_result = Result()
+                    audit_code = publication.run(
                         root,
                         history=False,
                         staged=False,
@@ -669,15 +746,23 @@ def run(
                         owner_mode=False,
                         require_overlay=False,
                         allow_download=not no_download,
-                    ):
+                        result=audit_result,
+                    )
+                    for error in audit_result.errors:
+                        if error["code"] == "engine_cleanup_unconfirmed":
+                            raise processes.CleanupError(error["message"])
+                    if audit_code:
                         raise UpdateError(
                             "current-tool publication audit failed during guard refresh"
                         )
                 else:
-                    audit = [sys.executable, str(candidate_path), "audit", "--root", str(root)]
-                    if no_download:
-                        audit.append("--no-download")
-                    _run(audit, root, environment=workspace.environment())
+                    _candidate_audit(
+                        root,
+                        candidate_path,
+                        candidate,
+                        allow_download=not no_download,
+                        environment=workspace.environment(),
+                    )
                 _check_inputs(root, inputs)
                 if protection._sha256(_safe_path(projection, root)) != candidate.sha256:
                     raise UpdateError("projection changed during validation")
@@ -695,6 +780,10 @@ def run(
                 _save_receipt(receipt_path, receipt)
                 result.data["state"] = "installed"
                 result.next_action = None
+            except processes.CleanupError:
+                # The candidate may still own workers that use these paths. Let
+                # storage.temporary retain the entire workspace before reporting.
+                raise
             except Exception as error:
                 try:
                     _restore(root, git_dir, receipt)
@@ -702,6 +791,8 @@ def run(
                     _save_receipt(receipt_path, receipt)
                     result.data["state"] = "rolled-back"
                     result.next_action = None
+                except processes.CleanupError:
+                    raise
                 except Exception as restore_error:
                     raise UpdateError(
                         f"update failed: {error}; automatic rollback could not complete: {restore_error}; recovery backup: {backup}"
@@ -723,6 +814,7 @@ def run(
             )
             return 0
     except (
+        processes.CleanupError,
         UpdateError,
         distribution.DistributionError,
         config.ConfigError,
@@ -733,13 +825,41 @@ def run(
         KeyError,
         TypeError,
     ) as error:
-        result.error("update_error", error)
-        if receipt is not None and receipt.get("state") == "pending":
+        cleanup_unconfirmed = isinstance(error, processes.CleanupError)
+        result.error("update_cleanup_unconfirmed" if cleanup_unconfirmed else "update_error", error)
+        if cleanup_unconfirmed:
+            result.data["process_cleanup"] = "unconfirmed"
+            result.next_action = None
+            if locked and lock is not None:
+                result.data["lock"] = str(lock)
+            if workspace is not None:
+                result.data["retained_scratch"] = str(workspace.path)
+            if receipt is not None and receipt.get("state") == "pending":
+                receipt["process_cleanup"] = "unconfirmed"
+                receipt["error"] = str(error)
+                if workspace is not None:
+                    receipt["temporary"] = str(workspace.path)
+                try:
+                    _save_receipt(receipt_path, receipt)
+                except OSError as receipt_error:
+                    result.warnings.append(
+                        {"code": "receipt_write_failed", "message": str(receipt_error)}
+                    )
+            print(
+                "relkit update: owned process cleanup is unconfirmed; retain the lock, "
+                "backup and scratch. Verify all owned descendants stopped before explicit recovery.",
+                file=sys.stderr,
+            )
+        elif (
+            receipt is not None
+            and receipt.get("state") == "pending"
+            and receipt.get("process_cleanup") != "unconfirmed"
+        ):
             result.next_action = ["relkit", "update", "--root", str(root), "--rollback", "--yes"]
         print(f"relkit update: {error}", file=sys.stderr)
         return 2
     finally:
-        if locked and lock is not None:
+        if locked and lock is not None and not cleanup_unconfirmed:
             try:
                 lock.unlink(missing_ok=True)
             except OSError as error:

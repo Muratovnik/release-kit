@@ -23,6 +23,7 @@ from . import (
     __version__,
     generation,
     owner,
+    processes,
     protection,
     publication,
     storage,
@@ -203,7 +204,13 @@ def _protect(arguments: argparse.Namespace) -> int:
 
 def _notes(arguments: argparse.Namespace) -> int:
     root = Path(arguments.root).resolve()
-    path = root / arguments.changelog
+    source_changelog = root / arguments.changelog
+    path = source_changelog
+    if arguments.from_tag and not arguments.draft:
+        message = "--from-tag is only valid with --draft"
+        arguments.result.error("generation_error", message)
+        print(f"relkit notes: {message}", file=sys.stderr)
+        return 2
     try:
         policy = config_module.load(root, required=False).changelog
     except config_module.ConfigError as error:
@@ -214,7 +221,13 @@ def _notes(arguments: argparse.Namespace) -> int:
         # A draft is held to the profile the published entry must satisfy, so a
         # generator that emits the wrong layout fails here rather than at release.
         try:
-            text = generation.draft(policy, arguments.version, root=root)
+            text = generation.draft(
+                policy, arguments.version, root=root, from_tag=arguments.from_tag
+            )
+        except processes.CleanupError as error:
+            arguments.result.error("generation_cleanup_unconfirmed", error)
+            print(f"relkit notes: {error}", file=sys.stderr)
+            return 2
         except (generation.GenerationError, storage.StorageError) as error:
             arguments.result.error("generation_error", error)
             print(f"relkit notes: {error}", file=sys.stderr)
@@ -231,7 +244,11 @@ def _notes(arguments: argparse.Namespace) -> int:
     profile = "strict" if arguments.strict and policy.profile == "legacy" else policy.profile
     try:
         entry = changelog_module.entry_for(
-            text, arguments.version, profile=profile, first_version=policy.first_version
+            text,
+            arguments.version,
+            profile=profile,
+            first_version=policy.first_version,
+            section_aliases=policy.section_aliases,
         )
     except changelog_module.ChangelogError as error:
         arguments.result.error("invalid_notes", error, path=str(path), line=error.line)
@@ -251,7 +268,7 @@ def _notes(arguments: argparse.Namespace) -> int:
         output = root / arguments.output
         temporary: Path | None = None
         try:
-            for source_path in (path, root / config_module.CONFIG_NAME):
+            for source_path in (source_changelog, root / config_module.CONFIG_NAME):
                 if output.resolve() == source_path.resolve() or (
                     output.exists() and source_path.exists() and output.samefile(source_path)
                 ):
@@ -340,9 +357,12 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     release.add_argument(
-        "version", nargs="?", default="", help="Stable X.Y.Z or vX.Y.Z; omitted for next"
+        "version", nargs="?", default="", help="SemVer version or v-prefixed tag; omitted for next"
     )
     release.add_argument("--bump", choices=("patch", "minor", "major"), default="")
+    release.add_argument(
+        "--prerelease", default="", help="Next only: preview label such as rc; advances rc.N"
+    )
     release.add_argument(
         "--ci-run", type=int, default=0, help="Prepare: exact completed tagless workflow run ID"
     )
@@ -376,6 +396,7 @@ def build_parser() -> argparse.ArgumentParser:
             arguments.version,
             publish=arguments.publish,
             bump=arguments.bump,
+            prerelease=arguments.prerelease,
             ci_run=arguments.ci_run,
             assets=arguments.assets,
             plan_hash=arguments.plan_hash,
@@ -529,6 +550,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Produce an entry with the configured generator instead of reading the changelog; "
         "review and commit it yourself, nothing is written into the changelog",
+    )
+    notes.add_argument(
+        "--from-tag", default="", help="Draft only: exact previous tag for the complete notes range"
     )
     notes.set_defaults(handler=_notes)
 

@@ -9,7 +9,7 @@ import sys
 from datetime import UTC, datetime
 from uuid import uuid4
 
-from .. import canonical, processes, storage
+from .. import canonical, processes, semver, storage
 from . import candidate, coordinator
 from .backend import ReleaseError, clean
 
@@ -174,7 +174,7 @@ def _draft(store, state):
         not release
         or release.get("tag_name") != value["tag"]
         or not release["draft"]
-        or release["prerelease"]
+        or release["prerelease"] != semver.parse(value["version"]).is_prerelease
         or not state.get("draft_intent")
         or release.get("name") != state["draft_title"]
         or release.get("target_commitish") != value["sha"]

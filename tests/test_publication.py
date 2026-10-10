@@ -8,7 +8,7 @@ from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
-from releasekit import cli, config, owner, publication
+from releasekit import cli, config, owner, processes, publication
 from releasekit.exposure.audit import Report
 from releasekit.result import Result
 
@@ -44,6 +44,80 @@ class StagedPolicyTests(unittest.TestCase):
             self.assertEqual(
                 2, check(), "an untracked policy cannot replace a missing index policy"
             )
+
+
+class EngineResultTests(unittest.TestCase):
+    def test_unconfirmed_engine_cleanup_has_a_distinct_refusal_code(self):
+        result = Result()
+        with (
+            patch.object(
+                publication.config_module, "load", return_value=config.Config(root=Path.cwd())
+            ),
+            patch.object(publication.audit, "scan", return_value=Report()),
+            patch.object(publication.toolchain, "prepare"),
+            patch.object(
+                publication.engines,
+                "betterleaks",
+                side_effect=processes.CleanupError("owned cleanup is unconfirmed"),
+            ),
+            redirect_stdout(StringIO()),
+            redirect_stderr(StringIO()),
+        ):
+            code = publication.run(
+                Path.cwd(),
+                history=False,
+                staged=False,
+                strict=False,
+                owner_mode=False,
+                require_overlay=False,
+                allow_download=False,
+                result=result,
+            )
+        self.assertEqual(2, code)
+        self.assertEqual("engine_cleanup_unconfirmed", result.errors[0]["code"])
+
+    def test_findings_and_operational_engine_results_have_distinct_exits(self):
+        for name, findings_code, errors in (
+            ("betterleaks", 10, (1, 2, 17)),
+            ("lychee", 2, (1, 3, -9)),
+        ):
+            for native, expected in ((0, 0), (findings_code, 1), *((code, 2) for code in errors)):
+                with self.subTest(engine=name, native=native):
+                    settings = config.Config(root=Path.cwd())
+                    result = Result()
+                    with (
+                        patch.object(publication.config_module, "load", return_value=settings),
+                        patch.object(publication.audit, "scan", return_value=Report()),
+                        patch.object(publication.toolchain, "prepare"),
+                        patch.object(
+                            publication.engines,
+                            "betterleaks",
+                            return_value=native if name == "betterleaks" else 0,
+                        ),
+                        patch.object(
+                            publication.engines,
+                            "lychee",
+                            return_value=native if name == "lychee" else 0,
+                        ),
+                        redirect_stdout(StringIO()),
+                        redirect_stderr(StringIO()),
+                    ):
+                        observed = publication.run(
+                            Path.cwd(),
+                            history=False,
+                            staged=False,
+                            strict=False,
+                            owner_mode=False,
+                            require_overlay=False,
+                            allow_download=False,
+                            result=result,
+                        )
+                    self.assertEqual(expected, observed)
+                    self.assertEqual(native, result.data["engines"][name])
+                    self.assertEqual(
+                        expected == 2,
+                        any(error["code"] == "engine_error" for error in result.errors),
+                    )
 
 
 class HistoryScopeTests(unittest.TestCase):

@@ -10,7 +10,13 @@ import tomllib
 import unittest
 from pathlib import Path
 
+from parallel_tests import CompletedCasesMixin
+
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class CompletedTextResult(CompletedCasesMixin, unittest.TextTestResult):
+    pass
 
 
 def run_suite(directory: Path, *, stream=None) -> int:
@@ -18,10 +24,14 @@ def run_suite(directory: Path, *, stream=None) -> int:
     suite = unittest.TestLoader().discover(str(directory), pattern="test_*.py")
     if not suite.countTestCases():
         raise ValueError(f"no MCP tests discovered in {directory}")
-    result = unittest.TextTestRunner(stream=stream, verbosity=2).run(suite)
-    if result.testsRun == len(result.skipped):
+    result = unittest.TextTestRunner(
+        stream=stream, verbosity=2, resultclass=CompletedTextResult
+    ).run(suite)
+    if not result.wasSuccessful():
+        return 1
+    if not result.completed:
         raise ValueError("all discovered MCP tests were skipped")
-    return 0 if result.wasSuccessful() else 1
+    return 0
 
 
 def require_sdk(root: Path) -> str:

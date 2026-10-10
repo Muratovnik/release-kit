@@ -85,8 +85,9 @@ class JsonCliTests(unittest.TestCase):
             patch.object(engines, "lychee", return_value=0),
         ):
             code, value, _ = invoke(["audit", "--json"])
-        self.assertEqual(1, code)
+        self.assertEqual(2, code)
         self.assertEqual({"betterleaks": 17, "lychee": 0}, value["data"]["engines"])
+        self.assertEqual("engine_error", value["errors"][0]["code"])
         with patch.object(cli.config_module, "load", side_effect=config.ConfigError("bad policy")):
             code, value, _ = invoke(["audit", "--json"])
         self.assertEqual(2, code)

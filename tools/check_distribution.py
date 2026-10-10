@@ -98,6 +98,17 @@ def package_checks(root: Path, workspace: Path, uv: str, version: str, assets: P
             ],
         ),
         (
+            "changelog",
+            [
+                sys.executable,
+                str(root / "tools/smoke_changelog.py"),
+                "--artifact",
+                str(assets / "relkit.pyz"),
+                "--work-dir",
+                str(workspace / "changelog space"),
+            ],
+        ),
+        (
             "plugin-stdio",
             locked_command(
                 uv,
@@ -208,7 +219,14 @@ def clean_success(workspace: Path, identity) -> bool:
 
     if storage.identity(workspace) != identity:
         return False
-    owned = {"assets", "onboarding space", "plugin space", "tmp"}
+    owned = {
+        "assets",
+        "onboarding space",
+        "wheel install",
+        "changelog space",
+        "plugin space",
+        "tmp",
+    }
     if {p.name for p in workspace.iterdir()} - owned:
         return False
     # Check the roots, not venv internals: removal unlinks internal links without

@@ -7,9 +7,17 @@ or [built plugin](plugin.md). This page is for maintainers. The source template 
 ## Identity and build
 
 CLI and plugin releases use one version and one zipapp payload. Before distributing
-changed bytes, update `pyproject.toml`, `src/releasekit/__init__.py`, the plugin
-manifest, its `pyproject.toml` and its entry in `uv.lock` together. Add the dated
-changelog heading comparing the actual published predecessor. Keep older entries.
+changed bytes, run `python tools/set_version.py X.Y.Z`. The runtime declaration is
+the source of truth; the tool updates the plugin manifest, plugin project, README
+install references and the uv-managed lock, then validates their agreement. A failed
+rewrite or lock validation restores the previous file bytes after resolver teardown
+is confirmed. If teardown is unconfirmed, the tool preserves the current files and
+reports a `.cache/version-recovery-*` directory containing the original bytes and an
+exact-path manifest; stop the owned processes before restoring. A failed restoration
+also retains that recovery directory. Review a reported lock
+metadata change separately; dependency version changes are refused. Draft the dated
+changelog entry from committed changes with `relkit notes X.Y.Z --draft`, using
+`--from-tag` for the actual published predecessor, and keep older entries.
 Even a documentation-only package rebuild needs a new distribution identity;
 never replace already-published bytes under the same version/tag.
 
@@ -19,9 +27,15 @@ From a reviewed checkout, after the [full check](../CONTRIBUTING.md#checks):
 python tools/build_release.py dist/VERSION
 ```
 
-This produces `relkit.pyz`, `release-kit-plugin.zip`, both SHA-256 sidecars and
+This produces `relkit.pyz`, `release-kit-plugin.zip`,
+`release_kit-VERSION-py3-none-any.whl`, their three SHA-256 sidecars and
 `release.json`. Distribute the complete set together. The builder refuses an
-existing nonempty output directory. The plugin bundles the exact standalone CLI.
+existing nonempty output directory. In a checkout it also refuses missing or
+changed tracked files and uncommitted inputs, including ignored Python modules
+that would enter the packages. Required metadata, license, changelog and plugin
+payload files must be committed too, including the README selected by verified
+package metadata. Tracked links and gitlinks cannot stand in for those exact bytes.
+The plugin bundles the exact standalone CLI.
 
 For CLI-only development, not the joint publication path:
 
@@ -51,8 +65,8 @@ independent identity check when downloaded beside the file. The plugin's
 `package.json` is a **hash inventory, not a digital signature**. Review/trust of
 the original distribution remains necessary; malicious code can carry matching hashes.
 
-Before candidate code runs, package checks require exactly five ordinary files,
-both correct sidecars, and a `release.json` naming every other file once. Missing
+Before candidate code runs, package checks require exactly seven ordinary files,
+three correct sidecars, and a `release.json` naming every other file once. Missing
 or extra entries, partial/empty manifests, duplicate keys and bad hashes fail.
 The inventory is compared before and after all package checks; reports retain the
 checked hashes. This proves consistency and observed absence of drift, not origin.
@@ -104,7 +118,8 @@ python tools/check_distribution.py --assets dist --version X.Y.Z
 ```
 
 Package mode never rebuilds or runs source tests. It validates the complete set,
-runs CLI and real-scanner onboarding checks, and launches the extracted plugin
+runs CLI and real-scanner onboarding checks, installs the wheel into an isolated
+environment, checks generated changelogs with pinned git-cliff, and launches the extracted plugin
 through its own `.mcp.json`, including cwd, env and timeouts. Launcher failure
 reports the exit code and a bounded stderr tail (stdout when stderr is empty).
 The onboarding scenario includes a never-issued synthetic token: Betterleaks must
@@ -112,6 +127,11 @@ return its findings exit while Lychee passes, then both must pass after removing
 that fixture. Operational errors do not count as detection. Broken-link and index
 checks remain separate. A mocked helper test does not qualify the real scanners.
 An SDK test does not establish desktop discovery.
+
+The changelog check runs the candidate CLI against a temporary Git history. It
+covers first releases and prereleases, stable-to-final and RC-to-RC note boundaries,
+breaking changes, localized section aliases and preservation of source files.
+It uses the shipped example template and leaves publication refs unchanged.
 
 The coordinator supplies a Git-free committed snapshot with separate assets:
 
@@ -170,22 +190,42 @@ The full base suite can exceed thirty minutes on Windows with owned process
 startup and teardown. This project's coordinator allows 7200 seconds for its
 combined base/MCP command; other repositories retain their configured limit.
 POSIX execution owns a process group. Cooperative release-kit runners handle SIGTERM,
-stop their nested workers and unwind before releasing shared state; a short grace
-period precedes the final group kill. Windows uses a native kill-on-close Job Object
+stop their nested workers and unwind before releasing shared state. Every nested
+runner relays that signal before waiting; a bounded grace period precedes the final
+group kill. Windows uses a native kill-on-close Job Object
 and a startup barrier so the command cannot spawn outside the job before assignment.
 Windows cleanup waits for process teardown as well as empty job accounting before
 returning. The asynchronous MCP executor also uses this Windows Job adapter and
-waits for its cleanup without blocking the event loop.
+waits for its cleanup without blocking the event loop. On POSIX it first signals
+the CLI to finish nested command cleanup, then confirms process-group termination.
+An unconfirmed MCP cleanup reports `process_cleanup_unconfirmed` and retains scratch.
+On POSIX a forced group kill or an abnormal exit during cancellation is unconfirmed:
+the immediate group's disappearance cannot prove that a relay stopped its separately
+owned groups. The CLI's interruption status 3, developer tools' status 130 and native
+SIGINT/SIGTERM exits preserve cooperative cancellation. Custom commands must report
+unresolved child cleanup as failure, never hide it behind success or interruption.
+Managed POSIX launches also inherit anonymous lifetime-pipe writers. The owner
+requires EOF after its immediate process group stops, so an inner timeout followed
+by an ordinary relay exit cannot conceal a surviving managed descendant. Writers
+are validated by descriptor identity and passed through nested launches even with
+an explicit environment. The pipes store no files and carry no output protocol.
+The parallel test pool uses multiprocessing's existing descriptor transfer to give
+each worker its own validated writers, including workers started with `spawn`.
+Its parent keeps the pool writer through lazy startup and shutdown, then requires
+EOF before returning a verdict. Test failures do not authorize cleanup while an
+owned descendant still holds a writer.
 
 Timeouts remain failures/unknown remote outcomes, not proof a publication did not
-happen. Ordinary owned descendants are stopped on timeout, interruption and normal
-exit. An unconfirmed cleanup keeps the distribution or release state lock, receipt,
+happen. Cooperative timeout and interruption, and cleanup after normal exit, stop
+ordinary owned descendants before releasing state. An unconfirmed cleanup keeps the
+distribution or release state lock, receipt,
 log and scratch. `prepare`, `run` and `resume` return a structured
 `release_cleanup_unconfirmed` error and no automatic retry suggestion. Confirm
 that all owned commands and descendants have stopped before removing that exact
 lock; preserve receipts and use the same version to reconcile remote outcomes.
 Forced host kills,
-power loss and POSIX descendants deliberately leaving their group cannot promise
+power loss, deliberate detachment, and unmanaged wrappers that close inherited
+descriptors cannot promise
 cooperative reporting or cleanup; retained state requires explicit recovery, not a
 PID-only unlock. No global PID search or termination of unrelated processes occurs.
 Native Windows/macOS execution still needs platform-specific acceptance evidence.

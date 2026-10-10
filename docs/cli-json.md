@@ -48,8 +48,9 @@ must not be read as proof of no side effects.
 Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `check_error`, `check_failed`, `engine_error`, `protection_error`, `invalid_notes`,
 `missing_notes`, `confirmation_required`, `update_error`, `release_error`,
-`release_pending`, `release_cleanup_unconfirmed`, `interrupted`, `internal_error`
-and fallback `command_failed`.
+`release_pending`, `engine_cleanup_unconfirmed`, `generation_cleanup_unconfirmed`,
+`update_cleanup_unconfirmed`, `release_cleanup_unconfirmed`, `interrupted`,
+`internal_error` and fallback `command_failed`.
 `lock_retained` is a warning.
 
 `release_cleanup_unconfirmed` retains the release lock and recovery evidence.
@@ -68,15 +69,26 @@ insufficient, and an unknown remote outcome still needs reconciliation.
 `kind`, `detail`, plus `stale`, `unreadable` and `excluded` string arrays.
 
 `audit` adds `scope` (`worktree`, `staged`, `history`) and `engines`, mapping
-engine names to native exit codes or `null` when not completed. History adds
+engine names to native exit codes or `null` when not completed. Release-kit sets
+Betterleaks' findings exit code to `10`; Lychee uses `2` for link findings.
+Those codes produce audit exit `1`. Other nonzero engine codes mean an
+operational failure and produce audit exit `2`, even if another check found
+publication findings. History adds
 `untracked_present`: untracked entries do not by themselves violate the clean
 tracked-tree precondition; configured worktree candidate checks still apply.
 Native engine diagnostics are not invented structured findings. The top-level
 exit also includes history, guard and overlay failures.
 
+`engine_cleanup_unconfirmed` is an exit `2` refusal: owned engine descendants
+could not be confirmed stopped. The entire scanner workspace is retained. Verify
+those processes and inspect the reported scratch before explicit cleanup.
+
 `notes` returns validated `notes` including its final newline, requested `version`
 and `output` (absolute export path or `null`). An export failure may still return
 validated text, but is not success. Structural notes validation stays Git-free.
+`generation_cleanup_unconfirmed` is an exit `2` refusal when a draft generator's
+owned descendants could not be confirmed stopped. It does not export a draft;
+inspect the command and its retained state before retrying.
 See [notes validation and safe export](notes.md).
 
 `overlay` returns `verified_mounts` (number checked) and `skipped` (out-of-scope
@@ -171,6 +183,12 @@ publication, identity drift and invalid signatures remain failures.
 `pending`, `installed`, `rolled-back`, `pruned`). Rollback reports
 `action: "rollback"` and receipt path with the restoration plan. Backup/receipt
 paths appear after transaction creation; failures retain known progress.
+`update_cleanup_unconfirmed` is an exit `2` refusal with
+`data.process_cleanup = "unconfirmed"` and `next_action = null`. A transaction
+already created remains `pending`; the updater preserves its backup, receipt,
+lock and scratch instead of starting automatic rollback. `data.lock` and
+`data.retained_scratch` identify retained paths when available. Confirm the owned
+commands have stopped before selecting an explicit recovery action.
 `--prune-backups` reports `action: "prune-backups"`, `superseded` (backups no
 receipt can restore), and, after confirmation, `removed`. Preview stops after
 `superseded`.

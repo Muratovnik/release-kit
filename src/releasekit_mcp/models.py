@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+from releasekit import semver
+
 
 class Request(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
@@ -66,8 +68,9 @@ class Protect(Request):
 
 class Release(Request):
     action: Literal["next", "prepare", "plan", "status", "resume_plan", "run", "resume", "verify"]
-    version: str = Field(default="", pattern=r"^(?:v?[0-9]+\.[0-9]+\.[0-9]+)?$")
+    version: str = ""
     bump: Literal["", "patch", "minor", "major"] = ""
+    prerelease: str = Field(default="", pattern=r"^[0-9A-Za-z-]*$")
     ci_run: int = Field(default=0, ge=0)
     plan_hash: str = ""
     no_download: bool = False
@@ -82,6 +85,10 @@ class Release(Request):
             raise ValueError(
                 "next needs bump and no version; other actions need version and no bump"
             )
+        if self.version:
+            semver.parse(self.version[1:] if self.version.startswith(("v", "V")) else self.version)
+        if self.prerelease and (self.action != "next" or self.prerelease.isdigit()):
+            raise ValueError("prerelease needs next and a nonnumeric ASCII label such as rc")
         if self.ci_run and self.action != "prepare":
             raise ValueError("ci_run is only valid for prepare")
         if self.accept_ci_attempt and self.action not in ("resume", "resume_plan"):

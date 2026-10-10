@@ -280,17 +280,15 @@ def problem(root: Path) -> str | None:
             changes = digest_changes(root)
         except (ProtectionError, OSError, UnicodeError) as error:
             return f"owner pre-push guard has drifted: {path}; {error}; manual owner review is required"
-        if not changes:
-            # An intact older template pinning exactly the current inputs enforces the
-            # same thing the current one does. Failing every push and every update on
-            # the release that changes the template is how a gate gets switched off.
-            return None
-        return (
-            f"owner pre-push guard has drifted: {path}\n  "
-            + "\n  ".join(changes)
-            + "\nReview these exact inputs and obtain any project-required hook permission; "
-            "then run `relkit update --refresh-guard` (or `relkit protect install`)."
-        )
+        if changes:
+            return (
+                f"owner pre-push guard has drifted: {path}\n  "
+                + "\n  ".join(changes)
+                + "\nReview these exact inputs and obtain any project-required hook permission; "
+                "then run `relkit update --refresh-guard` (or `relkit protect install`)."
+            )
+        # An intact older template may keep its pins, but Git must still be able
+        # to execute it through the currently configured dispatcher.
     if not os.access(path, os.X_OK):
         return f"owner pre-push guard is not executable: {path}"
     try:

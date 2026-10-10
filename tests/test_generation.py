@@ -111,14 +111,25 @@ class DraftTests(unittest.TestCase):
                 self.policy(engine="git-cliff"), "v1.2.3", root=self.root, allow_download=False
             )
         self.assertEqual(
-            [str(Path("/tools/git-cliff")), "--unreleased", "--tag", "v1.2.3"], command
+            [
+                str(Path("/tools/git-cliff")),
+                "--tag",
+                "v1.2.3",
+                "--output",
+                "-",
+                "--no-exec",
+                "--unreleased",
+            ],
+            command,
         )
 
     def _running(self, returncode: int, stdout: str, stderr: str = ""):
         def run(command, **keywords):
-            return subprocess.CompletedProcess(command, returncode, stdout, stderr)
+            return subprocess.CompletedProcess(
+                command, returncode, stdout.encode(), stderr.encode()
+            )
 
-        return patch.object(generation.subprocess, "run", run)
+        return patch.object(generation.processes, "run", run)
 
     def test_a_failing_generator_reports_its_own_last_line(self):
         with (

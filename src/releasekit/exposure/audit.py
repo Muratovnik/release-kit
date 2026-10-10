@@ -262,7 +262,7 @@ def _changed_blob_paths(
     symlinks: set[tuple[str, str]] | None = None,
     gitlinks: set[tuple[str, str]] | None = None,
 ) -> dict[str, set[str]]:
-    """Map every historical blob version to every path where a change introduced it."""
+    """Map blobs to every committed or directly referenced tree path where they appear."""
     result = _git_bytes(
         root,
         [
@@ -302,7 +302,57 @@ def _changed_blob_paths(
             if gitlinks is not None and fields[1] == b"160000":
                 gitlinks.add((object_id, relative))
         index += 2
+    # A public ref can expose a tree that no commit contains, including a second path
+    # for a blob already seen in commit history. ls-tree preserves names and modes;
+    # rev-list --objects only offers one unframed display name per object.
+    for mode, object_id, relative in _public_tree_entries(root):
+        if any(fnmatch(relative, pattern) for pattern in exclude):
+            continue
+        paths.setdefault(object_id, set()).add(relative)
+        if symlinks is not None and mode == "120000":
+            symlinks.add((object_id, relative))
+        if gitlinks is not None and mode == "160000":
+            gitlinks.add((object_id, relative))
     return paths
+
+
+def _public_tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
+    references = _git(root, ["for-each-ref", "--format=%(objectname)", *PUBLIC_REF_PREFIXES])
+    if references.returncode:
+        raise RuntimeError(references.stderr.strip() or "Git public object inventory failed")
+    object_ids = sorted(set(references.stdout.splitlines()))
+    if not object_ids:
+        return
+    peeled = _git(
+        root,
+        ["cat-file", "--batch-check=%(objectname) %(objecttype)"],
+        stdin="\n".join(f"{object_id}^{{}}" for object_id in object_ids) + "\n",
+    )
+    if peeled.returncode:
+        raise RuntimeError(peeled.stderr.strip() or "Git public ref target inventory failed")
+    for record in sorted(set(peeled.stdout.splitlines())):
+        fields = record.split()
+        if len(fields) != 2 or fields[1] not in {"tree", "blob", "commit"}:
+            raise RuntimeError("Git public ref target inventory returned an unexpected object")
+        object_id, kind = fields
+        if kind == "blob":
+            yield "100644", object_id, ""
+        elif kind == "tree":
+            tree = _git_bytes(root, ["ls-tree", "-r", "--full-tree", "-z", object_id])
+            if tree.returncode:
+                raise RuntimeError(
+                    tree.stderr.decode("utf-8", errors="replace").strip()
+                    or "Git public tree inventory failed"
+                )
+            for entry in tree.stdout.split(b"\0"):
+                if not entry:
+                    continue
+                metadata, separator, raw_path = entry.partition(b"\t")
+                fields = metadata.decode("ascii").split()
+                if not separator or len(fields) != 3:
+                    raise RuntimeError("Git public tree inventory returned malformed metadata")
+                mode, _kind, blob = fields
+                yield mode, blob, raw_path.decode("utf-8", errors="surrogateescape")
 
 
 def _blob_history_failures(
@@ -337,30 +387,51 @@ def _blob_history_failures(
         )
     except (RuntimeError, UnicodeError) as error:
         return [str(error)]
-    # Tags may point directly to a tree or blob rather than to a commit. Preserve the
-    # object inventory as a fallback for those objects; commit history uses the exact
-    # change-derived mapping above so one blob copied to two paths is checked twice.
-    inventory = _git(root, ["rev-list", "--objects", *HISTORY_REFS])
-    if inventory.returncode != 0:
-        return [inventory.stderr.strip() or "Git history object inventory failed"]
-    for record in inventory.stdout.splitlines():
-        object_id, separator, relative = record.partition(" ")
-        if separator and object_id not in paths:
-            paths.setdefault(object_id, set()).add(relative)
     if not paths:
         return []
-    checks = _git(
-        root,
-        ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-        stdin="\n".join(paths) + "\n",
-    )
-    if checks.returncode != 0:
-        return [checks.stderr.strip() or "Git history object type inventory failed"]
+    normal_ids = {
+        object_id
+        for object_id, relatives in paths.items()
+        if any((object_id, relative) not in gitlinks for relative in relatives)
+    }
+    object_ids = sorted(normal_ids)
+    if object_ids:
+        checks = _git(
+            root,
+            ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+            stdin="\n".join(object_ids) + "\n",
+        )
+        if checks.returncode != 0:
+            return [checks.stderr.strip() or "Git history object type inventory failed"]
+        records = checks.stdout.splitlines()
+    else:
+        records = []
+    if len(records) != len(object_ids):
+        return [
+            (
+                "Git history object type inventory returned "
+                f"{len(records)} records for {len(object_ids)} requested objects"
+            )
+        ]
     sized_blobs: list[tuple[str, int]] = []
-    for record in checks.stdout.splitlines():
-        fields = record.split(" ")
-        if len(fields) == 3 and fields[1] == "blob" and fields[2].isdigit():
-            sized_blobs.append((fields[0], int(fields[2])))
+    seen: set[str] = set()
+    for record in records:
+        fields = record.split()
+        if len(fields) != 3 or not fields[2].isascii() or not fields[2].isdecimal():
+            return [f"Git history object type inventory returned an unexpected record: {record}"]
+        object_id, object_type, raw_size = fields
+        if object_id not in normal_ids:
+            return [
+                f"Git history object type inventory returned an unrequested object: {object_id}"
+            ]
+        if object_id in seen:
+            return [f"Git history object type inventory returned a duplicate object: {object_id}"]
+        seen.add(object_id)
+        if object_type != "blob":
+            return [f"Git history object type inventory returned an unexpected record: {record}"]
+        sized_blobs.append((object_id, int(raw_size)))
+    if seen != set(object_ids):
+        return ["Git history object type inventory omitted a requested object"]
     failures: list[str] = []
     failures.extend(
         f"history {relative}: {EXTERNAL_REPOSITORY} (Git submodule content is not audited)"
@@ -377,11 +448,14 @@ def _blob_history_failures(
         rules.MACHINE_OBSERVATION,
         rules.PROVIDER_SURFACE,
     }
+    expected_sizes = dict(sized_blobs)
     for batch in _history_batches(sized_blobs):
         try:
             blobs = _batch_blobs(root, batch)
         except (RuntimeError, ValueError) as error:
             return [str(error)]
+        if any(len(payload) != expected_sizes[object_id] for object_id, payload in blobs):
+            return ["Git history object size inventory disagrees with blob data"]
         for object_id, payload in blobs:
             for relative in sorted(paths[object_id]):
                 details: dict[str, str] = {}
@@ -427,7 +501,7 @@ def _blob_history_failures(
                                     forbid_machine_observations=False,
                                     providers={},
                                 ).items()
-                                if kind in UNSUPPRESSIBLE_KINDS
+                                if kind in UNSUPPRESSIBLE_KINDS or kind == rules.PRIVATE_PATH
                             }
                         )
                 else:
@@ -508,6 +582,7 @@ def _owner_payload_details(
     owner_workflows: Sequence[str],
     private_patterns: Sequence[rules.PrivatePattern],
     inspect_archives: bool,
+    unsuppressible: set[str] | None = None,
 ) -> dict[str, str]:
     return {
         kind: detail
@@ -527,8 +602,9 @@ def _owner_payload_details(
             forbid_machine_observations=False,
             providers={},
             inspect_archives=inspect_archives,
+            unsuppressible=unsuppressible,
         ).items()
-        if kind in UNSUPPRESSIBLE_KINDS
+        if kind in UNSUPPRESSIBLE_KINDS or kind == rules.PRIVATE_PATH
     }
 
 
@@ -721,7 +797,13 @@ class Report:
         return not self.failures
 
 
-def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
+def _git(
+    root: Path,
+    arguments: Sequence[str],
+    *,
+    stdin: str | None = None,
+    strict_utf8: bool = False,
+):
     try:
         environment = os.environ.copy()
         environment["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -732,7 +814,7 @@ def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
             check=False,
             capture_output=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict" if strict_utf8 else "replace",
             timeout=120,
             env=environment,
         )
@@ -765,10 +847,20 @@ def scannable_paths(root: Path, *, include_candidates: bool = True) -> tuple[str
     arguments = ["ls-files", "-z", "--cached"]
     if include_candidates:
         arguments += ["--others", "--exclude-standard"]
-    result = _git(root, arguments)
+    # NUL delimiters do not disable text-mode universal-newline conversion.
+    # Preserve every path byte before decoding, including literal CR and CRLF.
+    result = _git_bytes(root, arguments)
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files failed")
-    return tuple(sorted(item for item in result.stdout.split("\0") if item))
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip() or "git ls-files failed"
+        )
+    return tuple(
+        sorted(
+            item.decode("utf-8", errors="surrogateescape")
+            for item in result.stdout.split(b"\0")
+            if item
+        )
+    )
 
 
 def worktree_paths(root: Path, *, include_candidates: bool = True) -> tuple[str, ...]:
@@ -778,11 +870,31 @@ def worktree_paths(root: Path, *, include_candidates: bool = True) -> tuple[str,
     return tuple(
         relative
         for relative in scannable_paths(root, include_candidates=include_candidates)
-        if (root / relative).is_file()
-        or (root / relative).is_symlink()
-        or (modes.get(relative) == "160000" and (root / relative).is_dir())
-        or relative in skipped
+        if relative in skipped
+        or (
+            not _has_symlink_parent(root, relative)
+            and (
+                (root / relative).is_file()
+                or (root / relative).is_symlink()
+                or (modes.get(relative) == "160000" and (root / relative).is_dir())
+            )
+        )
     )
+
+
+def _has_symlink_parent(root: Path, relative: str) -> bool:
+    parent = root
+    for part in Path(relative).parts[:-1]:
+        parent /= part
+        try:
+            info = parent.lstat()
+        except (FileNotFoundError, NotADirectoryError):
+            return False
+        if stat.S_ISLNK(info.st_mode):
+            return True
+        if getattr(info, "st_file_attributes", 0) & 0x400:
+            raise RuntimeError("publication paths traverse a junction or directory reparse point")
+    return False
 
 
 def worktree_changes(root: Path) -> tuple[str, ...]:
@@ -792,10 +904,16 @@ def worktree_changes(root: Path) -> tuple[str, ...]:
     means a scanned file is not the committed one; an untracked entry only adds a
     file that no commit contains, which the worktree pass scans anyway.
     """
-    result = _git(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
+    result = _git_bytes(root, ["status", "--porcelain=v1", "-z", "--untracked-files=all"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git status failed")
-    return tuple(item for item in result.stdout.split("\0") if item)
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip() or "git status failed"
+        )
+    return tuple(
+        item.decode("utf-8", errors="surrogateescape")
+        for item in result.stdout.split(b"\0")
+        if item
+    )
 
 
 def unignored(root: Path, required: Sequence[str]) -> list[str]:
@@ -877,25 +995,33 @@ def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> b
 
 
 def _tracked_modes(root: Path) -> dict[str, str]:
-    result = _git(root, ["ls-files", "-s", "-z"])
+    result = _git_bytes(root, ["ls-files", "-s", "-z"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files mode inventory failed")
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip()
+            or "git ls-files mode inventory failed"
+        )
     modes: dict[str, str] = {}
-    for record in result.stdout.split("\0"):
-        metadata, separator, relative = record.partition("\t")
+    for record in result.stdout.split(b"\0"):
+        metadata, separator, relative = record.partition(b"\t")
         if separator:
-            modes[relative] = metadata.split(maxsplit=1)[0]
+            modes[relative.decode("utf-8", errors="surrogateescape")] = metadata.split(maxsplit=1)[
+                0
+            ].decode("ascii")
     return modes
 
 
 def _skip_worktree_paths(root: Path) -> set[str]:
-    result = _git(root, ["ls-files", "-t", "-z"])
+    result = _git_bytes(root, ["ls-files", "-t", "-z"])
     if result.returncode != 0:
-        raise RuntimeError(result.stderr.strip() or "git ls-files sparse inventory failed")
+        raise RuntimeError(
+            result.stderr.decode("utf-8", errors="replace").strip()
+            or "git ls-files sparse inventory failed"
+        )
     return {
-        record[2:]
-        for record in result.stdout.split("\0")
-        if len(record) >= 3 and record.startswith("S ")
+        record[2:].decode("utf-8", errors="surrogateescape")
+        for record in result.stdout.split(b"\0")
+        if len(record) >= 3 and record.startswith(b"S ")
     }
 
 
@@ -965,6 +1091,7 @@ def _archive_details(
     _depth: int = 0,
     _surface_relative: str | None = None,
     _budget: list[int] | None = None,
+    _unsuppressible: set[str] | None = None,
 ) -> dict[str, str]:
     declared_archive = Path(relative).suffix.lower() in ARCHIVE_SUFFIXES
     source = io.BytesIO(payload)
@@ -991,11 +1118,14 @@ def _archive_details(
                     continue
                 if _unsafe_archive_path(entry.filename):
                     found.setdefault(ARCHIVE_PATH, f"unsafe archive entry {entry.filename}")
-                    continue
+                    # Reads stay in memory: an unsafe name cannot exempt the
+                    # member's private filename or bounded payload inspection.
                 if entry.file_size > MAX_ARCHIVE_ENTRY_SIZE:
                     found.setdefault(ARCHIVE_LIMIT, f"archive entry too large: {entry.filename}")
                     continue
                 entry_name = posixpath.normpath(entry.filename.replace("\\", "/"))
+                if _unsuppressible is not None and rules.is_owner_policy_path(entry_name):
+                    _unsuppressible.add(rules.PRIVATE_PATH)
                 for kind in rules.kinds_in_path(
                     entry_name,
                     names=names,
@@ -1042,6 +1172,7 @@ def _archive_details(
                         _depth=_depth + 1,
                         _surface_relative=surface_relative,
                         _budget=budget,
+                        _unsuppressible=_unsuppressible,
                         forbid_png_metadata=forbid_png_metadata,
                     ).items():
                         found.setdefault(kind, detail)
@@ -1101,6 +1232,7 @@ def _payload_details(
     providers: dict[str, Sequence[str]],
     inspect_archives: bool,
     forbid_png_metadata: bool = False,
+    unsuppressible: set[str] | None = None,
 ) -> dict[str, str]:
     found = _external_payload_details(relative, payload)
     if forbid_png_metadata and Path(relative).suffix.lower() == ".png":
@@ -1142,6 +1274,7 @@ def _payload_details(
                 forbid_machine_observations=forbid_machine_observations,
                 providers=providers,
                 forbid_png_metadata=forbid_png_metadata,
+                _unsuppressible=unsuppressible,
             )
         )
     return found
@@ -1180,11 +1313,11 @@ def scan(
     unmatched = {path: set(kinds) for path, kinds in recorded.items()}
     report = Report()
 
-    def record(finding: Finding) -> None:
+    def record(finding: Finding, *, unsuppressible: bool = False) -> None:
         is_recorded = finding.kind in recorded.get(finding.path, set())
         if is_recorded:
             unmatched.get(finding.path, set()).discard(finding.kind)
-        if finding.kind not in UNSUPPRESSIBLE_KINDS and is_recorded:
+        if not unsuppressible and finding.kind not in UNSUPPRESSIBLE_KINDS and is_recorded:
             report.baselined.append(finding)
         else:
             report.new.append(finding)
@@ -1193,14 +1326,12 @@ def scan(
     if candidates is None:
         inventory = scannable_paths if staged else worktree_paths
         candidates = inventory(root, include_candidates=include_candidates)
-    tracked_result = _git(root, ["ls-files", "-z", "--cached"])
-    if tracked_result.returncode != 0:
-        raise RuntimeError(tracked_result.stderr.strip() or "git ls-files failed")
-    tracked = {item for item in tracked_result.stdout.split("\0") if item}
+    tracked = set(scannable_paths(root, include_candidates=False))
     tracked_modes = _tracked_modes(root)
     skip_worktree = _skip_worktree_paths(root)
     for relative in candidates:
         from_index = staged or relative in skip_worktree
+        unsuppressible = {rules.PRIVATE_PATH} if rules.is_owner_policy_path(relative) else set()
         if any(fnmatch(relative, pattern) for pattern in exclude):
             report.excluded.append(relative)
             unmatched.pop(relative, None)
@@ -1216,6 +1347,7 @@ def scan(
                 )
                 & OWNER_PRIVACY_KINDS
             )
+            found |= unsuppressible
             details: dict[str, str] = {}
             if is_gitlink:
                 details[EXTERNAL_REPOSITORY] = "Git submodule content is not audited"
@@ -1230,13 +1362,17 @@ def scan(
                             owner_workflows=owner_workflows,
                             private_patterns=private_patterns,
                             inspect_archives=inspect_archives,
+                            unsuppressible=unsuppressible,
                         )
                     )
                 except OSError:
                     report.unreadable.append(relative)
             found |= set(details)
             for kind in sorted(found):
-                record(Finding(relative, kind, details.get(kind, "")))
+                record(
+                    Finding(relative, kind, details.get(kind, "")),
+                    unsuppressible=kind in unsuppressible,
+                )
             continue
         found = rules.kinds_in_path(
             relative,
@@ -1290,6 +1426,7 @@ def scan(
                     providers=provider_surfaces,
                     inspect_archives=inspect_archives,
                     forbid_png_metadata=forbid_png_metadata,
+                    unsuppressible=unsuppressible,
                 )
             )
             # Only the current tree: a workflow that has since been guarded or removed
@@ -1304,7 +1441,10 @@ def scan(
             report.unreadable.append(relative)
         found |= set(details)
         for kind in sorted(found):
-            record(Finding(relative, kind, details.get(kind, "")))
+            record(
+                Finding(relative, kind, details.get(kind, "")),
+                unsuppressible=kind in unsuppressible,
+            )
 
     for path in unignored(root, required_ignores):
         record(Finding(path, rules.NOT_IGNORED))
@@ -1390,13 +1530,17 @@ def history_failures(
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
     failures = _history_precondition_failures(root)
-    names_result = _git(root, ["log", *HISTORY_REFS, "--name-only", "--format="])
-    if names_result.returncode != 0:
-        return [names_result.stderr.strip() or "Git history path inventory failed"]
-    history_paths = {line.strip() for line in names_result.stdout.splitlines() if line.strip()}
+    try:
+        history_paths = {
+            path for paths in _changed_blob_paths(root, ()).values() for path in paths if path
+        }
+    except (RuntimeError, UnicodeError) as error:
+        return [str(error)]
     for relative in sorted(history_paths):
         excluded = any(fnmatch(relative, pattern) for pattern in exclude)
         if excluded:
+            if rules.is_owner_policy_path(relative):
+                failures.append(f"history {relative}: {rules.PRIVATE_PATH}")
             for kind in sorted(
                 rules.kinds_in_path(
                     relative,
@@ -1485,8 +1629,18 @@ def history_failures(
             else:
                 attribution_exempt = exempt
 
-    messages = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%B%x1e"])
-    if messages.returncode != 0:
+    try:
+        messages = _git(
+            root,
+            ["log", "--encoding=UTF-8", *HISTORY_REFS, "--format=%H%x1f%B%x1e"],
+            strict_utf8=True,
+        )
+    except UnicodeError:
+        failures.append("Git history message inventory was not valid UTF-8")
+        messages = None
+    if messages is None:
+        pass
+    elif messages.returncode != 0:
         failures.append(messages.stderr.strip() or "Git history message inventory failed")
     else:
         for record in messages.stdout.split("\x1e"):

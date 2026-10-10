@@ -270,7 +270,7 @@ class CandidateWiringTests(unittest.TestCase):
         assets = Path("separate candidate/assets")
         commands = check_distribution.package_checks(ROOT, Path("scratch"), "uv", VERSION, assets)
         self.assertEqual(
-            ["cli-smoke", "onboarding", "wheel-install", "plugin-stdio"],
+            ["cli-smoke", "onboarding", "wheel-install", "changelog", "plugin-stdio"],
             [name for name, _ in commands],
         )
         self.assertIn(str(assets / smoke.CLI), dict(commands)["onboarding"])

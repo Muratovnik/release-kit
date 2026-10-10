@@ -122,6 +122,21 @@ class VerifyTests(unittest.TestCase):
 
         self.assertEqual([verify.MISSING], [problem.kind for problem in problems])
 
+    def test_a_dangling_link_to_an_indexed_private_target_is_reported(self) -> None:
+        overlay = _overlay()
+        self.addCleanup(overlay.handle.cleanup)
+        target = overlay.private / "local/.someclient"
+        (target / "settings.json").unlink()
+        target.rmdir()
+        link = overlay.public / ".someclient"
+        self.assertTrue(link.is_symlink())
+        self.assertFalse(link.exists())
+
+        problems, skipped = overlay.check()
+
+        self.assertEqual([verify.MISSING], [problem.kind for problem in problems])
+        self.assertEqual([], skipped)
+
     def test_a_copy_where_the_link_was_is_reported(self) -> None:
         """Two copies of one file is the failure the arrangement exists to remove."""
         overlay = _overlay()

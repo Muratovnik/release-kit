@@ -2,6 +2,24 @@
 
 ## [Unreleased]
 
+## [0.32.0](https://github.com/Muratovnik/release-kit/compare/v0.31.0...v0.32.0) (2026-10-10)
+
+### Features
+
+- **release:** support SemVer previews and localized changelog sections ([85f1b1f](https://github.com/Muratovnik/release-kit/commit/85f1b1fe6885bd8d1f624ceb6b53ee54922ad3cc))
+
+### Bug Fixes
+
+- **audit:** preserve publication boundaries and owned scanner state ([e36d253](https://github.com/Muratovnik/release-kit/commit/e36d253fefc657ec322d2d5674886d10aa1a9268))
+- **audit:** preserve literal filenames across Git inventories and link scans ([69e57f2](https://github.com/Muratovnik/release-kit/commit/69e57f2ac68e1334663cf6f81a29595d46af1e55))
+- **runtime:** retain process ownership and verify exact release inputs ([29da007](https://github.com/Muratovnik/release-kit/commit/29da007269636209ebda48b115839940990eab81))
+- **mcp:** avoid false cleanup failures after process termination ([f72ecf1](https://github.com/Muratovnik/release-kit/commit/f72ecf115aa4e0a96c9d1a76d828d80366f89dc3))
+- **notes:** preserve actionable generator failure diagnostics ([4fe6f80](https://github.com/Muratovnik/release-kit/commit/4fe6f804f3cc11473557fee47af87e88955a295b))
+- **runtime:** handle transient group denial and preserve test verdicts ([a2027d5](https://github.com/Muratovnik/release-kit/commit/a2027d5dd2cdb6668c5c840aeefc6f648844ea72))
+- **plugin:** count Windows runtime paths in UTF-16 units ([549d8bc](https://github.com/Muratovnik/release-kit/commit/549d8bc9c835db2974c5e8652bbfb38c753bb827))
+- **plugin:** validate the Windows installer cache path budget ([fd192e3](https://github.com/Muratovnik/release-kit/commit/fd192e38ed2b0837f8f39d4f6b7946792846e65f))
+- **audit:** validate history objects and message encoding ([341fac3](https://github.com/Muratovnik/release-kit/commit/341fac371d42b417223e4bea1c76cc1e29e5b400))
+
 ## [0.31.0](https://github.com/Muratovnik/release-kit/compare/v0.30.0...v0.31.0) (2026-09-26)
 
 ### Highlights
