@@ -389,18 +389,49 @@ def _blob_history_failures(
         return [str(error)]
     if not paths:
         return []
-    checks = _git(
-        root,
-        ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
-        stdin="\n".join(paths) + "\n",
-    )
-    if checks.returncode != 0:
-        return [checks.stderr.strip() or "Git history object type inventory failed"]
+    normal_ids = {
+        object_id
+        for object_id, relatives in paths.items()
+        if any((object_id, relative) not in gitlinks for relative in relatives)
+    }
+    object_ids = sorted(normal_ids)
+    if object_ids:
+        checks = _git(
+            root,
+            ["cat-file", "--batch-check=%(objectname) %(objecttype) %(objectsize)"],
+            stdin="\n".join(object_ids) + "\n",
+        )
+        if checks.returncode != 0:
+            return [checks.stderr.strip() or "Git history object type inventory failed"]
+        records = checks.stdout.splitlines()
+    else:
+        records = []
+    if len(records) != len(object_ids):
+        return [
+            (
+                "Git history object type inventory returned "
+                f"{len(records)} records for {len(object_ids)} requested objects"
+            )
+        ]
     sized_blobs: list[tuple[str, int]] = []
-    for record in checks.stdout.splitlines():
-        fields = record.split(" ")
-        if len(fields) == 3 and fields[1] == "blob" and fields[2].isdigit():
-            sized_blobs.append((fields[0], int(fields[2])))
+    seen: set[str] = set()
+    for record in records:
+        fields = record.split()
+        if len(fields) != 3 or not fields[2].isascii() or not fields[2].isdecimal():
+            return [f"Git history object type inventory returned an unexpected record: {record}"]
+        object_id, object_type, raw_size = fields
+        if object_id not in normal_ids:
+            return [
+                f"Git history object type inventory returned an unrequested object: {object_id}"
+            ]
+        if object_id in seen:
+            return [f"Git history object type inventory returned a duplicate object: {object_id}"]
+        seen.add(object_id)
+        if object_type != "blob":
+            return [f"Git history object type inventory returned an unexpected record: {record}"]
+        sized_blobs.append((object_id, int(raw_size)))
+    if seen != set(object_ids):
+        return ["Git history object type inventory omitted a requested object"]
     failures: list[str] = []
     failures.extend(
         f"history {relative}: {EXTERNAL_REPOSITORY} (Git submodule content is not audited)"
@@ -417,11 +448,14 @@ def _blob_history_failures(
         rules.MACHINE_OBSERVATION,
         rules.PROVIDER_SURFACE,
     }
+    expected_sizes = dict(sized_blobs)
     for batch in _history_batches(sized_blobs):
         try:
             blobs = _batch_blobs(root, batch)
         except (RuntimeError, ValueError) as error:
             return [str(error)]
+        if any(len(payload) != expected_sizes[object_id] for object_id, payload in blobs):
+            return ["Git history object size inventory disagrees with blob data"]
         for object_id, payload in blobs:
             for relative in sorted(paths[object_id]):
                 details: dict[str, str] = {}
@@ -763,7 +797,13 @@ class Report:
         return not self.failures
 
 
-def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
+def _git(
+    root: Path,
+    arguments: Sequence[str],
+    *,
+    stdin: str | None = None,
+    strict_utf8: bool = False,
+):
     try:
         environment = os.environ.copy()
         environment["GIT_NO_REPLACE_OBJECTS"] = "1"
@@ -774,7 +814,7 @@ def _git(root: Path, arguments: Sequence[str], *, stdin: str | None = None):
             check=False,
             capture_output=True,
             encoding="utf-8",
-            errors="replace",
+            errors="strict" if strict_utf8 else "replace",
             timeout=120,
             env=environment,
         )
@@ -1589,8 +1629,18 @@ def history_failures(
             else:
                 attribution_exempt = exempt
 
-    messages = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%B%x1e"])
-    if messages.returncode != 0:
+    try:
+        messages = _git(
+            root,
+            ["log", "--encoding=UTF-8", *HISTORY_REFS, "--format=%H%x1f%B%x1e"],
+            strict_utf8=True,
+        )
+    except UnicodeError:
+        failures.append("Git history message inventory was not valid UTF-8")
+        messages = None
+    if messages is None:
+        pass
+    elif messages.returncode != 0:
         failures.append(messages.stderr.strip() or "Git history message inventory failed")
     else:
         for record in messages.stdout.split("\x1e"):

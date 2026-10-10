@@ -1543,6 +1543,38 @@ portable proof of descendant termination. A forced
 or abnormal cancellation is retained for explicit recovery rather than reported as
 a clean timeout. See [distribution lifecycle](../distribution.md) for that contract.
 
+## PR follow-up — 2026-10-10
+
+Review of the integrated 0.32.0 changes at commit
+`1875add631b013be8e4d0309073c4f2ca8673ea2` found two additional history-audit
+issues. These findings supplement the original 42 items above.
+
+| ID | Severity and origin | Observed behavior | Correction and regression boundary |
+| --- | --- | --- | --- |
+| F1 | Medium; integration regression | A public tree or notes ref containing a missing ordinary blob returned a clean history verdict because a short `cat-file --batch-check` record was ignored. | Reconcile every requested ordinary object by count, identity, uniqueness, type and size; reject missing or malformed records and payload-size disagreement. Native missing-blob and valid direct-tree alias controls distinguish corruption from supported refs. Gitlink-only commit IDs are excluded from the blob inventory and retain the existing `external-repository` finding even when the donor commit is absent locally. |
+| F2 | High; baseline defect | Git message recoding through `i18n.logOutputEncoding=ISO-8859-1` replaced a declared Unicode owner marker during UTF-8 decoding and produced a clean history verdict. Valid legacy-encoded commits exposed the same bypass. | Request UTF-8 through Git's native `log --encoding=UTF-8`, decode message inventory strictly and report a controlled failure when decoding is impossible. Native UTF-8 and legacy-encoding controls retain the Unicode marker; ASCII controls still pass, and contributor-attribution exemptions continue to leave owner privacy mandatory. |
+
+The audit module passed 98 tests with two platform skips. Independent focused
+verification passed the missing-blob/direct-tree and both gitlink controls. The
+new donor/superproject fixture requires `git fsck --strict` to succeed, so a
+valid external submodule cannot be mistaken for corrupt publishable content.
+Ruff lint, Ruff format checks and the patch whitespace check passed.
+
+The complete source gate then passed on Windows / CPython 3.11.9 with the
+follow-up changes: 785 base tests in 215.906 seconds with 20 named platform
+skips, Ruff lint and format checks, and 78 explicit locked MCP tests in
+255.763 seconds with six named POSIX skips. Real-engine controls were enabled.
+The gate removed its owned run workspace and recorded both source stages as
+passed. Candidate-byte, other-platform and native desktop-client qualification
+remain separate gates.
+
+An initial source run used a deeper owned temporary directory and failed two
+plugin launcher fixtures before their intended mocked operations. Its plugin
+roots exceeded the documented 165 UTF-16-unit Windows installer bound. Both
+controls passed in a shorter owned directory, followed by the complete passing
+gate above. This was a qualification-path precondition; the launcher guard and
+the test assertions were preserved.
+
 ## Reference criteria
 
 - [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): identifier syntax,

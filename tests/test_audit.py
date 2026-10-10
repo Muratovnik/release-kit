@@ -233,7 +233,9 @@ class ScopeTests(unittest.TestCase):
             (root / "docs/example.md").unlink()
             (root / "docs").rmdir()
             try:
-                (root / "docs").symlink_to(private, target_is_directory=True)
+                (root / "docs").symlink_to(
+                    Path("..") / ".git" / "private-source", target_is_directory=True
+                )
             except OSError:
                 self.skipTest("symlinks unavailable")
 
@@ -551,6 +553,49 @@ class PathTests(unittest.TestCase):
 
         self.assertTrue(any("external-repository" in item for item in staged.failures))
         self.assertTrue(any("external-repository" in item for item in historical), historical)
+
+    def test_historical_gitlink_to_unavailable_donor_commit_is_reported(self) -> None:
+        with _repository({"donor.txt": "donor content\n"}) as donor_name:
+            donor = Path(donor_name)
+            _commit(donor)
+            donor_commit = subprocess.run(
+                ["git", "rev-parse", "HEAD"],
+                cwd=donor,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+
+            with _repository({"kept.md": "clean\n"}) as name:
+                root = Path(name)
+                _commit(root)
+                subprocess.run(
+                    [
+                        "git",
+                        "update-index",
+                        "--add",
+                        "--cacheinfo",
+                        f"160000,{donor_commit},vendor",
+                    ],
+                    cwd=root,
+                    check=True,
+                )
+                _commit(root)
+
+                fsck = subprocess.run(
+                    ["git", "fsck", "--strict"],
+                    cwd=root,
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+                failures = audit.history_failures(root)
+
+        self.assertEqual(0, fsck.returncode, fsck.stderr)
+        self.assertIn(
+            "history vendor: external-repository (Git submodule content is not audited)",
+            failures,
+        )
 
     def test_staged_git_symlink_target_cannot_leave_the_repository(self) -> None:
         with _repository({"kept.md": "clean\n"}) as name:
@@ -1212,10 +1257,10 @@ class HistoryTests(unittest.TestCase):
             _commit(root)
             original_git = audit._git
 
-            def shallow_git(repository, arguments, *, stdin=None):
+            def shallow_git(repository, arguments, *, stdin=None, strict_utf8=False):
                 if arguments == ["rev-parse", "--is-shallow-repository"]:
                     return subprocess.CompletedProcess(arguments, 0, stdout="true\n", stderr="")
-                return original_git(repository, arguments, stdin=stdin)
+                return original_git(repository, arguments, stdin=stdin, strict_utf8=strict_utf8)
 
             with patch.object(audit, "_git", side_effect=shallow_git):
                 failures = audit.history_failures(root)
@@ -1246,6 +1291,177 @@ class HistoryTests(unittest.TestCase):
                 )
 
         self.assertTrue(any("commit-metadata: owner-workflow" in item for item in failures))
+
+    def test_public_tree_with_missing_blob_fails_closed_and_valid_tree_aliases_scan(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            missing = "1" * 40
+            tree = subprocess.run(
+                ["git", "mktree", "--missing"],
+                cwd=root,
+                input=f"100644 blob {missing}\tghost.md\n".encode("ascii"),
+                check=True,
+                capture_output=True,
+            ).stdout.strip()
+            tree = tree.decode("ascii")
+            subprocess.run(["git", "update-ref", "refs/notes/export", tree], cwd=root, check=True)
+
+            failures = audit.history_failures(root)
+
+        self.assertTrue(any("missing" in failure for failure in failures), failures)
+
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            blob = subprocess.run(
+                ["git", "rev-parse", "HEAD:kept.md"],
+                cwd=root,
+                check=True,
+                capture_output=True,
+                text=True,
+            ).stdout.strip()
+            tree = subprocess.run(
+                ["git", "mktree"],
+                cwd=root,
+                input=f"100644 blob {blob}\tMüller.md\n".encode(),
+                check=True,
+                capture_output=True,
+            ).stdout.strip()
+            tree = tree.decode("ascii")
+            subprocess.run(["git", "update-ref", "refs/notes/export", tree], cwd=root, check=True)
+
+            paths = audit._changed_blob_paths(root, ())
+            failures = audit.history_failures(root)
+
+        self.assertEqual({"kept.md", "Müller.md"}, paths[blob])
+        self.assertEqual([], failures)
+
+    def test_history_object_inventory_rejects_unreconciled_batch_rows(self) -> None:
+        for malformed in (
+            "{object_id} missing\n",
+            "malformed response\n",
+            "{object_id} tree 5\n",
+            "{object_id} blob invalid\n",
+            "{object_id} blob 999\n",
+            "{object_id} blob 5\n{object_id} blob 5\n",
+            "",
+        ):
+            with self.subTest(response=malformed), _repository({"kept.md": "clean\n"}) as name:
+                root = Path(name)
+                _commit(root)
+                paths = audit._changed_blob_paths(root, ())
+                object_id = next(iter(paths))
+                response = malformed.format(object_id=object_id)
+                original_git = audit._git
+
+                def git_with_batch_response(
+                    repository,
+                    arguments,
+                    *,
+                    stdin=None,
+                    strict_utf8=False,
+                    response=response,
+                    original_git=original_git,
+                ):
+                    if arguments == [
+                        "cat-file",
+                        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+                    ]:
+                        return subprocess.CompletedProcess(arguments, 0, stdout=response, stderr="")
+                    return original_git(repository, arguments, stdin=stdin, strict_utf8=strict_utf8)
+
+                with patch.object(audit, "_git", side_effect=git_with_batch_response):
+                    failures = audit.history_failures(root)
+
+                self.assertTrue(failures, response)
+
+    def test_history_commit_message_encoding_is_pinned_to_utf8(self) -> None:
+        marker = "MüllerWorkflow"
+        for legacy_commit in (False, True):
+            with (
+                self.subTest(legacy_commit=legacy_commit),
+                _repository({"kept.md": "clean\n"}) as name,
+            ):
+                root = Path(name)
+                _commit(root)
+                subprocess.run(
+                    ["git", "config", "i18n.logOutputEncoding", "ISO-8859-1"],
+                    cwd=root,
+                    check=True,
+                )
+                parent = subprocess.run(
+                    ["git", "rev-parse", "HEAD"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                ).stdout.strip()
+                tree = subprocess.run(
+                    ["git", "rev-parse", "HEAD^{tree}"],
+                    cwd=root,
+                    check=True,
+                    capture_output=True,
+                ).stdout.strip()
+                identity = b"Example Writer <writer@example.invalid> 1700000000 +0000"
+                encoding_header = b"encoding ISO-8859-1\n" if legacy_commit else b""
+                encoding = "iso-8859-1" if legacy_commit else "utf-8"
+                payload = (
+                    b"tree "
+                    + tree
+                    + b"\nparent "
+                    + parent
+                    + b"\nauthor "
+                    + identity
+                    + b"\ncommitter "
+                    + identity
+                    + b"\n"
+                    + encoding_header
+                    + b"\n"
+                    + f"{marker} private workflow\n".encode(encoding)
+                )
+                commit = subprocess.run(
+                    ["git", "hash-object", "-t", "commit", "-w", "--stdin"],
+                    cwd=root,
+                    input=payload,
+                    check=True,
+                    capture_output=True,
+                ).stdout.strip()
+                subprocess.run(["git", "update-ref", "HEAD", commit], cwd=root, check=True)
+
+                failures = audit.history_failures(root, owner_workflows=(marker,))
+
+                self.assertTrue(
+                    any("commit-message: owner-workflow" in failure for failure in failures),
+                    failures,
+                )
+
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root, "ordinary ASCII commit message")
+            failures = audit.history_failures(root, owner_workflows=(marker,))
+
+        self.assertFalse(
+            any("commit-message: owner-workflow" in failure for failure in failures), failures
+        )
+
+    def test_history_message_decode_failure_is_reported_without_raising(self) -> None:
+        with _repository({"kept.md": "clean\n"}) as name:
+            root = Path(name)
+            _commit(root)
+            original_git = audit._git
+
+            def git_with_invalid_utf8(repository, arguments, *, stdin=None, strict_utf8=False):
+                if "--format=%H%x1f%B%x1e" in arguments:
+                    raise UnicodeDecodeError("utf-8", b"\xff", 0, 1, "invalid byte")
+                return original_git(repository, arguments, stdin=stdin, strict_utf8=strict_utf8)
+
+            with patch.object(audit, "_git", side_effect=git_with_invalid_utf8):
+                failures = audit.history_failures(root)
+
+        self.assertTrue(
+            any("Git history message inventory was not valid UTF-8" in item for item in failures),
+            failures,
+        )
 
     def test_history_checks_wrapped_owner_values(self) -> None:
         value = "already holds records, so renaming it would orphan them"
@@ -1456,7 +1672,11 @@ class HistoryTests(unittest.TestCase):
             original_git = audit._git
 
             def git_with_machine_trailer(
-                repository: Path, arguments: list[str] | tuple[str, ...], *, stdin=None
+                repository: Path,
+                arguments: list[str] | tuple[str, ...],
+                *,
+                stdin=None,
+                strict_utf8=False,
             ):
                 if "--format=%H%x1f%B%x1e" in arguments:
                     marker = "Co-" + "Authored-By: " + "Clau" + "de <bot@example.invalid>"
@@ -1466,7 +1686,7 @@ class HistoryTests(unittest.TestCase):
                         stdout=f"{'a' * 40}\x1ffeat: fixture\n\n{marker}\x1e",
                         stderr="",
                     )
-                return original_git(repository, arguments, stdin=stdin)
+                return original_git(repository, arguments, stdin=stdin, strict_utf8=strict_utf8)
 
             with patch.object(audit, "_git", side_effect=git_with_machine_trailer):
                 failures = audit.history_failures(root, forbid_ai_attribution=True)
