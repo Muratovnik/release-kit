@@ -1575,6 +1575,46 @@ controls passed in a shorter owned directory, followed by the complete passing
 gate above. This was a qualification-path precondition; the launcher guard and
 the test assertions were preserved.
 
+A subsequent [hosted source run](https://github.com/Muratovnik/release-kit/actions/runs/38058806553)
+at `3aee4bb447323cecc2eb229ff7b681357de8545f` passed on Windows but failed one
+symlink fixture on both Linux and macOS. Each POSIX base job ran 785 tests with
+four platform skips; their Ruff and MCP stages were not reached. Candidate
+and package jobs were skipped, and no candidate artifact was produced.
+
+The changed fixture linked `<repo>/docs` to `../.git/private-source`, which
+resolves outside the repository rather than to its created private payload.
+The dangling POSIX target invalidated the scenario; the Windows pass had no
+target-health assertion and did not establish fixture equivalence. A healthy
+relative target must prove link identity and reachable marker contents while
+retaining the worktree rejection and clean staged-index assertions.
+
+Focused diagnostics distinguished the public staged subject from the
+lower-level API default: `scan(staged=True, include_candidates=False)` reads
+only the safe indexed file, as the publication runner explicitly requires for
+staged scope. The lower-level `scan(staged=True)` also includes untracked
+candidates. Its replacement-link verdict differed between native Windows
+backslash text and POSIX slash text despite identical Git path/mode inventories;
+this diagnostic does not establish a portable oracle for that mixed scope.
+Fixture repair keeps the original worktree rejection and uses the explicit
+index-only subject for the public staged contract. This is a test setup
+correction, separate from F1/F2.
+
+The frozen method repair passed independent bounded review. Two focused
+controls passed on Windows / CPython 3.11.9 in 0.847 seconds and Ubuntu WSL /
+CPython 3.12.3 / Git 2.52.0 in 1.144 seconds. Injecting the former dangling
+target into the unchanged test failed at its strict target premise on both
+runtimes, with no skip. The WSL receipt covers the mounted checkout's POSIX
+path semantics and does not replace hosted Linux/macOS qualification.
+
+The canonical base gate then passed on the frozen repair on Windows /
+CPython 3.11.9: 785 tests in 237.937 seconds with 20 named platform skips,
+Ruff lint and all 109 format checks. Real-engine controls were enabled. The
+seven retained-file diagnostics came from negative cleanup fixtures; their
+outer fixture directories were subsequently removed and no reported path or
+gate process remained. The product module and locked MCP suite were unchanged
+by this test-only delta. The earlier MCP receipt remains separate; the final
+joint source and candidate matrix must still qualify the updated revision.
+
 ## Reference criteria
 
 - [Semantic Versioning 2.0.0](https://semver.org/spec/v2.0.0.html): identifier syntax,

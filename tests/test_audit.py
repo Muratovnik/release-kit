@@ -232,19 +232,30 @@ class ScopeTests(unittest.TestCase):
             (private / "example.md").write_text("SyntheticOwnerWorkflow\n", encoding="utf-8")
             (root / "docs/example.md").unlink()
             (root / "docs").rmdir()
+            relative_private = Path("..") / root.name / ".git" / "private-source"
+            link = root / "docs"
             try:
-                (root / "docs").symlink_to(
-                    Path("..") / ".git" / "private-source", target_is_directory=True
-                )
+                link.symlink_to(relative_private, target_is_directory=True)
             except OSError:
                 self.skipTest("symlinks unavailable")
 
+            self.assertTrue(link.is_symlink())
+            self.assertEqual(private.resolve(), link.resolve(strict=True))
+            self.assertEqual(
+                "SyntheticOwnerWorkflow\n",
+                (link / "example.md").read_text(encoding="utf-8"),
+            )
             self.assertEqual(("docs",), audit.worktree_paths(root))
             report = audit.scan(root, owner_workflows=("SyntheticOwnerWorkflow",))
             self.assertEqual(["docs: escapes-repository"], report.failures)
-            self.assertTrue(
-                audit.scan(root, staged=True, owner_workflows=("SyntheticOwnerWorkflow",)).ok
+            self.assertFalse(any(finding.kind == rules.OWNER_WORKFLOW for finding in report.new))
+            staged_index_only = audit.scan(
+                root,
+                staged=True,
+                include_candidates=False,
+                owner_workflows=("SyntheticOwnerWorkflow",),
             )
+            self.assertTrue(staged_index_only.ok, staged_index_only.failures)
 
     def test_an_unreadable_publication_candidate_fails_closed(self) -> None:
         with (
