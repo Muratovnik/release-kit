@@ -180,19 +180,21 @@ class GuardTemplateMigrationTests(push_audit.PushRepository):
         self.assertIn("--push", self.hook.read_text(encoding="utf-8"))
 
     def test_protect_check_names_the_exact_command_to_adopt_the_push_guard(self) -> None:
-        self.hook.write_text(protection._hook_v2(repr(self.pins)), encoding="utf-8", newline="\n")
-        out = io.StringIO()
+        for template in (protection._hook_v1, protection._hook_v2):
+            with self.subTest(template=template.__name__):
+                self.hook.write_text(template(repr(self.pins)), encoding="utf-8", newline="\n")
+                out = io.StringIO()
 
-        with redirect_stdout(out), redirect_stderr(io.StringIO()):
-            code = cli.main(["--json", "protect", "check", "--root", str(self.root)])
+                with redirect_stdout(out), redirect_stderr(io.StringIO()):
+                    code = cli.main(["--json", "protect", "check", "--root", str(self.root)])
 
-        envelope = json.loads(out.getvalue())
-        self.assertEqual(0, code, envelope)
-        self.assertEqual("valid", envelope["data"]["guard"])
-        (warning,) = envelope["warnings"]
-        self.assertEqual("guard_template_outdated", warning["code"])
-        self.assertIn("`relkit protect install`", warning["message"])
-        self.assertIn("whole history", warning["message"])
+                envelope = json.loads(out.getvalue())
+                self.assertEqual(0, code, envelope)
+                self.assertEqual("valid", envelope["data"]["guard"])
+                (warning,) = envelope["warnings"]
+                self.assertEqual("guard_template_outdated", warning["code"])
+                self.assertIn("`relkit protect install`", warning["message"])
+                self.assertIn("whole history", warning["message"])
 
     def test_a_current_guard_reports_no_template_warning(self) -> None:
         out = io.StringIO()
