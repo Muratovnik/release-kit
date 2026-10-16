@@ -593,6 +593,8 @@ class EngineCommandTests(unittest.TestCase):
         for outcome in (0, engines.LYCHEE_FINDINGS_EXIT, 1):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
+                # Service storage belongs to a repository; a bare directory has none.
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
                 observed, runtimes, sizes = [], [], []
 
                 def inspect(
@@ -645,6 +647,8 @@ class EngineCommandTests(unittest.TestCase):
         for failure in ("deadline", "unconfirmed"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
+                # Service storage belongs to a repository; a bare directory has none.
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
                 clock, runtimes, timeouts = [100.0], [], []
 
                 def materialize(root, destination, **kwargs):
@@ -691,6 +695,136 @@ class EngineCommandTests(unittest.TestCase):
                 self.assertEqual(
                     failure == "unconfirmed", (workspace / "markdown-inputs.txt").exists()
                 )
+
+    def test_both_engines_read_one_snapshot_built_once(self) -> None:
+        for staged in (False, True):
+            with self.subTest(staged=staged), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                (root / "README.md").write_text("[guide](guide.md)\n", encoding="utf-8")
+                (root / "guide.md").write_text("public guide\n", encoding="utf-8")
+                subprocess.run(["git", "add", "."], cwd=root, check=True)
+                builders = {
+                    "_checkout_index": engines._checkout_index,
+                    "_materialize_worktree": engines._materialize_worktree,
+                }
+                calls: list[str] = []
+                snapshots: list[Path] = []
+
+                def counted(name, *args, builders=builders, calls=calls, **kwargs):
+                    calls.append(name)
+                    return builders[name](*args, **kwargs)
+
+                def inspect(command, *, root, snapshots=snapshots, **kwargs):
+                    if "dir" in command:
+                        snapshots.append(Path(command[command.index("dir") + 1]))
+                    else:
+                        snapshots.append(root)
+                    self.assertTrue((snapshots[-1] / "guide.md").is_file())
+                    return 0
+
+                outer = "_checkout_index" if staged else "_materialize_worktree"
+                with (
+                    patch.object(engines.toolchain, "resolve", return_value=Path("engine")),
+                    patch.object(
+                        engines,
+                        outer,
+                        side_effect=lambda *a, outer=outer, **k: counted(outer, *a, **k),
+                    ),
+                    patch.object(engines, "_run", side_effect=inspect),
+                    engines.shared(root, staged=staged, include_candidates=True) as shared,
+                ):
+                    for scan in (engines.betterleaks, engines.lychee):
+                        options = {"config": ".betterleaks.toml", "history": False}
+                        self.assertEqual(
+                            0,
+                            scan(
+                                root,
+                                staged=staged,
+                                include_candidates=True,
+                                allow_download=False,
+                                shared=shared,
+                                **(options if scan is engines.betterleaks else {}),
+                            ),
+                        )
+                    workspace = shared.workspace.path
+                self.assertEqual([outer], calls, "the snapshot is built once per run")
+                self.assertEqual(2, len(snapshots))
+                self.assertEqual(snapshots[0], snapshots[1])
+                self.assertFalse(workspace.exists(), "the shared workspace is removed")
+
+    def test_engines_that_need_no_files_do_not_require_service_storage(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / "notes.txt").write_text("no markdown here\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            with (
+                patch.object(engines.toolchain, "resolve", return_value=Path("lychee")),
+                patch.object(
+                    engines.storage, "temporary", side_effect=AssertionError("storage opened")
+                ),
+                engines.shared(root, staged=False, include_candidates=True) as shared,
+            ):
+                self.assertEqual(
+                    0,
+                    engines.lychee(
+                        root,
+                        staged=False,
+                        include_candidates=True,
+                        allow_download=False,
+                        shared=shared,
+                    ),
+                )
+
+    def test_worktree_snapshot_is_the_next_add_tree_in_every_state(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            subprocess.run(["git", "init", "-q", str(root)], check=True)
+            (root / ".gitignore").write_text("ignored.txt\n", encoding="utf-8")
+            (root / "modified.txt").write_text("indexed\n", encoding="utf-8")
+            (root / "deleted.txt").write_text("indexed\n", encoding="utf-8")
+            (root / "became-directory").write_text("indexed file\n", encoding="utf-8")
+            (root / "sparse").mkdir()
+            (root / "sparse/kept.txt").write_text("sparse indexed\n", encoding="utf-8")
+            (root / "tool.sh").write_text("#!/bin/sh\n", encoding="utf-8")
+            subprocess.run(["git", "add", "."], cwd=root, check=True)
+            subprocess.run(["git", "update-index", "--chmod=+x", "tool.sh"], cwd=root, check=True)
+            subprocess.run(
+                ["git", "update-index", "--skip-worktree", "sparse/kept.txt"],
+                cwd=root,
+                check=True,
+            )
+            (root / "sparse/kept.txt").unlink()
+            (root / "modified.txt").write_text("worktree bytes\n", encoding="utf-8")
+            (root / "deleted.txt").unlink()
+            (root / "became-directory").unlink()
+            (root / "became-directory").mkdir()
+            (root / "became-directory/new.txt").write_text("untracked\n", encoding="utf-8")
+            (root / "candidate.txt").write_text("untracked\n", encoding="utf-8")
+            (root / "ignored.txt").write_text("private\n", encoding="utf-8")
+            snapshot = root / ".git/snapshot"
+            snapshot.mkdir()
+
+            built = engines._materialize_worktree(root, snapshot, include_candidates=True)
+
+            observed = {
+                path.relative_to(snapshot).as_posix(): path.read_text(encoding="utf-8")
+                for path in snapshot.rglob("*")
+                if path.is_file()
+            }
+            self.assertEqual(
+                {
+                    ".gitignore": "ignored.txt\n",
+                    "became-directory/new.txt": "untracked\n",
+                    "candidate.txt": "untracked\n",
+                    "modified.txt": "worktree bytes\n",
+                    "sparse/kept.txt": "sparse indexed\n",
+                    "tool.sh": "#!/bin/sh\n",
+                },
+                observed,
+            )
+            self.assertEqual(set(observed), set(built))
 
     def test_index_snapshot_does_not_follow_a_tracked_symlink(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

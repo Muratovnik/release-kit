@@ -8,6 +8,7 @@ import subprocess
 import tempfile
 import unittest
 import zipfile
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -283,6 +284,62 @@ class ScopeTests(unittest.TestCase):
             report = audit.scan(Path(name), staged=True, include_candidates=False)
 
         self.assertEqual(["gone.md: home-directory"], report.failures)
+
+    def test_a_staged_scan_reads_indexed_bytes_in_bounded_batches(self) -> None:
+        # One `git show` per tracked file made a staged audit of a thousand-file
+        # repository take most of a minute.
+        files = {f"docs/{index:03}.md": f"{LEAK}# {index}\n" for index in range(300)}
+        with _repository(files) as name:
+            root = Path(name)
+            for relative in files:
+                (root / relative).write_text("clean worktree copy\n", encoding="utf-8")
+            shown: list[Sequence[str]] = []
+            batches: list[int] = []
+            read_bytes, read_blobs = audit._git_bytes, audit._batch_blobs
+
+            def git_bytes(root, arguments):
+                if arguments[0] == "show":
+                    shown.append(arguments)
+                return read_bytes(root, arguments)
+
+            def batch_blobs(root, object_ids):
+                batches.append(len(object_ids))
+                return read_blobs(root, object_ids)
+
+            with (
+                patch.object(audit, "_git_bytes", side_effect=git_bytes),
+                patch.object(audit, "_batch_blobs", side_effect=batch_blobs),
+            ):
+                report = audit.scan(root, staged=True, include_candidates=False)
+
+        self.assertEqual(sorted(f"{path}: home-directory" for path in files), report.failures)
+        self.assertEqual([], shown)
+        self.assertEqual(300, sum(batches))
+        self.assertLessEqual(len(batches), 3)
+
+    def test_a_staged_path_without_a_merged_entry_is_unreadable(self) -> None:
+        with _repository({"conflict.md": "clean\n"}) as name:
+            root = Path(name)
+            blob = subprocess.run(
+                ["git", "hash-object", "-w", "conflict.md"],
+                cwd=root,
+                capture_output=True,
+                text=True,
+                check=True,
+            ).stdout.strip()
+            entries = f"0 {'0' * 40}\tconflict.md\n" + "".join(
+                f"100644 {blob} {stage}\tconflict.md\n" for stage in (1, 2, 3)
+            )
+            subprocess.run(
+                ["git", "update-index", "--index-info"],
+                cwd=root,
+                input=entries.encode(),
+                check=True,
+            )
+            report = audit.scan(root, staged=True, include_candidates=False)
+
+        self.assertFalse(report.ok)
+        self.assertEqual({"conflict.md"}, set(report.unreadable))
 
     def test_sparse_checkout_entries_are_read_from_the_index(self) -> None:
         with _repository({"sparse.toml": LEAK}) as name:

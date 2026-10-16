@@ -24,6 +24,7 @@ import subprocess
 import zipfile
 from collections import Counter
 from collections.abc import Collection, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -88,6 +89,8 @@ UNINSPECTED_ARCHIVE_SIGNATURES = (
     b"MSCF",  # Microsoft Cabinet
 )
 ASCII_TEXT_RUN = re.compile(rb"[\t\n\r\x20-\x7e]{4,}")
+# Every C0 control except tab, line feed and carriage return.
+SUSPICIOUS_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 MAX_ARCHIVE_ENTRIES = 10_000
 MAX_ARCHIVE_ENTRY_SIZE = 16 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_SIZE = 256 * 1024 * 1024
@@ -141,14 +144,12 @@ def _decode_text(payload: bytes) -> str:
             utf8 = payload.decode("utf-8")
         except UnicodeDecodeError:
             utf8 = ""
+        suspicious_controls = SUSPICIOUS_CONTROL.search(utf8) is not None
+        if utf8 and not suspicious_controls:
+            return utf8
         ascii_text = "\n".join(
             match.group().decode("ascii") for match in ASCII_TEXT_RUN.finditer(payload)
         )
-        suspicious_controls = any(
-            ord(character) < 32 and character not in "\t\n\r" for character in utf8
-        )
-        if utf8 and not suspicious_controls:
-            return utf8
         if len(payload) < 4 or len(payload) % 2:
             return utf8 or ascii_text
         lanes = (payload[0::2], payload[1::2])
@@ -232,6 +233,7 @@ def _batch_blobs(root: Path, object_ids: Sequence[str]) -> list[tuple[str, bytes
 
 
 HISTORY_BATCH_OBJECTS = 128
+HISTORY_GREP_WORKERS = 4
 HISTORY_BATCH_BYTES = 64 * 1024 * 1024
 
 
@@ -465,9 +467,11 @@ def _blob_history_failures(
         if any(len(payload) != expected_sizes[object_id] for object_id, payload in blobs):
             return ["Git history object size inventory disagrees with blob data"]
         for object_id, payload in blobs:
+            # A blob's text does not depend on the path it appears under.
+            text = _decode_text(payload)
+            wrapped: dict[str, bool] = {}
             for relative in sorted(paths[object_id]):
                 details: dict[str, str] = {}
-                text = _decode_text(payload)
                 excluded = any(fnmatch(relative, pattern) for pattern in exclude)
                 if (
                     not excluded
@@ -513,9 +517,14 @@ def _blob_history_failures(
                             }
                         )
                 else:
-                    if text and rules.contains_wrapped_declared_name(text, wrapped_names):
+                    if text and not wrapped:
+                        wrapped["names"] = rules.contains_wrapped_declared_name(text, wrapped_names)
+                        wrapped["workflows"] = rules.contains_wrapped_declared_name(
+                            text, wrapped_workflows
+                        )
+                    if text and wrapped["names"]:
                         details[rules.DECLARED_NAME] = "wrapped owner value"
-                    if text and rules.contains_wrapped_declared_name(text, wrapped_workflows):
+                    if text and wrapped["workflows"]:
                         details[rules.OWNER_WORKFLOW] = "wrapped owner workflow"
                 if text and not excluded:
                     semantic = rules.text_findings(
@@ -1005,12 +1014,76 @@ def _external_payload_details(relative: str, payload: bytes) -> dict[str, str]:
     return found
 
 
-def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> bytes:
-    if staged and relative in tracked:
-        result = _git_bytes(root, ["show", f":{relative}"])
+class _IndexPayloads:
+    """Indexed bytes of the paths a scan reads from the index, one bounded batch at a time.
+
+    One `git show :path` per file was most of a staged audit: a process start per
+    tracked file. The same raw blobs come from `git cat-file --batch`, read in the
+    order the scan asks for them and in pieces bounded by `_history_batches`, so
+    memory stays bounded however large the index is. A path without a stage-0 entry
+    is unreadable, as `git show :path` reported it.
+    """
+
+    def __init__(self, root: Path, wanted: Sequence[str]):
+        self.root = root
+        result = _git_bytes(root, ["ls-files", "--stage", "-z"])
         if result.returncode != 0:
-            raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
-        return result.stdout
+            raise RuntimeError(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "git ls-files index inventory failed"
+            )
+        entries: dict[str, str] = {}
+        for record in result.stdout.split(b"\0"):
+            metadata, separator, raw_path = record.partition(b"\t")
+            fields = metadata.decode("ascii", errors="replace").split()
+            if separator and len(fields) == 3 and fields[2] == "0" and fields[0] != "160000":
+                entries[raw_path.decode("utf-8", errors="surrogateescape")] = fields[1]
+        self.objects = {path: entries[path] for path in wanted if path in entries}
+        ordered = list(dict.fromkeys(self.objects.values()))
+        sizes: dict[str, int] = {}
+        if ordered:
+            checks = _git(
+                root,
+                ["cat-file", "--batch-check=%(objectname) %(objectsize)"],
+                stdin="\n".join(ordered) + "\n",
+            )
+            for line in checks.stdout.splitlines():
+                fields = line.split()
+                if len(fields) == 2 and fields[1].isdecimal():
+                    sizes[fields[0]] = int(fields[1])
+        self.batch_of: dict[str, int] = {}
+        self.batches: list[list[str]] = []
+        for batch in _history_batches([(oid, sizes.get(oid, 0)) for oid in ordered]):
+            for object_id in batch:
+                self.batch_of[object_id] = len(self.batches)
+            self.batches.append(batch)
+        self.blobs: dict[str, bytes] = {}
+
+    def read(self, relative: str) -> bytes:
+        object_id = self.objects.get(relative)
+        if object_id is None:
+            raise OSError(f"{relative} has no merged index entry")
+        if object_id not in self.blobs:
+            # Only the current batch is held; the scan asks in index order.
+            try:
+                self.blobs = dict(_batch_blobs(self.root, self.batches[self.batch_of[object_id]]))
+            except (RuntimeError, ValueError) as error:
+                raise OSError(str(error)) from error
+        return self.blobs[object_id]
+
+
+def _payload(
+    root: Path,
+    relative: str,
+    *,
+    staged: bool,
+    tracked: set[str],
+    index: _IndexPayloads | None,
+) -> bytes:
+    if staged and relative in tracked:
+        if index is None:
+            raise OSError(f"{relative} was not inventoried from the index")
+        return index.read(relative)
     path = root / relative
     if path.is_symlink():
         return os.readlink(path).encode("utf-8", errors="surrogateescape")
@@ -1352,6 +1425,12 @@ def scan(
     tracked = set(scannable_paths(root, include_candidates=False))
     tracked_modes = _tracked_modes(root)
     skip_worktree = _skip_worktree_paths(root)
+    from_index_paths = [
+        relative
+        for relative in candidates
+        if (staged or relative in skip_worktree) and relative in tracked
+    ]
+    index = _IndexPayloads(root, from_index_paths) if from_index_paths else None
     for relative in candidates:
         from_index = staged or relative in skip_worktree
         unsuppressible = {rules.PRIVATE_PATH} if rules.is_owner_policy_path(relative) else set()
@@ -1376,7 +1455,9 @@ def scan(
                 details[EXTERNAL_REPOSITORY] = "Git submodule content is not audited"
             else:
                 try:
-                    payload = _payload(root, relative, staged=from_index, tracked=tracked)
+                    payload = _payload(
+                        root, relative, staged=from_index, tracked=tracked, index=index
+                    )
                     details.update(
                         _owner_payload_details(
                             relative,
@@ -1423,7 +1504,7 @@ def scan(
                 for kind in sorted(found):
                     record(Finding(relative, kind, details.get(kind, "")))
                 continue
-            payload = _payload(root, relative, staged=from_index, tracked=tracked)
+            payload = _payload(root, relative, staged=from_index, tracked=tracked, index=index)
             is_symlink = (
                 tracked_modes.get(relative) == "120000"
                 if from_index
@@ -1869,9 +1950,19 @@ def history_failures(
     patterns.extend(re.escape(name) for name in provider_surfaces)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
-    for offset in range(0, len(commits), 24):
-        batch = commits[offset : offset + 24]
-        result = _git(root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"])
+    # Each batch is an independent Git process searching whole trees; running a few
+    # at once keeps the order of the results, which are still read batch by batch.
+    batches = [commits[offset : offset + 24] for offset in range(0, len(commits), 24)]
+    with ThreadPoolExecutor(max_workers=HISTORY_GREP_WORKERS) as pool:
+        searches = list(
+            pool.map(
+                lambda batch: _git(
+                    root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"]
+                ),
+                batches,
+            )
+        )
+    for result in searches:
         if result.returncode not in {0, 1}:
             failures.append(result.stderr.strip() or "Git history content scan failed")
             break

@@ -314,7 +314,7 @@ YAML 转 JSON 原地迁移必须完整保留整份 Dotbot 文档，而不只是�
 [结构化 CLI 结果](../cli-json.md)（英文），其退出码与状态语义属于公开接口的一部分。配置或
 执行错误并不构成「安全」的证据。
 
-审计的每个阶段（`policy-rules`、`history`、`overlay`、`provision`、`betterleaks`、`lychee`）
+审计的每个阶段（`policy-rules`、`history`、`overlay`、`provision`、`snapshot`、`betterleaks`、`lychee`）
 都会向 stderr 写入带时间戳的 `start` 与 `done (X.Xs)` 行，阶段运行期间至少每 30 秒输出一次
 心跳，便于事后把耗时归到具体阶段。每条命令还会以
 `relkit <command>: <status> (exit N, X.Xs)` 结束：它是 stdout 的最后一行；使用 `--json` 时

@@ -61,6 +61,103 @@ class StorageTests(unittest.TestCase):
         self.assertFalse(workspace.cleanup())
         self.assertEqual("same bytes", path.read_text())
 
+    def _written_tree(self, workspace):
+        tree = workspace.path / "source"
+        (tree / "nested").mkdir(parents=True)
+        (tree / "top.txt").write_text("written by this run")
+        (tree / "nested/inner.txt").write_text("also written by this run")
+        workspace.remember_written(tree)
+        return tree
+
+    def test_a_written_tree_is_removed_without_reading_its_files_back(self):
+        workspace = storage.Workspace(self.root)
+        self._written_tree(workspace)
+        with (
+            patch.object(storage, "digest", side_effect=AssertionError("file read back")),
+            patch.object(Path, "open", side_effect=AssertionError("file opened")),
+        ):
+            self.assertTrue(workspace.cleanup())
+        self.assertFalse(workspace.path.exists())
+
+    def test_a_written_tree_keeps_rewritten_added_and_replaced_files(self):
+        for change in ("rewritten", "added", "replaced", "hard-linked"):
+            with self.subTest(change=change):
+                workspace = storage.Workspace(self.root)
+                tree = self._written_tree(workspace)
+                inner = tree / "nested/inner.txt"
+                self.assertFalse(os.access(inner, os.W_OK), "a recorded file is read-only")
+                if change == "rewritten":
+                    # Same length, written within the same clock tick as the original:
+                    # neither size nor modification time can tell these apart.
+                    inner.chmod(stat.S_IREAD | stat.S_IWRITE)
+                    inner.write_text("a child's different data")
+                elif change == "added":
+                    (tree / "nested/child.log").write_text("a child's diagnostic")
+                elif change == "replaced":
+                    replacement = tree / "replacement"
+                    replacement.write_text("also written by this run")
+                    inner.chmod(stat.S_IREAD | stat.S_IWRITE)
+                    replacement.replace(inner)
+                    inner.chmod(stat.S_IREAD)
+                else:
+                    os.link(inner, workspace.path / "alias.txt")
+                before = inner.read_text()
+                try:
+                    clean = workspace.cleanup()
+                except storage.StorageError:
+                    clean = False
+                self.assertFalse(clean)
+                self.assertFalse((tree / "top.txt").exists(), "unchanged files are still owned")
+                if change == "added":
+                    self.assertEqual(
+                        "a child's diagnostic", (tree / "nested/child.log").read_text()
+                    )
+                else:
+                    self.assertEqual(before, inner.read_text())
+
+    def test_a_written_tree_link_planted_later_is_never_followed(self):
+        other = self.root.parent / "outside"
+        other.mkdir()
+        marker = other / "user.txt"
+        marker.write_text("preserved")
+        workspace = storage.Workspace(self.root)
+        tree = self._written_tree(workspace)
+        link = tree / "nested/inner.txt"
+        link.chmod(stat.S_IREAD | stat.S_IWRITE)
+        link.unlink()
+        try:
+            link.symlink_to(marker)
+        except OSError:
+            self.skipTest("symlinks unavailable")
+        try:
+            clean = workspace.cleanup()
+        except storage.StorageError:
+            clean = False
+        self.assertFalse(clean)
+        self.assertEqual("preserved", marker.read_text())
+
+    def test_a_written_tree_refuses_to_adopt_a_link(self):
+        workspace = storage.Workspace(self.root)
+        tree = workspace.path / "source"
+        tree.mkdir()
+        other = self.root.parent / "elsewhere"
+        other.mkdir()
+        try:
+            (tree / "escape").symlink_to(other, target_is_directory=True)
+        except OSError:
+            if os.name != "nt":
+                self.skipTest("symlinks unavailable")
+            result = subprocess.run(
+                ["cmd", "/c", "mklink", "/J", str(tree / "escape"), str(other)],
+                capture_output=True,
+                check=False,
+            )
+            if result.returncode:
+                self.skipTest("junctions unavailable")
+        with self.assertRaises(storage.StorageError):
+            workspace.remember_written(tree)
+        self.assertTrue(other.is_dir())
+
     def test_a_briefly_refused_receipt_rename_is_retried(self):
         # Observed on this repository's own release: the rename raised WinError 5
         # after publication had already happened, so the receipt was never written.

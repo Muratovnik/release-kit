@@ -371,7 +371,7 @@ and validation are separate because they require a requested version; see
 public interface. A configuration or execution error is not evidence of safety.
 
 Each stage of an audit (`policy-rules`, `history`, `overlay`, `provision`,
-`betterleaks`, `lychee`) writes timestamped `start` and `done (X.Xs)` lines to stderr,
+`snapshot`, `betterleaks`, `lychee`) writes timestamped `start` and `done (X.Xs)` lines to stderr,
 with a heartbeat at least every 30 seconds while it runs, so a slow audit can be
 attributed to a stage afterwards. Every command also ends with
 `relkit <command>: <status> (exit N, X.Xs)`: the last line of stdout, or of stderr

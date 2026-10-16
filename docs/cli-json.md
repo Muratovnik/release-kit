@@ -66,8 +66,9 @@ Long stages write timestamped lines to stderr, never to the object:
 
 The time is local with its UTC offset, to the second; the outcome is `done` or
 `failed`; a heartbeat appears at least every 30 seconds while a stage runs. `audit`
-reports `policy-rules`, `history`, `overlay`, `provision`, `betterleaks` and `lychee`
-as they run. When the release coordinator audits, the same lines land in its run log.
+reports `policy-rules`, `history`, `overlay`, `provision`, `snapshot`, `betterleaks`
+and `lychee` as they run; the policy stages run beside the engine stages, so their
+lines interleave. When the release coordinator audits, the same lines land in its run log.
 Names and wording are not stable identifiers.
 
 | Field | Meaning |

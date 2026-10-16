@@ -61,6 +61,7 @@ class AuditStageTests(Repository):
             {
                 "policy-rules": "done",
                 "provision": "done",
+                "snapshot": "done",
                 "betterleaks": "failed",
                 "lychee": "done",
             },
