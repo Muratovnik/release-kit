@@ -180,14 +180,56 @@ def _confirm(github, value, release, run_id, directory, ci):
     return record
 
 
+def retained(directory, *, limit=8):
+    """Files a cleaned candidate workspace kept, relative to it, without following links.
+
+    The workspace removes only what it inventoried and found unchanged, so what is left
+    is content this tool does not own: a project command's output, or a file that changed.
+    Naming it is how an operator decides what to do with the directory. Never raises.
+    """
+    if not directory:
+        return []
+    base = os.fspath(directory)
+    names = []
+    for folder, folders, files in os.walk(base, followlinks=False):
+        names += [
+            os.path.relpath(os.path.join(folder, name), base).replace(os.sep, "/")
+            for name in (
+                *files,
+                *(item for item in folders if os.path.islink(os.path.join(folder, item))),
+            )
+        ]
+    names.sort()
+    if len(names) > limit:
+        names = [*names[:limit], f"... and {len(names) - limit} more"]
+    return names
+
+
+def report_retained(directory):
+    """Print what a failed preparation's workspace kept and return it for the receipt."""
+    kept = retained(directory)
+    if kept:
+        print(
+            f"relkit release: kept in {directory}: {', '.join(kept)}",
+            file=sys.stderr,
+        )
+    return kept
+
+
 def receipt_path(root, tag):
     return storage.service_root(root) / "candidates" / tag / "ready.json"
+
+
+class Hold(contextlib.ExitStack):
+    """Keeps a candidate workspace alive past `prepare` until the owning run closes it."""
+
+    path = None
 
 
 def prepare(runner, github, value, run_id, no_download, result, hold=None):
     """Prepare the candidate from a completed CI run and record the attempt.
 
-    With `hold`, an `ExitStack` owned by the caller, the candidate workspace outlives
+    With `hold`, a `Hold` owned by the caller, the candidate workspace outlives
     this call and the verified assets directory is returned. That is how one invocation
     prepares and publishes: the bytes downloaded and checked here are the bytes the
     publication step revalidates and verifies against, so nothing is downloaded twice.
@@ -223,6 +265,8 @@ def prepare(runner, github, value, run_id, no_download, result, hold=None):
                 storage.temporary(runner.root, "candidate-")
             )
             state["temporary"] = str(workspace.path)
+            if hold is not None:
+                hold.path = workspace.path
             runner.temporary = workspace.path / "runtime"
             runner.temporary.mkdir()
             temporary = workspace.path / "project-temp"
@@ -296,6 +340,8 @@ def prepare(runner, github, value, run_id, no_download, result, hold=None):
         )
         if unconfirmed:
             state["process_cleanup"] = "unconfirmed"
+        if hold is None and (kept := report_retained(state.get("temporary"))):
+            state["retained"] = kept
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(

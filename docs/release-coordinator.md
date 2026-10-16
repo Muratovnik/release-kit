@@ -500,6 +500,15 @@ anywhere else are still never claimed retroactively. Project commands should
 clean their own outputs. Logs may contain private command output and must be
 reviewed before sharing.
 
+A failed preparation (its `tmp/candidate-*` workspace) removes what it inventoried and
+found unchanged: the downloaded candidate, the source snapshot, the tool's own `gh` and
+Git scratch and the empty scratch directory. It keeps the rest, which is output a project
+command left in `{temp}` or a file that changed, and names those files
+(`kept in DIR: project-temp/evidence.txt`); the attempt's receipt records them as
+`retained`. It never follows a link, and after an unconfirmed termination it removes
+nothing. A workspace an earlier release-kit version left behind is not claimed
+retroactively.
+
 Later runs preserve retained workspaces regardless of age. A timestamp cannot
 establish ownership or whether recovery data is still needed. Inspect the reported
 directory and reconcile its owned processes before explicitly removing reviewed

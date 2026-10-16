@@ -29,6 +29,7 @@ from .. import (
     storage,
 )
 from ..result import Result
+from . import candidate as candidates
 from . import changelog, failure, lockfile, settings, stagelog, versions
 from .backend import (
     CommandError,
@@ -1751,7 +1752,7 @@ def run(
     cleanup_unconfirmed = False
     workspace = None
     # Holds the candidate workspace of a same-invocation preparation until this run ends.
-    hold = contextlib.ExitStack()
+    hold = candidates.Hold()
     held = None
     try:
         root = storage.checked(root)
@@ -2100,6 +2101,8 @@ def run(
         # Reporting the original error matters more than a cleanup that failed too.
         with contextlib.suppress(Exception):
             hold.__exit__(type(error), error, error.__traceback__)
+            if hold.path is not None:
+                candidates.report_retained(hold.path)
         result.error(
             "release_cleanup_unconfirmed"
             if cleanup_unconfirmed

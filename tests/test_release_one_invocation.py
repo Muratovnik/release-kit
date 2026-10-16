@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from test_release_candidate import CandidateFixture
+from test_release_candidate_cleanup import change_check
 from test_release_stages import stage_events
 
 from releasekit.release import candidate, coordinator
@@ -203,3 +204,40 @@ class OneInvocationCandidateTests(CandidateFixture):
         self.assertEqual(0, code, output)
         self.assertIn("relkit release prepare v1.0.0 --ci-run ID, then plan again", output)
         self.assertIn("run v1.0.0 --publish --prepare --ci-run ID --plan-hash", output)
+
+    def test_a_failure_after_the_tag_cleans_the_held_candidate_workspace(self):
+        self.github.ci_result = "failure"
+        code, output = self.one_invocation()
+        self.assertEqual(1, code, output)
+        self.assertTrue(self.runner.git("tag", "--list"))
+        self.assertEqual([], list(self.root.glob(".git/relkit/tmp/candidate-*")), output)
+
+    def test_a_preparation_that_fails_cleans_what_it_owns_and_keeps_the_rest(self):
+        change_check(
+            self,
+            "import os\n"
+            "from pathlib import Path\n"
+            "Path(os.environ['TEMP'], 'evidence.txt').write_text('kept')\n"
+            "raise SystemExit(1)\n",
+        )
+        code, output = self.one_invocation()
+        self.assertNotEqual(0, code)
+        (kept,) = self.root.glob(".git/relkit/tmp/candidate-*")
+        self.assertEqual("kept", (kept / "project-temp" / "evidence.txt").read_text())
+        self.assertIn("project-temp/evidence.txt", output)
+        self.assertFalse((kept / "runtime").exists())
+        self.assertFalse(coordinator._state_path(self.root, "v1.0.0").exists())
+
+    def test_an_unconfirmed_termination_in_a_held_preparation_retains_everything(self):
+        from releasekit import processes
+
+        def stuck(runner, value, workspace, no_download):
+            (workspace.path / "project-temp" / "child-output.txt").write_text("alive?")
+            raise processes.CleanupError("probe")
+
+        with patch.object(coordinator, "_local_checks", stuck):
+            code, output = self.one_invocation()
+        self.assertEqual(2, code, output)
+        self.assertTrue((self.root / ".git/relkit/release.lock").is_file())
+        (kept,) = self.root.glob(".git/relkit/tmp/candidate-*")
+        self.assertTrue((kept / "project-temp" / "child-output.txt").is_file())

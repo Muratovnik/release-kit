@@ -180,6 +180,8 @@ def prepare(runner, store, value, no_download, result):
     except BaseException as error:
         unconfirmed = isinstance(error, processes.CleanupError)
         state.update(status="cleanup-unconfirmed" if unconfirmed else "failed", error=str(error))
+        if kept := candidate.report_retained(state.get("temporary")):
+            state["retained"] = kept
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(
