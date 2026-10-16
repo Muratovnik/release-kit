@@ -505,6 +505,22 @@ class OneInvocationReleaseTests(LocalFixture):
         self.assertFalse((self.root / ".git/relkit/candidates").exists())
         self.assertEqual("", self.runner.git("tag", "--list"))
 
+    def test_a_local_candidate_needs_no_ci_run_and_nothing_is_created_for_one(self):
+        code, output = self.invoke(prepare_here=True, ci_run=35)
+        self.assertEqual(2, code, output)
+        self.assertIn("local preparation needs no --ci-run", output)
+        self.assertFalse((self.root / ".git/relkit/candidates").exists())
+        self.assertFalse((self.root / ".git/relkit/releases").exists())
+
+    def test_the_one_invocation_logs_the_preparation_stages_in_run_log(self):
+        with patch.object(coordinator, "_audit"):
+            code, output = self.invoke(prepare_here=True)
+        self.assertEqual(0, code, output)
+        log = coordinator._state_path(self.root, "v1.0.0").parent / "run.log"
+        text = log.read_text(encoding="utf-8")
+        for name in ("local-checks", "build", "candidate-smoke", "publish", "application-smoke"):
+            self.assertIn(f"stage {name}: done (", text)
+
     def test_resume_is_a_new_invocation_and_reruns_the_gate_before_the_tag(self):
         with (
             patch.object(coordinator, "_audit"),
