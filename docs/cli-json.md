@@ -26,6 +26,50 @@ reconstruct semantic fields by parsing those diagnostics. Termination, an absent
 interpreter or a broken pipe may prevent the final response: missing/truncated
 JSON is an unknown result, never success.
 
+After 0.32.0 this holds for every command, whatever writes. While a command runs,
+the process's standard output descriptor itself points at stderr, so output from a
+child process or a native library cannot join the object; the descriptor is restored
+before the object is printed. `--help` is the one exception: it prints usage, not a
+result.
+
+### Summary line and stage lines
+
+After 0.32.0 every command ends with one line on its own, additive to everything
+above:
+
+```text
+relkit <command>: <status> (exit N, X.Xs)
+```
+
+`<command>` is the subcommand path (`audit`, `release run`, `protect install`,
+`version`; `usage` when the arguments name no command). `<status>` is a closed set:
+`pass` (exit `0`), `fail` (`1`), `refused` (`2`), `pending` (`3`) and `error` for bad
+usage or an unexpected exception, whose exit code is the one actually returned (`2`
+under `--json`, `1` otherwise). `N` is the exit code the process returns and `X.X`
+its wall seconds.
+
+Without `--json` it is the **last line of stdout**, written after stderr is flushed,
+so `relkit audit | tail -n 1` keeps both the verdict and the exit code. With `--json`
+it goes to **stderr** and stdout stays exactly the object. `notes` without `--output`
+prints the entry itself to stdout and is often redirected into a file, so its line
+goes to stderr in every mode; `notes --output FILE` reports on stdout like the others.
+Parse the object, not this line, for semantics: it repeats the exit code and nothing
+more.
+
+Long stages write timestamped lines to stderr, never to the object:
+
+```text
+[2026-10-16T12:34:56+03:00] stage betterleaks: start
+[2026-10-16T12:35:26+03:00] stage betterleaks: running (30s)
+[2026-10-16T12:35:41+03:00] stage betterleaks: done (45.2s)
+```
+
+The time is local with its UTC offset, to the second; the outcome is `done` or
+`failed`; a heartbeat appears at least every 30 seconds while a stage runs. `audit`
+reports `policy-rules`, `history`, `overlay`, `provision`, `betterleaks` and `lychee`
+as they run. When the release coordinator audits, the same lines land in its run log.
+Names and wording are not stable identifiers.
+
 | Field | Meaning |
 | --- | --- |
 | `schema_version` | Integer `1`, independent of package and receipt versions |
@@ -119,6 +163,14 @@ Since 0.21.0, `settings.publisher` distinguishes `directory`, `github` and
 `github-actions`. Local prepare records `candidate.kind = local`, attempt and
 file digests. Directory plans have no remote pushes or workflow ID. Missing
 publisher fields in older receipts retain their original Actions semantics.
+
+A failed project command (a configured check, build or smoke) is reported in the
+`release_error` message, which leads with the command as written in `relkit.toml`,
+its exit code and up to ten lines of its output that name the failure (lines starting
+with `FAIL`, `FAILED` or `ERROR` first, then other lines with common failure words,
+else the last lines), and only then `full output:` with the run log path. A failed
+release audit lists its first findings the same way. Selection is generic; it never
+parses a particular tool.
 
 `release run/resume` returns `data.release` once a run is recorded. It includes
 `observation: "current-run"`, receipt/log paths, tag, SHA, plan hash, recorded
