@@ -24,6 +24,7 @@ import subprocess
 import zipfile
 from collections import Counter
 from collections.abc import Collection, Iterator, Mapping, Sequence
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 from pathlib import Path
@@ -232,6 +233,7 @@ def _batch_blobs(root: Path, object_ids: Sequence[str]) -> list[tuple[str, bytes
 
 
 HISTORY_BATCH_OBJECTS = 128
+HISTORY_GREP_WORKERS = 4
 HISTORY_BATCH_BYTES = 64 * 1024 * 1024
 
 
@@ -457,9 +459,11 @@ def _blob_history_failures(
         if any(len(payload) != expected_sizes[object_id] for object_id, payload in blobs):
             return ["Git history object size inventory disagrees with blob data"]
         for object_id, payload in blobs:
+            # A blob's text does not depend on the path it appears under.
+            text = _decode_text(payload)
+            wrapped: dict[str, bool] = {}
             for relative in sorted(paths[object_id]):
                 details: dict[str, str] = {}
-                text = _decode_text(payload)
                 excluded = any(fnmatch(relative, pattern) for pattern in exclude)
                 if (
                     not excluded
@@ -505,9 +509,14 @@ def _blob_history_failures(
                             }
                         )
                 else:
-                    if text and rules.contains_wrapped_declared_name(text, wrapped_names):
+                    if text and not wrapped:
+                        wrapped["names"] = rules.contains_wrapped_declared_name(text, wrapped_names)
+                        wrapped["workflows"] = rules.contains_wrapped_declared_name(
+                            text, wrapped_workflows
+                        )
+                    if text and wrapped["names"]:
                         details[rules.DECLARED_NAME] = "wrapped owner value"
-                    if text and rules.contains_wrapped_declared_name(text, wrapped_workflows):
+                    if text and wrapped["workflows"]:
                         details[rules.OWNER_WORKFLOW] = "wrapped owner workflow"
                 if text and not excluded:
                     semantic = rules.text_findings(
@@ -1765,9 +1774,19 @@ def history_failures(
     patterns.extend(re.escape(name) for name in provider_surfaces)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
-    for offset in range(0, len(commits), 24):
-        batch = commits[offset : offset + 24]
-        result = _git(root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"])
+    # Each batch is an independent Git process searching whole trees; running a few
+    # at once keeps the order of the results, which are still read batch by batch.
+    batches = [commits[offset : offset + 24] for offset in range(0, len(commits), 24)]
+    with ThreadPoolExecutor(max_workers=HISTORY_GREP_WORKERS) as pool:
+        searches = list(
+            pool.map(
+                lambda batch: _git(
+                    root, ["grep", "-I", "-i", "-n", "-E", expression, *batch, "--"]
+                ),
+                batches,
+            )
+        )
+    for result in searches:
         if result.returncode not in {0, 1}:
             failures.append(result.stderr.strip() or "Git history content scan failed")
             break
