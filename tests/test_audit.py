@@ -27,7 +27,9 @@ def _repository(files: dict[str, str]) -> tempfile.TemporaryDirectory[str]:
         target = root / relative
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(text, encoding="utf-8")
-    for arguments in (["init", "-q"], ["add", "-A"]):
+    # The repository's own hooks only: a host's global hooks may refuse the very commits
+    # these fixtures make on purpose, such as one carrying an AI co-author trailer.
+    for arguments in (["init", "-q"], ["config", "core.hooksPath", ".git/hooks"], ["add", "-A"]):
         subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)
     return handle
 
