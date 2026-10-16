@@ -829,6 +829,21 @@ class UpdateTests(UpdateFixture):
         self.assertFalse(list((self.root / ".git").glob("relkit-update-*")))
         self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
 
+    def test_end_of_input_at_the_prompt_refuses_like_a_missing_terminal(self) -> None:
+        # Windows reports NUL as a terminal, so redirected input reaches the prompt.
+        self.guard()
+        with (
+            patch.object(sys.stdin, "isatty", return_value=True),
+            patch("builtins.input", side_effect=EOFError),
+        ):
+            code, output = self.invoke(yes=False)
+        self.assertEqual(2, code)
+        self.assertIn("`relkit update` in a terminal", output)
+        self.assertNotIn("Traceback", output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertFalse(list((self.root / ".git").glob("relkit-update-*")))
+        self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
+
     def test_a_reviewed_plan_hash_is_optional_but_still_binds_the_apply(self) -> None:
         self.guard()
         preview = update.Result()

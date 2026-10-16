@@ -240,14 +240,21 @@ def _confirm(yes: bool) -> None:
     )
     if yes:
         return
+    no_terminal = UpdateError(
+        "nothing was changed: there is no terminal to confirm on. Run `relkit update` "
+        "in a terminal to review the plan and confirm it, or pass --yes after reviewing "
+        "the plan above (`--dry-run` previews it; add --json and --plan-hash HASH to "
+        "bind --yes to exactly the reviewed plan)"
+    )
     if not sys.stdin.isatty():
-        raise UpdateError(
-            "nothing was changed: there is no terminal to confirm on. Run `relkit update` "
-            "in a terminal to review the plan and confirm it, or pass --yes after reviewing "
-            "the plan above (`--dry-run` previews it; add --json and --plan-hash HASH to "
-            "bind --yes to exactly the reviewed plan)"
-        )
-    if input("Apply these changes? [y/N] ").strip().casefold() not in {"y", "yes"}:
+        raise no_terminal
+    try:
+        answer = input("Apply these changes? [y/N] ")
+    except EOFError:
+        # Windows reports the NUL device as a terminal, so a run with standard input
+        # redirected from it passes the check above and meets end of input here.
+        raise no_terminal from None
+    if answer.strip().casefold() not in {"y", "yes"}:
         raise UpdateError("cancelled; no project files or guard changed")
 
 
