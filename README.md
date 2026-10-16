@@ -114,8 +114,8 @@ own copy, and updating one does not update the others. Later changes go through 
 
 ## First check in an existing project
 
-Work from the root of the Git repository you want to check. No hook, private sibling,
-MCP client or hosting account is needed for this path.
+Work from the root of the Git repository you want to check. No hook, private sibling
+or hosting account is needed for this path.
 
 Create `relkit.toml`, merging deliberately if the file already exists:
 
@@ -174,7 +174,6 @@ owner-approved response; do not rewrite history just to obtain a pass.
 | Full audit | Pinned Betterleaks and Lychee executables; the first audit downloads and verifies them |
 | Full audit platforms | Linux x64/arm64 (GNU builds), macOS x64/arm64, Windows x64 |
 | GitHub delivery or updates | GitHub CLI; delivery needs `gh` 2.98.0+, authentication and the documented repository permissions |
-| Plugin | Python 3.11+, `uv`, a writable installation directory and a local client supporting this plugin's stdio configuration |
 
 The Python CLI and the external scanners have different platform requirements. There is
 no pinned native Windows arm64 Lychee asset. Unknown or unpinned scanner platforms
@@ -186,7 +185,7 @@ publish. Private names must be declared by their owner. Built-in text rules use 
 patterns, not general language understanding. The audit does not inspect GitHub issues,
 Actions logs or un-fetched history. LFS pointers, submodules and unsupported compressed
 archives fail the relevant inspection. Linked worktrees are not supported by the updater,
-release coordinator or MCP adapter. Read the [scope and exclusions](docs/audit.md#scopes)
+release coordinator. Read the [scope and exclusions](docs/audit.md#scopes)
 before adopting the gate.
 
 ## Choose the next capability
@@ -198,8 +197,6 @@ before adopting the gate.
 | Validate and export curated release notes | [Release notes](docs/notes.md) |
 | Build locally and deliver to a directory or GitHub | [Local releases](docs/local-releases.md) |
 | Keep a GitHub Actions publisher | [Actions adapter](docs/release-coordinator.md) |
-| Use an agent-facing plugin | [Install and use the plugin](docs/plugin.md) |
-| Integrate another local MCP client | [Standalone MCP](docs/mcp.md) |
 | Consume machine-readable results | [CLI JSON contract](docs/cli-json.md) |
 
 ## Documentation in other languages
@@ -225,7 +222,6 @@ names and configuration keys are never translated.
 | A push is refused over local changes or another branch (older owner guard) | Run `relkit protect check`; `relkit protect install` adopts the guard that checks only the pushed commits |
 | A machine install and a project pin disagree | Prefer the project form for CI and hooks; compare `relkit --version` with the pinned copy |
 | Existing projection or guard drift | Use the [update guide](docs/updates.md), not an overwrite or `--no-verify` |
-| Plugin is not discovered or starts an old version | Follow [plugin troubleshooting](docs/plugin.md#troubleshooting), including native-client reload |
 
 ## Contributing and reporting problems
 

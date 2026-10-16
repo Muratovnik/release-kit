@@ -44,8 +44,7 @@ Keep cache/temp overrides local to this shell, not global settings.
 ## Checks
 
 For CLI development, run `python tools/check.py`. It runs stdlib tests, Ruff lint
-and format checks with a canonical temporary path, important on macOS. The base
-suite intentionally does not import the optional MCP SDK.
+and format checks with a canonical temporary path, important on macOS.
 
 For the full development check, install `uv` on PATH using its
 [official instructions](https://docs.astral.sh/uv/getting-started/installation/), then run:
@@ -55,22 +54,15 @@ python tools/check_distribution.py
 ```
 
 This checks source, builds a test distribution, validates exact membership/hashes,
-exercises real-scanner onboarding and starts the extracted plugin according to
-its `.mcp.json` with a native SDK client. Missing dependencies, empty/all-skipped
-MCP discovery and failed subprocesses are failures, not a base-only fallback.
+exercises real-scanner onboarding, installs the wheel and checks generated changelogs.
+Missing dependencies and failed subprocesses are failures, not a base-only fallback.
+The source phase alone (`--source-only`) needs neither uv nor the network.
 
-The SDK client environment and uv cache are reused below `.cache/release-kit-checks/`.
-`uv run --locked --exact` synchronizes the environment with the existing plugin lock;
-the SDK version is not duplicated in another requirements file. Each package test
-still starts from a fresh plugin installation/runtime. Successful run fixtures are
-removed; failed checks, unknown run-root entries and leftover process scratch are
-retained for inspection. Compact JSON reports remain in `reports/`, and their
-summary is printed to the job log. See [distribution](docs/distribution.md) for
-storage, locking and explicit snapshot-parent behavior.
-
-For targeted MCP work use the same locked project/environment to run
-`tools/check_mcp.py`. Do not add `tests/mcp/__init__.py` merely to pull the optional
-SDK into base discovery. A successful SDK test is not native desktop discovery.
+Successful run fixtures below `.cache/release-kit-checks/` are removed; failed checks,
+unknown run-root entries and leftover process scratch are retained for inspection.
+Compact JSON reports remain in `reports/`, and their summary is printed to the job
+log. See [distribution](docs/distribution.md) for storage, locking and explicit
+snapshot-parent behavior.
 
 The local release coordinator checks source with `--source-only`, then checks its
 actual committed-source candidate with `--assets`, `--version` and `--work-dir`.

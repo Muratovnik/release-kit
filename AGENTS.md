@@ -9,10 +9,10 @@ not change ownership; never stage it as an unintended gitlink in another reposit
 ## What this repository is for
 
 One publication gate other repositories adopt, plus focused diagnostics, curated
-release notes, an optional release coordinator and a separately installed MCP adapter.
+release notes and an optional release coordinator.
 The gate composes maintained engines for secrets and links with the policy and
 overlay facts only an adopting repository can declare. Start reader onboarding with
-the standalone CLI; hooks, owner policy, release delivery and MCP are optional paths.
+the standalone CLI; hooks, owner policy and release delivery are optional paths.
 
 ## The rule that outranks the others
 
@@ -44,8 +44,8 @@ security, and it costs the reader a concrete reference in exchange for nothing.
 - No Python runtime dependencies in the base CLI. This runs inside other repositories'
   hooks and CI, where a dependency tree is a reason not to adopt it. Betterleaks and
   Lychee are pinned external engines provisioned from verified official archives;
-  do not reimplement their parsers or duplicate their pins in adopters. The optional
-  MCP SDK decision is documented in docs/mcp.md; other dependencies need a decision.
+  do not reimplement their parsers or duplicate their pins in adopters. A new
+  dependency needs a decision.
 - Every rule is an executable check with a test. A rule stated only in prose is not a
   control, which is the failure this repository exists to answer.
 - False positives are the primary risk. A gate that cries wolf is switched off, and a
@@ -58,10 +58,9 @@ security, and it costs the reader a concrete reference in exchange for nothing.
   codes, the finding kinds, and the `relkit.toml` schema.
 - Distributed behaviour changes require a new version and dated changelog entry.
   `src/releasekit/__init__.py` declares the version once; packaging metadata takes it
-  from there, and `python tools/set_version.py X.Y.Z` writes the plugin manifest, the
-  plugin project and, through uv, its lock. Never hand-edit a version elsewhere and
-  never hand-edit the lock at all. The builder checks the components agree and the
-  updater refuses changed artifacts under the same version. Never replace an
+  from there, and `python tools/set_version.py X.Y.Z` retargets the README install
+  references. Never hand-edit a version elsewhere. The builder checks the components
+  agree and the updater refuses changed artifacts under the same version. Never replace an
   already-published release asset with different bytes, including packaged docs.
 
 ## Service-file ownership
@@ -85,8 +84,7 @@ python tools/check.py
 
 It runs stdlib unittest discovery, Ruff lint and Ruff format checks with the exact
 source import path and a canonical temporary directory. This matters on hosts
-where the system temporary path contains a link. The base suite deliberately
-excludes optional SDK integration discovery; it cannot qualify the MCP adapter.
+where the system temporary path contains a link.
 
 Discovery is the stdlib's, but the tests run across processes through
 `tools/parallel_tests.py`, because the suite is dominated by integration tests that
@@ -95,23 +93,23 @@ changed. Use `python tools/parallel_tests.py --jobs 1` to reproduce a result
 sequentially, and keep new tests independent of execution order — a test that needs
 a neighbour to run first is a defect in the test, not a reason to serialize the gate.
 
-Before a joint CLI/plugin distribution, provision uv explicitly and run:
+Before a distribution, provision uv explicitly (the wheel smoke installs with it)
+and run:
 
 ```text
 python tools/check_distribution.py
 ```
 
-This development check runs the base gate, explicit MCP discovery in the existing
-locked environment, a working-tree test build, complete asset validation, CLI smoke,
-real-engine onboarding and plugin stdio through the packaged `.mcp.json`.
-The coordinator uses `--source-only` for source checks, then runs `--assets` with
-`--version` and explicit `--work-dir` on its actual Git-free candidate snapshot.
-Only checks of the candidate's exact bytes qualify those files for publication;
-a passing throwaway build is not transferable evidence. Missing requirements or
-empty/all-skipped MCP discovery fail. Tests never register clients, install a real
-adopter's hook or publish. Retained evidence identifies the actual host and bytes,
-not an unexecuted OS matrix. Native-client discovery and hosted exposure review
-remain separate. See CONTRIBUTING.md and docs/publication-review.md.
+This development check runs the base gate, a working-tree test build, complete asset
+validation, CLI smoke, real-engine onboarding, the wheel installation and the
+changelog smoke. The coordinator uses `--source-only` (no uv needed) for source
+checks, then runs `--assets` with `--version` and explicit `--work-dir` on its actual
+Git-free candidate snapshot. Only checks of the candidate's exact bytes qualify those
+files for publication; a passing throwaway build is not transferable evidence.
+Missing requirements fail. Tests never register clients, install a real adopter's
+hook or publish. Retained evidence identifies the actual host and bytes, not an
+unexecuted OS matrix. Hosted exposure review remains separate. See CONTRIBUTING.md
+and docs/publication-review.md.
 
 The publication audit is additional to code checks. From source in PowerShell:
 

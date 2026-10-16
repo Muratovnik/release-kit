@@ -309,8 +309,7 @@ the outcome in the existing receipt without deleting any ref, log or scratch fil
 and reports a remaining local tag that the owner must delete explicitly. `resume`
 then refuses that attempt; the next `run` for the same version archives the receipt
 as `.git/relkit/releases/vX.Y.Z.abandoned-<timestamp>/` and starts a new one. An
-older receipt can be abandoned by a newer release-kit. The MCP adapter has no tool
-for this; use the CLI.
+older receipt can be abandoned by a newer release-kit.
 
 Local checks are not cached across invocations: a commit SHA does not identify
 ignored dependencies, environment, tool binaries or hooks. After a verified push,

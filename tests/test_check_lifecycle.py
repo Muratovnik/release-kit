@@ -1,4 +1,4 @@
-"""Check-run ownership and reuse; child probes do not stand in for SDK acceptance."""
+"""Check-run ownership and cleanup; controlled child probes stand in for the real gates."""
 
 import contextlib
 import io
@@ -34,7 +34,7 @@ class CheckLifecycleTests(unittest.TestCase):
         self.state = self.root / ".cache/release-kit-checks"
 
     def invoke(self, body="pass"):
-        # Real child process and real storage, controlled work rather than an SDK.
+        # Real child process and real storage, controlled work rather than a real gate.
         commands = [("controlled-source", [sys.executable, "-c", body])]
         with (
             patch.object(check_distribution, "ROOT", self.root),
@@ -72,20 +72,10 @@ class CheckLifecycleTests(unittest.TestCase):
                 if expected:
                     self.assertIn('"status": "timed-out"', output)
 
-    def test_repeated_runs_reuse_sdk_and_cache_but_remove_successful_workspaces(self):
-        probe = (
-            "import os\nfrom pathlib import Path\n"
-            "for key in ('UV_CACHE_DIR', 'UV_PROJECT_ENVIRONMENT'):\n"
-            " p=Path(os.environ[key]);p.mkdir(exist_ok=True)\n"
-            " marker=p/'identity';marker.touch(exist_ok=True)\n"
-        )
-        self.assertEqual(0, self.invoke(probe)[0])
-        sdk = self.state / f"sdk-{sys.implementation.cache_tag}"
-        cache = self.state / "uv-cache"
-        identities = [(p / "identity").stat().st_ino for p in (sdk, cache)]
-        code, output, _ = self.invoke(probe)
+    def test_repeated_runs_keep_their_reports_but_remove_successful_workspaces(self):
+        self.assertEqual(0, self.invoke()[0])
+        code, output, _ = self.invoke()
         self.assertEqual(0, code)
-        self.assertEqual(identities, [(p / "identity").stat().st_ino for p in (sdk, cache)])
         reports = self.reports()
         self.assertEqual(2, len(reports))
         self.assertEqual(2, len({r["workspace"] for r in reports}))
@@ -146,7 +136,7 @@ class CheckLifecycleTests(unittest.TestCase):
         self.assertEqual("removed", report["cleanup"])
         self.assertFalse(Path(report["workspace"]).exists())
 
-    def test_busy_sdk_environment_is_not_mutated_or_unlocked_by_another_run(self):
+    def test_busy_check_state_is_not_mutated_or_unlocked_by_another_run(self):
         self.assertEqual(0, self.invoke()[0])
         lock = self.state / "check.lock"
         lock.write_text("999999\n", encoding="utf-8")
@@ -166,31 +156,41 @@ class CheckLifecycleTests(unittest.TestCase):
         self.assertEqual('{"owner":"another tool"}', marker.read_text())
         self.assertFalse((self.state / "check.lock").exists())
 
-    def test_reusable_environment_keeps_lock_sync_and_ignores_inherited_uv_settings(self):
+    def test_check_environment_ignores_inherited_uv_and_import_settings(self):
         from releasekit import storage
 
         self.state.mkdir()
         workspace = self.state / "run"
         workspace.mkdir()
         (workspace / "tmp").mkdir()
-        with patch.dict(os.environ, {"UV_PROJECT_ENVIRONMENT": "/outside", "UV_OFFLINE": "1"}):
+        inherited = {"UV_PROJECT_ENVIRONMENT": "/outside", "UV_OFFLINE": "1", "PYTHONPATH": "x"}
+        with patch.dict(os.environ, inherited):
             env = check_distribution.check_environment(self.root, self.state, workspace)
-        self.assertEqual(str(self.state / "uv-cache"), env["UV_CACHE_DIR"])
+        self.assertFalse([key for key in env if key.startswith("UV_")])
+        self.assertEqual(str(self.root / "src"), env["PYTHONPATH"])
         self.assertEqual(str(workspace / "tmp"), env["TMP"])
-        self.assertNotIn("UV_OFFLINE", env)
-        command = check_distribution.locked_command("uv", self.root, "tools/check_mcp.py")
-        self.assertIn("--locked", command)
-        self.assertIn("--exact", command)
         self.assertEqual(workspace, storage.checked(workspace))
 
-    def test_sdk_uses_the_base_interpreter_instead_of_a_development_venv(self):
-        base = self.root / "base-python"
+    def test_source_checks_do_not_require_uv(self):
+        # Only the wheel installation needs uv, so a source-only run must not demand it.
         with (
-            patch.object(sys, "executable", str(self.root / "dev-venv/python")),
-            patch.object(sys, "_base_executable", str(base), create=True),
+            patch.object(check_distribution.shutil, "which", return_value=None),
+            patch.object(check_distribution, "ROOT", self.root),
+            patch.object(
+                check_distribution,
+                "source_checks",
+                return_value=[("controlled-source", [sys.executable, "-c", "pass"])],
+            ),
+            patch.object(sys, "path", list(sys.path)),
+            patch.dict(os.environ, fixture_environment(), clear=True),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
         ):
-            command = check_distribution.locked_command("uv", self.root, "tools/check_mcp.py")
-        self.assertEqual(str(base), command[command.index("--python") + 1])
+            code = check_distribution.main(["--source-only"])
+            packages = check_distribution.main(["--assets", str(self.root), "--version", "1.2.3"])
+        self.assertEqual(0, code, errors.getvalue())
+        self.assertEqual(1, packages)
+        self.assertIn("install uv", errors.getvalue())
 
     def test_alias_fixture_root_is_retained_without_following_it(self):
         from releasekit import storage

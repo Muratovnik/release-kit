@@ -227,8 +227,8 @@ the policy root in this order:
    configuration. A relative value resolves from the public checkout root.
 3. The conventional `../<checkout-name>-private` sibling.
 
-CLI owner and overlay commands, the installed owner guard, coordinator owner audits
-and MCP owner requests all use this same selection order.
+CLI owner and overlay commands, the installed owner guard and coordinator owner audits
+all use this same selection order.
 
 Set the persistent repository choice without creating a tracked project file:
 
@@ -350,9 +350,7 @@ not permission to ignore a block. Base CLI commands and JSON overlays need no ex
 
 **Compatibility:** upgrading the zipapp alone does not install PyYAML. Review the
 executing interpreter, including a hook's interpreter, before adopting this change.
-The built plugin's existing locked SDK environment does not include PyYAML: use
-JSON in the shared manifest for that path, or the separately installed standalone
-adapter with `[mcp,overlay-yaml]`. Do not edit an installed plugin's lock or use an
+A zipapp has no PyYAML: use JSON in the shared manifest for that path. Do not use an
 unreviewed global install to suppress the error. No manifest is rewritten or renamed
 automatically. An optional in-place YAML-to-JSON migration must preserve the entire
 Dotbot document, not just its links, and remain an explicit owner-reviewed change.

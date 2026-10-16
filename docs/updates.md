@@ -1,7 +1,7 @@
 # Project updates and recovery
 
 Each adopting repository tracks its own `.github/relkit.pyz`. Updating the source
-repository, a Python package, a plugin or one adopter does not update the others.
+repository, a Python package or one adopter does not update the others.
 For a first installation, use the [quick start](../README.md#first-check-in-an-existing-project).
 
 ## Updating a project
@@ -16,8 +16,6 @@ python .github/relkit.pyz update
 If the Python package is installed, the equivalent command is `relkit update`.
 Both update this project's projection, not the global Python package, source
 checkout, other projects, policy or CI. No alias or global installation is created.
-A [plugin](plugin.md) can instead explicitly synchronize a project to its bundled
-CLI with `relkit_sync`; installing the plugin alone changes no project.
 
 The default source is the GitHub repository recorded by the distribution builder.
 Use `--repository OWNER/REPO` when no source is recorded or to explicitly choose a

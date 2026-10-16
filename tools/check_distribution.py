@@ -1,8 +1,9 @@
-"""Check source and exact CLI/plugin packages without publishing or registering them.
+"""Check source and the exact CLI release set without publishing or registering it.
 
 Source checks and package checks are separate phases. The coordinator supplies a
 Git-free snapshot and the actual candidate; development mode builds a test package.
-The selected parent owns one reusable SDK/cache, compact reports and fresh fixtures.
+The selected parent owns compact reports and fresh fixtures. Source checks need no
+network and no uv; only the wheel installation in the package phase uses uv.
 """
 
 from __future__ import annotations
@@ -29,36 +30,11 @@ class CheckFailure(RuntimeError):
     """A required check did not complete successfully."""
 
 
-def locked_command(uv: str, root: Path, script: str, *arguments: str) -> list[str]:
-    return [
-        uv,
-        "run",
-        "--locked",
-        "--exact",
-        "--no-config",
-        "--no-dev",
-        "--no-editable",
-        "--no-python-downloads",
-        "--no-build",
-        "--project",
-        str(root / "plugins/release-kit"),
-        "--python",
-        # uv compares the base interpreter, not the development venv's launcher.
-        str(Path(getattr(sys, "_base_executable", sys.executable)).resolve()),
-        "python",
-        str(root / script),
-        *arguments,
-    ]
+def source_checks(root: Path):
+    return (("base", [sys.executable, str(root / "tools/check.py")]),)
 
 
-def source_checks(root: Path, uv: str):
-    return (
-        ("base", [sys.executable, str(root / "tools/check.py")]),
-        ("mcp", locked_command(uv, root, "tools/check_mcp.py")),
-    )
-
-
-def package_checks(root: Path, workspace: Path, uv: str, version: str, assets: Path):
+def package_checks(root: Path, workspace: Path, version: str, assets: Path):
     return (
         (
             "cli-smoke",
@@ -107,20 +83,6 @@ def package_checks(root: Path, workspace: Path, uv: str, version: str, assets: P
                 "--work-dir",
                 str(workspace / "changelog space"),
             ],
-        ),
-        (
-            "plugin-stdio",
-            locked_command(
-                uv,
-                root,
-                "tools/smoke_plugin.py",
-                "--archive",
-                str(assets / "release-kit-plugin.zip"),
-                "--work-dir",
-                str(workspace / "plugin space"),
-                "--version",
-                version,
-            ),
         ),
     )
 
@@ -193,15 +155,7 @@ def check_environment(root: Path, state: Path, workspace: Path):
         for key, value in storage.environment(workspace / "tmp").items()
         if not key.startswith("UV_") and key not in ("VIRTUAL_ENV", "PYTHONHOME", "PYTHONPATH")
     }
-    environment.update(
-        PYTHONPATH=str(root / "src"),
-        UV_CACHE_DIR=str(storage.inside(state, state / "uv-cache")),
-        UV_PROJECT_ENVIRONMENT=str(
-            storage.inside(state, state / f"sdk-{sys.implementation.cache_tag}")
-        ),
-        UV_PYTHON_DOWNLOADS="never",
-        UV_LINK_MODE="copy",
-    )
+    environment["PYTHONPATH"] = str(root / "src")
     return environment
 
 
@@ -224,7 +178,6 @@ def clean_success(workspace: Path, identity) -> bool:
         "onboarding space",
         "wheel install",
         "changelog space",
-        "plugin space",
         "tmp",
     }
     if {p.name for p in workspace.iterdir()} - owned:
@@ -243,7 +196,7 @@ def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--assets", type=Path, help="Existing assets; never rebuild them")
     parser.add_argument("--version", help="Required version of the existing assets")
-    parser.add_argument("--source-only", action="store_true", help="Base and MCP source tests only")
+    parser.add_argument("--source-only", action="store_true", help="Run the source checks only")
     parser.add_argument(
         "--work-dir", type=Path, help="Explicit existing parent, required for a snapshot"
     )
@@ -271,9 +224,9 @@ def main(argv=None) -> int:
         "publication": "not-attempted",
     }
     try:
-        uv = shutil.which("uv")
-        if uv is None:
-            raise CheckFailure("install uv on PATH before the distribution check")
+        # Only the wheel installation needs uv, and only a package phase runs it.
+        if not arguments.source_only and shutil.which("uv") is None:
+            raise CheckFailure("install uv on PATH before checking the packages")
         sys.path.insert(0, str(ROOT / "src"))
         from releasekit import storage
 
@@ -344,7 +297,7 @@ def main(argv=None) -> int:
         print(f"distribution-check: {report['kind']}; workspace {workspace}", flush=True)
         if assets is None:
             run_stages(
-                source_checks(ROOT, uv),
+                source_checks(ROOT),
                 root=ROOT,
                 environment=environment,
                 report=report,
@@ -370,7 +323,7 @@ def main(argv=None) -> int:
                 )
         if not arguments.source_only:
             check_packages(
-                package_checks(ROOT, workspace, uv, version, assets),
+                package_checks(ROOT, workspace, version, assets),
                 assets=assets,
                 version=version,
                 root=ROOT,

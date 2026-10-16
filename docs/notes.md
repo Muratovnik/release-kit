@@ -108,6 +108,11 @@ a reader of the release. Put what a reader needs in a `Highlights` section: it i
 exempt from the per-bullet commit link, so hand-written context sits above the
 generated list without breaking the layout.
 
+Curate the entry for the people who use the released product. Leave out the adopter's
+internal release machinery, tool names and versions and process-only changes unless
+they materially change installation, updating, compatibility or use of the product;
+this does not hide release-kit's own name when release-kit is the product.
+
 ### Drafting without remote metadata
 
 git-cliff can fetch remote metadata when a remote is configured. To generate from

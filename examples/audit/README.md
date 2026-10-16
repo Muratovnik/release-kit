@@ -11,6 +11,6 @@ python -c "from pathlib import Path; Path('.cache').mkdir(exist_ok=True)"
 ```
 
 Both native scanners stay enabled. No private policy, overlay, Git hook, release
-configuration or MCP client is required. Run from the target project's root, not
+configuration is required. Run from the target project's root, not
 from this examples directory. The full distribution check uses these same files
 in a disposable adopter and exercises real worktree, staged and history audits.

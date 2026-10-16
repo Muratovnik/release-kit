@@ -165,6 +165,7 @@ class DistributionTests(unittest.TestCase):
                 path = root / name
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(b"Committed release input\n")
+            (root / "README.md").write_bytes(b"Committed readme\n")
             (root / "pyproject.toml").write_bytes(b'[project]\nreadme = "README.md"\n')
             subprocess.run(["git", "add", "-A"], cwd=root, check=True)
             subprocess.run(["git", "commit", "-qm", "chore: sample"], cwd=root, check=True)

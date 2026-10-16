@@ -18,8 +18,6 @@
 | 校验并导出经过整理的发布说明 | [Release notes](../notes.md) |
 | 本地构建并投递到目录或 GitHub | [Local releases](../local-releases.md) |
 | 维护 GitHub Actions 发布流程 | [Actions adapter](../release-coordinator.md) |
-| 使用面向智能体的插件 | [Plugin](../plugin.md) |
-| 接入其他本地 MCP 客户端 | [Standalone MCP](../mcp.md) |
 | 消费机器可读的结果 | [CLI JSON contract](../cli-json.md) |
 | 了解平台固定、缓存与信任边界 | [Distribution](../distribution.md) |
 | 复核本地审计看不到的发布面 | [Publication review](../publication-review.md) |

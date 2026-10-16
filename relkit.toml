@@ -29,8 +29,6 @@ version_pattern = '^__version__ = "([0-9]+\.[0-9]+\.[0-9]+)"$'
 assets = [
     "relkit.pyz",
     "relkit.pyz.sha256",
-    "release-kit-plugin.zip",
-    "release-kit-plugin.zip.sha256",
     "release_kit-{version}-py3-none-any.whl",
     "release_kit-{version}-py3-none-any.whl.sha256",
     "release.json",
@@ -40,6 +38,6 @@ checks = [["{python}", "tools/check_distribution.py", "--source-only"]]
 # Runs from the committed Git-free snapshot against these exact candidate files.
 smoke = [["{python}", "tools/check_distribution.py", "--assets", "{assets}", "--version", "{version}", "--work-dir", "{temp}"]]
 smoke_platforms = ["linux", "darwin", "win32"]
-# The combined source command includes separate bounded base and MCP suites.
+# The source command is the complete base suite, which dominates the gate's runtime.
 command_timeout = 7200
 require_provenance = false

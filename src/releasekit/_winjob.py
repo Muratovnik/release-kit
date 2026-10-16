@@ -1,4 +1,4 @@
-"""Minimal native Windows Job Object adapter shared by command and MCP execution.
+"""Minimal native Windows Job Object adapter shared by command execution.
 
 The OS owns descendant membership and termination. There is no global PID walk and no
 breakaway permission. Importing this module on POSIX does not load Windows APIs.

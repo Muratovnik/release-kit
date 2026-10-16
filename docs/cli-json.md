@@ -2,7 +2,7 @@
 
 Available since release-kit 0.8.0. Use the project's pinned
 `.github/relkit.pyz`; a global package may be a different version. This process
-interface needs no MCP server, service registration or Python runtime dependency.
+interface needs no service registration or Python runtime dependency.
 
 ```text
 python .github/relkit.pyz --version --json

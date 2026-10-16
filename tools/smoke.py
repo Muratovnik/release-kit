@@ -17,7 +17,6 @@ import re
 import stat
 import subprocess
 import sys
-import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -26,14 +25,11 @@ from releasekit import processes
 
 CLI = "relkit.pyz"
 MANIFEST = "relkit.pyz.sha256"
-PLUGIN = "release-kit-plugin.zip"
 RECEIPT = "release.json"
 WHEEL = "release_kit-{version}-py3-none-any.whl"
-ENTRY = "release-kit/tools/relkit.pyz"
-INVENTORY = "release-kit/package.json"
 # This distribution's contract, independent of the receipt under inspection. The
 # wheel carries the version in its name, so the set is a function of the version.
-FIXED = frozenset({CLI, MANIFEST, PLUGIN, PLUGIN + ".sha256", RECEIPT})
+FIXED = frozenset({CLI, MANIFEST, RECEIPT})
 
 
 def expected_assets(version: str) -> frozenset[str]:
@@ -73,7 +69,7 @@ def inventory(assets: Path, version: str) -> dict[str, str]:
         if not stat.S_ISREG(path.lstat().st_mode):
             raise SmokeError(f"release asset must be an ordinary file: {name}")
         hashes[name] = digest(path.read_bytes())
-    for name in (CLI, PLUGIN, WHEEL.format(version=version)):
+    for name in (CLI, WHEEL.format(version=version)):
         sidecar = name + ".sha256"
         words = (assets / sidecar).read_text(encoding="utf-8").split()
         if len(words) != 2 or words[0] != hashes[name] or words[1] not in (name, "*" + name):
@@ -125,21 +121,7 @@ def smoke(assets: Path, source: Path, version: str) -> list[str]:
     """Every check, so one failure does not hide the next; the caller reports them."""
     problems = []
     before = inventory(assets, version)
-    payload = (assets / CLI).read_bytes()
 
-    with zipfile.ZipFile(assets / PLUGIN) as archive:
-        bundled = archive.read(ENTRY)
-        package_inventory = json.loads(archive.read(INVENTORY))
-    if bundled != payload:
-        problems.append(f"{PLUGIN} bundles a different {CLI} than the one published beside it")
-    if package_inventory.get("version") != version or package_inventory.get("files", {}).get(
-        "tools/relkit.pyz"
-    ) != digest(bundled):
-        problems.append(f"{PLUGIN} inventory disagrees with its own bundled tool or the version")
-
-    # Metadata problems must not be followed by candidate execution.
-    if problems:
-        return problems
     reported = _run(assets, ["--version"]).strip()
     if not reported.startswith(f"release-kit {version} "):
         problems.append(f"published tool reports {reported!r}, not release-kit {version}")
@@ -163,7 +145,7 @@ def main() -> int:
     arguments = parser.parse_args()
     try:
         problems = smoke(arguments.assets.resolve(), arguments.source.resolve(), arguments.version)
-    except (SmokeError, OSError, ValueError, KeyError, zipfile.BadZipFile) as error:
+    except (SmokeError, OSError, ValueError, KeyError) as error:
         print(f"smoke: {type(error).__name__}: {error}", file=sys.stderr)
         return 1
     for problem in problems:

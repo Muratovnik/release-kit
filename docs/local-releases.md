@@ -93,6 +93,14 @@ prepared bytes, creates the annotated local tag and publishes those exact bytes.
 It does not rebuild at publication time. Use `resume VERSION --publish` after an
 interruption; it reconciles the saved destination before advancing.
 
+`run` executes the configured commands in the checkout it is started from, so decide
+that checkout before the first check. Project checks can overwrite generated files a
+running development server is using: use a project-supported output isolation or a
+checkout you own for the release, and do not stop someone else's server. If the
+checkout differs from your working one, account for its exact commit, dependencies and
+hooks first. A timeout or lost connection during publication is an unknown remote
+outcome, not proof that nothing was pushed: read `release status` first, then `resume`.
+
 ### Prereleases and the final release
 
 Target projects can publish [SemVer 2.0.0](https://semver.org/spec/v2.0.0.html)
@@ -138,7 +146,7 @@ does not increase SemVer precedence. A change from `1.0.0-rc.2+build.1` to
 `1.0.0-rc.2+build.2` cannot substitute for a new release number. GitHub delivery
 marks RC releases as prereleases and verifies that status during recovery;
 directory delivery records the same status from the manifest's version.
-The release-kit CLI's own wheel, plugin and updater retain their documented
+The release-kit CLI's own wheel, zipapp and updater retain their documented
 stable-version distribution contract; target-project SemVer support does not
 convert arbitrary SemVer identifiers to Python package versions.
 

@@ -107,7 +107,7 @@ python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-down
 
 ## 在既有项目中的第一次检查
 
-请在你要检查的 Git 仓库根目录下操作。这条路径不需要钩子、私有同级目录、MCP 客户端或任何
+请在你要检查的 Git 仓库根目录下操作。这条路径不需要钩子、私有同级目录或任何
 托管账号。
 
 创建 `relkit.toml`；如果该文件已存在，请谨慎合并：
@@ -164,7 +164,6 @@ relkit audit --history
 | 完整审计 | 已固定版本的 Betterleaks 与 Lychee 可执行文件；首次审计会下载并校验它们 |
 | 完整审计支持的平台 | Linux x64/arm64（GNU 构建）、macOS x64/arm64、Windows x64 |
 | GitHub 投递或更新 | GitHub CLI；投递需要 `gh` 2.98.0+、已完成认证以及文档所述的仓库权限 |
-| 插件 | Python 3.11+、`uv`、可写的安装目录，以及支持本插件 stdio 配置的本地客户端 |
 
 Python CLI 与外部扫描器的平台要求并不相同。目前不存在已固定版本的 Windows arm64 原生
 Lychee 构件。对未知或未固定的扫描器平台，工具会拒绝执行，而不会选用未经校验的二进制文件。
@@ -173,7 +172,7 @@ Lychee 构件。对未知或未固定的扫描器平台，工具会拒绝执行�
 审计不是一次全面的安全评估，也不能证明项目可以安全发布。私有名称必须由其所有者声明。内置
 文本规则依据的是具体模式，而不是通用的语言理解。审计不会检查 GitHub issues、Actions 日志
 或未拉取的历史。LFS 指针、子模块以及不受支持的压缩包会导致相应检查失败。链接工作树不受
-更新程序、发布协调器和 MCP 适配器支持。在采用该门禁之前，请先阅读
+更新程序和发布协调器支持。在采用该门禁之前，请先阅读
 [范围与排除项](docs/zh-CN/audit.md#范围)。
 
 ## 选择下一步能力
@@ -185,8 +184,6 @@ Lychee 构件。对未知或未固定的扫描器平台，工具会拒绝执行�
 | 校验并导出经过整理的发布说明 | [Release notes](docs/notes.md)（英文） |
 | 本地构建并投递到目录或 GitHub | [Local releases](docs/local-releases.md)（英文） |
 | 维护 GitHub Actions 发布流程 | [Actions adapter](docs/release-coordinator.md)（英文） |
-| 使用面向智能体的插件 | [Install and use the plugin](docs/plugin.md)（英文） |
-| 接入其他本地 MCP 客户端 | [Standalone MCP](docs/mcp.md)（英文） |
 | 消费机器可读的结果 | [CLI JSON contract](docs/cli-json.md)（英文） |
 
 中文文档的完整索引见 [docs/zh-CN/README.md](docs/zh-CN/README.md)。
@@ -202,7 +199,6 @@ Lychee 构件。对未知或未固定的扫描器平台，工具会拒绝执行�
 | push 因本地改动或其他分支而被拒绝（旧版所有者防护） | 运行 `relkit protect check`；`relkit protect install` 换用只检查被推送提交的防护 |
 | 机器级安装与项目固定版本不一致 | CI 与钩子请以项目内形式为准；把 `relkit --version` 与固定副本作对比 |
 | 既有投影副本或防护出现漂移 | 使用[更新指南](docs/zh-CN/updates.md)，而不是覆盖或 `--no-verify` |
-| 插件未被发现或启动了旧版本 | 按 [plugin troubleshooting](docs/plugin.md#troubleshooting)（英文）处理，包括重新加载原生客户端 |
 
 ## 参与贡献与问题反馈
 

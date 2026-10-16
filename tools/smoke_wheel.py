@@ -89,10 +89,9 @@ def check(wheel: Path, version: str, work: Path) -> None:
         raise WheelSmokeError(f"wheel did not install:\n{installed.stderr.strip()}")
     cleanup_confirmed = True
     try:
-        for command in ("relkit", "relkit-mcp"):
-            shim = work / "bin" / (command + (".exe" if sys.platform == "win32" else ""))
-            if not shim.is_file():
-                raise WheelSmokeError(f"wheel did not install the {command} command")
+        shim = work / "bin" / ("relkit" + (".exe" if sys.platform == "win32" else ""))
+        if not shim.is_file():
+            raise WheelSmokeError("wheel did not install the relkit command")
         relkit = str(work / "bin" / "relkit")
         # Its own version, whichever repository the smoke happens to be started from.
         reported = _run([relkit, "--version"], {**environment, "RELKIT_DELEGATE": "0"})
