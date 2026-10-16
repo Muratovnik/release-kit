@@ -982,12 +982,76 @@ def _external_payload_details(relative: str, payload: bytes) -> dict[str, str]:
     return found
 
 
-def _payload(root: Path, relative: str, *, staged: bool, tracked: set[str]) -> bytes:
-    if staged and relative in tracked:
-        result = _git_bytes(root, ["show", f":{relative}"])
+class _IndexPayloads:
+    """Indexed bytes of the paths a scan reads from the index, one bounded batch at a time.
+
+    One `git show :path` per file was most of a staged audit: a process start per
+    tracked file. The same raw blobs come from `git cat-file --batch`, read in the
+    order the scan asks for them and in pieces bounded by `_history_batches`, so
+    memory stays bounded however large the index is. A path without a stage-0 entry
+    is unreadable, as `git show :path` reported it.
+    """
+
+    def __init__(self, root: Path, wanted: Sequence[str]):
+        self.root = root
+        result = _git_bytes(root, ["ls-files", "--stage", "-z"])
         if result.returncode != 0:
-            raise OSError(result.stderr.decode("utf-8", errors="replace").strip())
-        return result.stdout
+            raise RuntimeError(
+                result.stderr.decode("utf-8", errors="replace").strip()
+                or "git ls-files index inventory failed"
+            )
+        entries: dict[str, str] = {}
+        for record in result.stdout.split(b"\0"):
+            metadata, separator, raw_path = record.partition(b"\t")
+            fields = metadata.decode("ascii", errors="replace").split()
+            if separator and len(fields) == 3 and fields[2] == "0" and fields[0] != "160000":
+                entries[raw_path.decode("utf-8", errors="surrogateescape")] = fields[1]
+        self.objects = {path: entries[path] for path in wanted if path in entries}
+        ordered = list(dict.fromkeys(self.objects.values()))
+        sizes: dict[str, int] = {}
+        if ordered:
+            checks = _git(
+                root,
+                ["cat-file", "--batch-check=%(objectname) %(objectsize)"],
+                stdin="\n".join(ordered) + "\n",
+            )
+            for line in checks.stdout.splitlines():
+                fields = line.split()
+                if len(fields) == 2 and fields[1].isdecimal():
+                    sizes[fields[0]] = int(fields[1])
+        self.batch_of: dict[str, int] = {}
+        self.batches: list[list[str]] = []
+        for batch in _history_batches([(oid, sizes.get(oid, 0)) for oid in ordered]):
+            for object_id in batch:
+                self.batch_of[object_id] = len(self.batches)
+            self.batches.append(batch)
+        self.blobs: dict[str, bytes] = {}
+
+    def read(self, relative: str) -> bytes:
+        object_id = self.objects.get(relative)
+        if object_id is None:
+            raise OSError(f"{relative} has no merged index entry")
+        if object_id not in self.blobs:
+            # Only the current batch is held; the scan asks in index order.
+            try:
+                self.blobs = dict(_batch_blobs(self.root, self.batches[self.batch_of[object_id]]))
+            except (RuntimeError, ValueError) as error:
+                raise OSError(str(error)) from error
+        return self.blobs[object_id]
+
+
+def _payload(
+    root: Path,
+    relative: str,
+    *,
+    staged: bool,
+    tracked: set[str],
+    index: _IndexPayloads | None,
+) -> bytes:
+    if staged and relative in tracked:
+        if index is None:
+            raise OSError(f"{relative} was not inventoried from the index")
+        return index.read(relative)
     path = root / relative
     if path.is_symlink():
         return os.readlink(path).encode("utf-8", errors="surrogateescape")
@@ -1329,6 +1393,12 @@ def scan(
     tracked = set(scannable_paths(root, include_candidates=False))
     tracked_modes = _tracked_modes(root)
     skip_worktree = _skip_worktree_paths(root)
+    from_index_paths = [
+        relative
+        for relative in candidates
+        if (staged or relative in skip_worktree) and relative in tracked
+    ]
+    index = _IndexPayloads(root, from_index_paths) if from_index_paths else None
     for relative in candidates:
         from_index = staged or relative in skip_worktree
         unsuppressible = {rules.PRIVATE_PATH} if rules.is_owner_policy_path(relative) else set()
@@ -1353,7 +1423,9 @@ def scan(
                 details[EXTERNAL_REPOSITORY] = "Git submodule content is not audited"
             else:
                 try:
-                    payload = _payload(root, relative, staged=from_index, tracked=tracked)
+                    payload = _payload(
+                        root, relative, staged=from_index, tracked=tracked, index=index
+                    )
                     details.update(
                         _owner_payload_details(
                             relative,
@@ -1400,7 +1472,7 @@ def scan(
                 for kind in sorted(found):
                     record(Finding(relative, kind, details.get(kind, "")))
                 continue
-            payload = _payload(root, relative, staged=from_index, tracked=tracked)
+            payload = _payload(root, relative, staged=from_index, tracked=tracked, index=index)
             is_symlink = (
                 tracked_modes.get(relative) == "120000"
                 if from_index
