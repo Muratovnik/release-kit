@@ -78,8 +78,8 @@ Implementation: [SemVer](../../src/releasekit/semver.py),
 [release selection](../../src/releasekit/release/versions.py),
 [changelog parser](../../src/releasekit/release/changelog.py),
 [generator](../../src/releasekit/generation.py), [CLI](../../src/releasekit/cli.py),
-[MCP model](../../src/releasekit_mcp/models.py) and
-[MCP routing](../../src/releasekit_mcp/bridge.py).
+MCP model (`src/releasekit_mcp/models.py`, removed in 0.33.0) and
+MCP routing (`src/releasekit_mcp/bridge.py`, removed in 0.33.0).
 Discriminating controls include `test_semver`, `test_release_prerelease`,
 `test_changelog_generation`, `test_draft_export`, `test_plugin_build`, and
 `tools/smoke_changelog.py`.
@@ -140,9 +140,9 @@ verified literal filename selection with the actual pinned Lychee executable.
 | D18 | Medium; baseline compatibility and documentation | The plugin used an extended-path cache without checking the upstream wheel installer's physical path budget, and documentation claimed that nested caches could exceed the legacy limit. Native Windows installation failed when a cached script and its parent acquired different prefix forms. | The launcher validates the physical disk-cache budget before runtime initialization, retains the existing owned `.runtime/cache`, and asks for a shorter installation path when needed. DLL alias/UTF-16 checks stay separate; this disk-path check adds no new UNC restriction. Focused controls passed on Linux/Python 3.11 and 3.12; corrected native installation remains pending. |
 
 Implementation: [synchronous runner](../../src/releasekit/processes.py),
-[MCP executor](../../src/releasekit_mcp/process.py),
+MCP executor (`src/releasekit_mcp/process.py`, removed in 0.33.0),
 [installed launcher](../../src/releasekit/launcher.py),
-[packaged plugin launcher](../../plugins/release-kit/scripts/launch.py),
+packaged plugin launcher (`plugins/release-kit/scripts/launch.py`, removed in 0.33.0),
 [updater](../../src/releasekit/update.py),
 [release builder](../../tools/build_release.py),
 [version transaction](../../tools/set_version.py),
@@ -1000,7 +1000,7 @@ immediate observations do not resolve the separate historical cross-execution
 filesystem visibility evidence below. Publication audits of this same candidate
 are recorded next. The subsequent delivery delta comprises the manual Windows
 workflow coverage extension, one compatibility wording correction in the packaged
-[optional MCP documentation](../mcp.md#release-operations-and-their-effects), and
+optional MCP documentation (`docs/mcp.md`, removed in 0.33.0), and
 this report. That sentence identifies the executor, which is the bundled CLI in
 installed plugin mode, as the version-gated component for Actions next/prepare;
 it does not change the existing version threshold or runtime behavior. At `cc7c26e`, runtime

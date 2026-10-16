@@ -417,8 +417,7 @@ condition and the lock path. It never signals or stops a process.
 - The lock is unchanged between the inspection and the removal.
 
 With no lock it reports that and exits `0`; a refusal exits `2`. `--json` reports
-`data.unlock` with the lock path, `removed` and, on removal, the owner and the proof. The
-MCP adapter has no tool for this; use the CLI.
+`data.unlock` with the lock path, `removed` and, on removal, the owner and the proof.
 
 ## Stage lines in the logs
 

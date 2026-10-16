@@ -100,6 +100,9 @@ def run_push(
     result = result or Result()
     result.data.update(scope="push", remote=remote, pushed_commits=0)
     result.data["engines"] = {"betterleaks": None, "lychee": None}
+    # Empty input is a real push, not a broken hook: Git runs pre-push with nothing on
+    # standard input when every ref is already up to date. Refusing it would fail each
+    # `git push` that has nothing to send.
     if all(update.deletes for update in updates):
         print("relkit audit: nothing is being pushed; passed")
         return 0
