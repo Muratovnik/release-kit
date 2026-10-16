@@ -126,8 +126,12 @@ one, and it needs the projection to be at least the release that adds `audit --p
 The guard calls `audit --push`, so it is never written for an older projection.
 `relkit protect install` and `relkit update` both refuse that pairing, before changing
 anything, and name the fix: run `relkit update` first to move the projection to 0.33.0
-or newer. That update refreshes an installed guard to the current template in the same
-transaction. A project without a guard is not held to this threshold.
+or newer. An update run by a 0.33.0 or newer projection refreshes an installed guard to
+the current template in the same transaction. The first update from an older projection
+runs that projection's updater, which re-pins the guard but keeps its own template:
+afterwards `relkit protect check` reports the guard as outdated, and
+`relkit protect install` with the new projection adopts the current one. A project
+without a guard is not held to this threshold.
 
 ## First update and rollback
 

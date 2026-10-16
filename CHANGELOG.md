@@ -16,9 +16,10 @@ hook's standard input, instead of the whole history and a clean worktree. A dirt
 checkout or another branch's finding no longer blocks pushing a clean commit; the
 release coordinator and `relkit audit --history` still judge the whole history. A
 guard installed by an earlier version keeps working and `relkit protect check`
-reports it as outdated. Update the pinned projection first (`relkit update`), which
-installs the new guard with it; `relkit protect install` refuses to install it over
-an older projection.
+reports it as outdated. Update the pinned projection first (`relkit update`), then
+adopt the new guard with the new projection's `relkit protect install`: the updater of
+an older projection re-pins its own template. `relkit protect install` refuses to
+install the new guard over an older projection.
 
 Every command ends with `relkit <command>: <status> (exit N, X.Xs)`, stages carry
 timestamps and durations, `--json` keeps standard output to exactly one object, and
