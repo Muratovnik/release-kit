@@ -12,7 +12,8 @@ import shutil
 import subprocess
 import sys
 import time
-from collections.abc import Sequence
+from collections.abc import Callable, Collection, Iterator, Sequence
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 
 from . import processes, storage, toolchain
@@ -80,6 +81,101 @@ def _run_owned(
     return code
 
 
+class Shared:
+    """One owned workspace and one publication snapshot for every engine of a run.
+
+    Each engine used to build its own copy of the tree, and building it was most of
+    what an audit cost. The two engines read the same boundary - the index in a staged
+    run, the next-add tree otherwise - so the copy is made once, on first use, and an
+    engine that does not need it (history secrets, a tree without Markdown) never
+    causes one.
+    """
+
+    def __init__(
+        self,
+        workspace: storage.Workspace | Callable[[], storage.Workspace],
+        root: Path,
+        *,
+        staged: bool,
+        include_candidates: bool,
+    ):
+        # A run whose engines need no files (no Markdown, no secrets scan) must not
+        # require writable service storage, so the workspace may be opened on demand.
+        self._workspace = workspace if isinstance(workspace, storage.Workspace) else None
+        self._open = None if isinstance(workspace, storage.Workspace) else workspace
+        self.root = root
+        self.staged = staged
+        self.include_candidates = include_candidates and not staged
+        self._inventory: tuple[str, ...] | None = None
+        self._source: Path | None = None
+
+    @property
+    def workspace(self) -> storage.Workspace:
+        if self._workspace is None:
+            assert self._open is not None
+            self._workspace = self._open()
+        return self._workspace
+
+    def inventory(self) -> tuple[str, ...]:
+        if self._inventory is None:
+            self._inventory = (
+                scannable_paths(self.root, include_candidates=False)
+                if self.staged
+                else worktree_paths(self.root, include_candidates=self.include_candidates)
+            )
+        return self._inventory
+
+    def materialize(self, *, secrets: bool, links: bool, history: bool) -> None:
+        """Build the snapshot now if an enabled engine will read it.
+
+        Writing a thousand files is a thousand short system calls, and a thread that
+        needs the interpreter lock back after each of them waits behind any other
+        Python thread for every one. A caller that overlaps other work with the
+        engines builds the snapshot first, while nothing else competes.
+        """
+        markdown = links and _markdown_paths(
+            self.root,
+            include_candidates=self.include_candidates,
+            staged=self.staged,
+            inventory=self.inventory(),
+        )
+        if (secrets and not history) or markdown:
+            self.source()
+
+    def source(self) -> Path:
+        if self._source is None:
+            snapshot = storage.inside(self.workspace.path, self.workspace.path / "source")
+            snapshot.mkdir()
+            if self.staged:
+                _checkout_index(self.root, snapshot)
+            else:
+                built = _materialize_worktree(
+                    self.root,
+                    snapshot,
+                    include_candidates=self.include_candidates,
+                    candidates=self._inventory,
+                )
+                if self._inventory is None and built is not None:
+                    self._inventory = tuple(built)
+            self.workspace.remember_written(snapshot)
+            self._source = snapshot
+        return self._source
+
+
+@contextmanager
+def shared(root: Path, *, staged: bool, include_candidates: bool) -> Iterator[Shared]:
+    """Engines of one run share a workspace, created only if one of them needs it."""
+    with ExitStack() as stack:
+        yield Shared(
+            lambda: stack.enter_context(
+                storage.temporary(root, "index-" if staged else "worktree-")
+            ),
+            root,
+            staged=staged,
+            include_candidates=include_candidates,
+        )
+
+
 def betterleaks(
     root: Path,
     *,
@@ -88,6 +184,7 @@ def betterleaks(
     staged: bool,
     include_candidates: bool,
     allow_download: bool,
+    shared: Shared | None = None,
 ) -> int:
     executable = toolchain.resolve("betterleaks", root=root, allow_download=allow_download)
     config_path = root / config
@@ -127,49 +224,61 @@ def betterleaks(
     environment["GIT_CONFIG_COUNT"] = str(count + 1)
     environment[f"GIT_CONFIG_KEY_{count}"] = "safe.directory"
     environment[f"GIT_CONFIG_VALUE_{count}"] = str(root.resolve())
-    if staged or history:
-        with storage.temporary(root, "engine-") as workspace:
-            working_directory = root
-            if staged:
-                # The scanner's configuration (including relative extension files)
-                # belongs to the same index as the scanned changes.
-                snapshot = workspace.path / "source"
-                snapshot.mkdir()
-                _checkout_index(root, snapshot)
-                workspace.remember(snapshot)
-                command[command.index("--config") + 1] = str(
-                    storage.inside(snapshot, snapshot / config)
-                )
-                command[command.index("git") + 1] = str(root.resolve())
-                working_directory = snapshot
-            return _run_owned(
-                workspace,
-                command,
-                root=working_directory,
-                findings_exit=BETTERLEAKS_FINDINGS_EXIT,
-                environment=environment,
-            )
-
-    # Directory mode does not use Git's publication boundary and would otherwise
-    # inspect .git, caches, dependencies, and ignored private mounts. Materialize
-    # exactly the tracked plus untracked/unignored candidates that release-kit's
-    # policy scanner sees, preserving symlinks as their published link text.
-    with storage.temporary(root, "worktree-") as workspace:
-        snapshot = workspace.path / "source"
-        snapshot.mkdir()
-        _materialize_worktree(root, snapshot, include_candidates=include_candidates)
-        workspace.remember(snapshot)
-        command += ["dir", str(snapshot)]
-        return _run_owned(
-            workspace,
+    if shared is not None:
+        return _betterleaks_in(
+            shared,
             command,
-            root=root,
-            findings_exit=BETTERLEAKS_FINDINGS_EXIT,
+            config=config,
+            history=history,
             environment=environment,
+            runtime_name="runtime-betterleaks",
+        )
+    with storage.temporary(root, "engine-" if staged or history else "worktree-") as workspace:
+        return _betterleaks_in(
+            Shared(workspace, root, staged=staged, include_candidates=include_candidates),
+            command,
+            config=config,
+            history=history,
+            environment=environment,
+            runtime_name="runtime",
         )
 
 
-def _checkout_index(root: Path, destination: Path) -> None:
+def _betterleaks_in(
+    shared: Shared,
+    command: list[str],
+    *,
+    config: str,
+    history: bool,
+    environment: dict[str, str],
+    runtime_name: str,
+) -> int:
+    root = shared.root
+    working_directory = root
+    if shared.staged:
+        # The scanner's configuration (including relative extension files)
+        # belongs to the same index as the scanned changes.
+        snapshot = shared.source()
+        command[command.index("--config") + 1] = str(storage.inside(snapshot, snapshot / config))
+        command[command.index("git") + 1] = str(root.resolve())
+        working_directory = snapshot
+    elif not history:
+        # Directory mode does not use Git's publication boundary and would otherwise
+        # inspect .git, caches, dependencies, and ignored private mounts. Materialize
+        # exactly the tracked plus untracked/unignored candidates that release-kit's
+        # policy scanner sees, preserving symlinks as their published link text.
+        command += ["dir", str(shared.source())]
+    return _run_owned(
+        shared.workspace,
+        command,
+        root=working_directory,
+        findings_exit=BETTERLEAKS_FINDINGS_EXIT,
+        environment=environment,
+        runtime_name=runtime_name,
+    )
+
+
+def _checkout_index(root: Path, destination: Path, *, only: Collection[str] | None = None) -> None:
     # A checkout applies repository-defined smudge filters and line-ending
     # conversion. Read Git's blobs directly so the scan sees the indexed bytes
     # without executing filters or downloading their external content.
@@ -189,6 +298,8 @@ def _checkout_index(root: Path, destination: Path) -> None:
         relative = raw_path.decode("utf-8", errors="surrogateescape")
         if stage != "0":
             raise RuntimeError("cannot scan an unmerged index")
+        if only is not None and relative not in only:
+            continue
         if mode == "160000":
             gitlinks.append(relative)
         elif mode in {"100644", "100755", "120000"}:
@@ -248,40 +359,66 @@ def _materialize_worktree(
     destination: Path,
     *,
     include_candidates: bool,
-) -> None:
-    """Build the next-add boundary from the index plus actual worktree changes."""
+    candidates: Sequence[str] | None = None,
+) -> tuple[str, ...]:
+    """Build the next-add boundary: each candidate as the worktree has it.
+
+    A sparse (skip-worktree) path is absent from the worktree by design, so its
+    published bytes are the indexed ones; everything else is written once, from the
+    worktree. Checking out the whole index first and then replacing almost every file
+    produced the same tree at twice the writes and a removal per file. Returns the
+    candidates it built, so a caller that also needs the inventory does not walk the
+    worktree again.
+    """
     skipped = _skip_worktree_paths(root)
     if any(audit._has_symlink_parent(root, relative) for relative in skipped):
         raise RuntimeError("a worktree symlink conflicts with a sparse index path")
-    _checkout_index(root, destination)
-    tracked = set(scannable_paths(root, include_candidates=False))
-    candidates = worktree_paths(root, include_candidates=include_candidates)
-    # Remove obsolete children before writing a file or link that replaces their
-    # directory. The inventory never follows the worktree link into private data.
-    for relative in sorted(tracked - set(candidates)):
-        _clear_snapshot_path(destination, destination / relative)
+    if candidates is None:
+        candidates = worktree_paths(root, include_candidates=include_candidates)
+    candidates = tuple(candidates)
+    from_index = skipped.intersection(candidates)
+    if from_index:
+        _checkout_index(root, destination, only=from_index)
+    modes = audit._tracked_modes(root)
+    parents: set[Path] = {destination}
     for relative in candidates:
         if relative in skipped:
             continue
         source = root / relative
-        target = destination / relative
-        if source.is_symlink() or source.is_file():
-            _clear_snapshot_path(destination, target)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            if source.is_symlink():
+        target = storage.inside(destination, destination / relative)
+        is_link = source.is_symlink()
+        if is_link or source.is_file():
+            if from_index and os.path.lexists(target):
+                _clear_snapshot_path(destination, target)
+            if target.parent not in parents:
+                target.parent.mkdir(parents=True, exist_ok=True)
+                parents.add(target.parent)
+            # The inventory never follows a worktree link into private data: a
+            # symlink is published as its link text.
+            if is_link:
                 target.write_text(os.readlink(source), encoding="utf-8")
             else:
                 shutil.copyfile(source, target)
+        elif modes.get(relative) == "160000" and source.is_dir():
+            # The policy pass reports gitlinks as external content. Keep the empty
+            # mount point for link checking without reading the external repository.
+            target.mkdir(parents=True, exist_ok=True)
+    return candidates
 
 
 def _markdown_paths(
-    root: Path, *, include_candidates: bool, staged: bool = False
+    root: Path,
+    *,
+    include_candidates: bool,
+    staged: bool = False,
+    inventory: Sequence[str] | None = None,
 ) -> tuple[str, ...]:
-    inventory = scannable_paths if staged else worktree_paths
+    if inventory is None:
+        inventory = (scannable_paths if staged else worktree_paths)(
+            root, include_candidates=include_candidates
+        )
     return tuple(
-        relative
-        for relative in inventory(root, include_candidates=include_candidates)
-        if Path(relative).suffix.lower() in MARKDOWN_SUFFIXES
+        relative for relative in inventory if Path(relative).suffix.lower() in MARKDOWN_SUFFIXES
     )
 
 
@@ -314,57 +451,61 @@ def lychee(
     staged: bool,
     include_candidates: bool,
     allow_download: bool,
+    shared: Shared | None = None,
 ) -> int:
     executable = toolchain.resolve("lychee", root=root, allow_download=allow_download)
     paths = _markdown_paths(
         root,
         include_candidates=include_candidates and not staged,
         staged=staged,
+        inventory=None if shared is None else shared.inventory(),
     )
     if not paths:
         return 0
+    if shared is not None:
+        return _lychee_in(shared, executable, paths, runtime_name="runtime-lychee")
     with storage.temporary(root, "index-" if staged else "worktree-") as workspace:
-        snapshot = workspace.path / "source"
-        snapshot.mkdir()
-        if staged:
-            _checkout_index(root, snapshot)
-        else:
-            _materialize_worktree(
-                root,
-                snapshot,
-                include_candidates=include_candidates,
-            )
-        workspace.remember(snapshot)
-        file_inputs, argument_batches = _lychee_inputs(paths)
-        inputs = storage.inside(workspace.path, workspace.path / "markdown-inputs.txt")
-        with inputs.open("x", encoding="utf-8") as stream:
-            stream.write("\n".join(file_inputs) + "\n")
-        workspace.remember(inputs)
-        base_command = [
-            str(executable),
-            "--offline",
-            "--no-progress",
-            "--mode",
-            "plain",
-        ]
-        deadline = time.monotonic() + ENGINE_TIMEOUT_SECONDS
-        verdict = 0
-        for index, arguments in enumerate(argument_batches):
-            command = base_command.copy()
-            if index == 0 and file_inputs:
-                command += ["--files-from", str(inputs)]
-            if arguments:
-                command += ["--", *arguments]
-            code = _run_owned(
-                workspace,
-                command,
-                root=snapshot,
-                findings_exit=LYCHEE_FINDINGS_EXIT,
-                runtime_name="runtime" if index == 0 else f"runtime-{index}",
-                deadline=deadline,
-            )
-            if code not in (0, LYCHEE_FINDINGS_EXIT):
-                return code
-            if code == LYCHEE_FINDINGS_EXIT:
-                verdict = code
-        return verdict
+        return _lychee_in(
+            Shared(workspace, root, staged=staged, include_candidates=include_candidates),
+            executable,
+            paths,
+            runtime_name="runtime",
+        )
+
+
+def _lychee_in(shared: Shared, executable: Path, paths: Sequence[str], *, runtime_name: str) -> int:
+    workspace = shared.workspace
+    snapshot = shared.source()
+    file_inputs, argument_batches = _lychee_inputs(paths)
+    inputs = storage.inside(workspace.path, workspace.path / "markdown-inputs.txt")
+    with inputs.open("x", encoding="utf-8") as stream:
+        stream.write("\n".join(file_inputs) + "\n")
+    workspace.remember(inputs)
+    base_command = [
+        str(executable),
+        "--offline",
+        "--no-progress",
+        "--mode",
+        "plain",
+    ]
+    deadline = time.monotonic() + ENGINE_TIMEOUT_SECONDS
+    verdict = 0
+    for index, arguments in enumerate(argument_batches):
+        command = base_command.copy()
+        if index == 0 and file_inputs:
+            command += ["--files-from", str(inputs)]
+        if arguments:
+            command += ["--", *arguments]
+        code = _run_owned(
+            workspace,
+            command,
+            root=snapshot,
+            findings_exit=LYCHEE_FINDINGS_EXIT,
+            runtime_name=runtime_name if index == 0 else f"{runtime_name}-{index}",
+            deadline=deadline,
+        )
+        if code not in (0, LYCHEE_FINDINGS_EXIT):
+            return code
+        if code == LYCHEE_FINDINGS_EXIT:
+            verdict = code
+    return verdict
