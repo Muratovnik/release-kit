@@ -21,7 +21,10 @@ def _base(value):
 def _read(path):
     path = storage.checked(path)
     if path.stat().st_size > 2 * 1024 * 1024:
-        raise ReleaseError("candidate receipt exceeds the read limit")
+        raise ReleaseError(
+            f"candidate receipt {path} exceeds the read limit; delete it and run "
+            "`relkit release prepare VERSION` again"
+        )
     return json.loads(path.read_text(encoding="utf-8"))
 
 
@@ -36,7 +39,10 @@ def ready(runner, value):
     if state.get("plan_sha256") != canonical.fingerprint(value) or state.get(
         "candidate_sha256"
     ) != canonical.fingerprint(record):
-        raise ReleaseError("local candidate receipt fingerprint differs")
+        raise ReleaseError(
+            f"local candidate receipt {path} fingerprint differs from its plan; do not edit "
+            f"receipts, run `relkit release prepare {value['tag']}` again"
+        )
     return {
         "kind": "local",
         "attempt": state["attempt"],
@@ -49,9 +55,13 @@ def load(runner, value):
     proof = value.get("candidate") or {}
     attempt = proof.get("attempt", "")
     if proof.get("kind") != "local" or not re.fullmatch(r"[a-f0-9]{32}", attempt):
-        raise ReleaseError("no matching local candidate; run release prepare VERSION, then plan")
+        raise ReleaseError(
+            f"no matching local candidate for {value['tag']}; run "
+            f"`relkit release prepare {value['tag']}`, then plan"
+        )
     parent = candidate.receipt_path(runner.root, value["tag"]).parent
-    state = _read(parent / f"{attempt}.json")
+    receipt = parent / f"{attempt}.json"
+    state = _read(receipt)
     base = _base(value)
     record = state.get("candidate", {})
     if (
@@ -63,10 +73,16 @@ def load(runner, value):
         or record.get("plan_sha256") != canonical.fingerprint(base)
         or record.get("files") != proof["files"]
     ):
-        raise ReleaseError("local candidate does not match the reviewed plan")
+        raise ReleaseError(
+            f"local candidate {receipt} does not match the reviewed plan for {value['tag']}; "
+            f"run `relkit release prepare {value['tag']}`, then plan again"
+        )
     directory = storage.inside(runner.root, parent / attempt / "assets")
     if candidate.inventory(value, directory) != proof["files"]:
-        raise ReleaseError("local candidate files changed; prepare and review again before tagging")
+        raise ReleaseError(
+            f"local candidate files changed under {directory}; run "
+            f"`relkit release prepare {value['tag']}` and review the plan again before tagging"
+        )
     return directory
 
 
@@ -181,7 +197,10 @@ def _draft(store, state):
         or release["id"] != state.get("release_id", release["id"])
         or (release.get("body") or "").replace("\r\n", "\n").rstrip("\n") != value["notes"]
     ):
-        raise ReleaseError("draft is not owned by this exact release plan or its notes changed")
+        raise ReleaseError(
+            f"the draft for {value['tag']} is not owned by this exact release plan or its "
+            "notes changed; inspect it on the hosting side, nothing was overwritten"
+        )
     return release
 
 
@@ -191,10 +210,16 @@ def publish(runner, store, state, path, workspace, *, verify_only=False):
     _, existing = coordinator._reconcile(runner, store, state)
     if existing and not existing["draft"]:
         if not state.get("publish_intent"):
-            raise ReleaseError("publication was not initiated by this run")
+            raise ReleaseError(
+                f"publication of {value['tag']} was not initiated by this run; inspect it before "
+                "resuming, release verify only checks a publication this run made"
+            )
         return existing
     if verify_only:
-        raise ReleaseError("verify needs a published release")
+        raise ReleaseError(
+            f"{value['tag']} has no published release to verify; publish it first with "
+            f"`relkit release run {value['tag']} --publish`"
+        )
     source = load(runner, value)
     directory = workspace.path / "prepared-assets"
     shutil.copytree(source, directory)
@@ -255,7 +280,10 @@ def publish(runner, store, state, path, workspace, *, verify_only=False):
         store.publish(value["tag"])
         release = store.release(value["tag"])
     if not release or release["draft"]:
-        raise ReleaseError("publication has not completed; resume to reconcile")
+        raise ReleaseError(
+            f"publication of {value['tag']} has not completed; run "
+            f"`relkit release resume {value['tag']} --publish` to reconcile"
+        )
     state["publication"] = "published"
     state["release_id"] = release["id"]
     coordinator._save(path, state)

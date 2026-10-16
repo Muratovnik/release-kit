@@ -82,7 +82,10 @@ def run(
         overlap = sorted(name for name in providers if name.casefold() in workflow_names)
         if overlap:
             raise owner.OwnerPolicyError(
-                "product provider is also declared as owner workflow: " + ", ".join(overlap)
+                "product provider is also declared as owner workflow: "
+                + ", ".join(overlap)
+                + f"; remove it from [exposure.providers] in {root / config_module.CONFIG_NAME} "
+                "or from the owner policy's workflows"
             )
         private_paths = _mounted_private_paths(settings, root, policy)
     except (
@@ -192,7 +195,10 @@ def run(
                 f"overlay mount not owned by this repository: {item}" for item in skipped
             )
     elif require_overlay:
-        failures.append(f"private overlay manifest is unavailable: {policy.manifest_path}")
+        failures.append(
+            f"private overlay manifest is unavailable: {policy.manifest_path}; create it, or "
+            "drop --require-overlay"
+        )
 
     if report.baselined:
         print(f"relkit audit: {len(report.baselined)} baselined finding(s) remain")

@@ -24,7 +24,8 @@ class Directory:
             self.runner.git("check-ignore", "--quiet", str(self.path / "probe"))
         except CommandError as error:
             raise ReleaseError(
-                "release.directory must be ignored by Git before preparation"
+                f"release.directory {self.path} must be ignored by Git before preparation; "
+                "add it to .gitignore"
             ) from error
 
     def release(self, tag):
@@ -33,20 +34,27 @@ class Directory:
         except ValueError:
             number = None
         if number is None:
-            raise ReleaseError("invalid release directory tag")
+            raise ReleaseError(
+                f"invalid release directory tag {tag!r}; expected vMAJOR.MINOR.PATCH"
+            )
         folder = storage.inside(self.path, self.path / tag)
         if not folder.exists():
             return None
         manifest = storage.checked(folder / MANIFEST)
         if not manifest.is_file() or manifest.stat().st_size > 2 * 1024 * 1024:
-            raise ReleaseError("release directory has no valid publication manifest")
+            raise ReleaseError(
+                f"release directory {folder} has no valid publication manifest ({MANIFEST}); "
+                "inspect it, a publication is never rewritten"
+            )
         record = json.loads(manifest.read_text(encoding="utf-8"))
         if (
             record.get("schema") != 1
             or record.get("tag") != tag
             or record.get("version") != str(number)
         ):
-            raise ReleaseError("release directory manifest identity differs")
+            raise ReleaseError(
+                f"release directory manifest {manifest} names a different tag or version than {tag}"
+            )
         return {
             "id": canonical.fingerprint(record),
             "tag_name": tag,
@@ -96,12 +104,20 @@ class Directory:
 
         record = release["record"]
         if record["sha"] != value["sha"] or record["tag_oid"] != tag_oid:
-            raise ReleaseError("published directory source/tag identity differs")
+            raise ReleaseError(
+                f"published directory {self.path / value['tag']} records a different source commit "
+                f"or tag object than this plan for {value['tag']}"
+            )
         directory = storage.inside(self.path, self.path / value["tag"] / "assets")
         if {item.name for item in directory.parent.iterdir()} != {MANIFEST, "assets"}:
-            raise ReleaseError("published directory contains unexpected files")
+            raise ReleaseError(
+                f"published directory {directory.parent} contains unexpected files; "
+                f"only {MANIFEST} and assets belong there"
+            )
         if inventory(value, directory) != record["files"]:
-            raise ReleaseError("published directory files changed")
+            raise ReleaseError(
+                f"published directory files changed under {directory}; a publication is never rewritten"
+            )
 
     def download(self, asset, destination):
         # Asset ids are scoped by release; the verifier sets its selected release.
@@ -137,6 +153,9 @@ class Directory:
             raise ReleaseError("exported files changed during copy")
         destination = storage.inside(self.path, self.path / value["tag"])
         if destination.exists():
-            raise ReleaseError("release directory already exists; never overwrite a publication")
+            raise ReleaseError(
+                f"release directory {destination} already exists; a publication is never "
+                "overwritten, so publish a new version instead"
+            )
         staged.rename(destination)
         return self.release(value["tag"])

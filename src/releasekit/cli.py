@@ -165,7 +165,9 @@ def _protect(arguments: argparse.Namespace) -> int:
     if arguments.action == "check":
         if arguments.dry_run or arguments.plan_hash:
             arguments.result.error(
-                "invalid_arguments", "check does not accept installation options"
+                "invalid_arguments",
+                "protect check does not accept --dry-run or --plan-hash; "
+                "preview a hook change with `relkit protect install --dry-run`",
             )
             return 2
         if problem := protection.problem(root):
@@ -190,7 +192,9 @@ def _protect(arguments: argparse.Namespace) -> int:
         plan = protection.install_plan(root)
         arguments.result.data["plan"] = plan
         if arguments.plan_hash and arguments.plan_hash != plan["plan_sha256"]:
-            raise protection.ProtectionError("reviewed hook plan is stale; review a new dry run")
+            raise protection.ProtectionError(
+                protection.stale_plan_message(arguments.plan_hash, plan)
+            )
         if arguments.dry_run:
             print("relkit protect: dry run; no hook written")
             return 0
@@ -209,7 +213,10 @@ def _notes(arguments: argparse.Namespace) -> int:
     source_changelog = root / arguments.changelog
     path = source_changelog
     if arguments.from_tag and not arguments.draft:
-        message = "--from-tag is only valid with --draft"
+        message = (
+            "--from-tag is only valid with --draft; "
+            f"use `relkit notes {arguments.version} --draft --from-tag {arguments.from_tag}`"
+        )
         arguments.result.error("generation_error", message)
         print(f"relkit notes: {message}", file=sys.stderr)
         return 2
@@ -701,7 +708,11 @@ def _execute(argv: list[str], json_mode: bool, invocation: _Invocation) -> int:
     with _stdout_is_the_envelope():
         try:
             if arguments.command == "update" and not arguments.dry_run and not arguments.yes:
-                result.error("confirmation_required", "JSON updates require explicit --yes")
+                result.error(
+                    "confirmation_required",
+                    "JSON updates require explicit --yes; review `relkit update --dry-run --json`, "
+                    "then repeat with --yes --plan-hash HASH",
+                )
                 code = 2
             else:
                 code = int(arguments.handler(arguments))

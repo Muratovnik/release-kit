@@ -143,23 +143,30 @@ def _repository(root: Path) -> Path:
         )
     top = Path(_run(["git", "rev-parse", "--show-toplevel"], root).strip()).resolve()
     if top != root:
-        raise UpdateError("--root must name the repository root, not a subdirectory")
+        raise UpdateError(f"--root {root} is not the repository root; pass --root {top}")
     git_dir = root / ".git"
     if not git_dir.is_dir():
         raise UpdateError(
-            "linked worktrees and external Git directories require an owner-managed update"
+            f"{git_dir} is not a project-local Git directory; linked worktrees and external "
+            "Git directories require an owner-managed update (or update from the main checkout)"
         )
     _safe_path(git_dir, root)
     for option in ("--absolute-git-dir", "--git-common-dir"):
         reported = Path(_run(["git", "rev-parse", option], root).strip())
         if (root / reported).resolve() != git_dir:
-            raise UpdateError("external Git directories require an owner-managed update")
+            raise UpdateError(
+                f"Git metadata for {root} resolves to {(root / reported).resolve()}, outside "
+                f"{git_dir}; external Git directories require an owner-managed update"
+            )
     return git_dir
 
 
 def _read_artifact(path: Path) -> tuple[bytes, distribution.Artifact]:
     if path.stat().st_size > distribution.MAX_ARCHIVE_BYTES:
-        raise UpdateError("distribution exceeds the archive size limit")
+        raise UpdateError(
+            f"distribution {path} exceeds the archive size limit "
+            f"({distribution.MAX_ARCHIVE_BYTES} bytes)"
+        )
     payload = path.read_bytes()
     return payload, distribution.inspect(payload)
 
@@ -228,23 +235,35 @@ def _confirm(yes: bool) -> None:
         return
     if not sys.stdin.isatty():
         raise UpdateError(
-            "review --dry-run first; pass --yes only after approving the displayed file/guard changes"
+            "review `relkit update --dry-run` first; pass --yes --plan-hash HASH only after "
+            "approving the displayed file/guard changes"
         )
     if input("Apply these changes? [y/N] ").strip().casefold() not in {"y", "yes"}:
         raise UpdateError("cancelled; no project files or guard changed")
 
 
 def _clean(root: Path) -> None:
-    if _run(["git", "status", "--porcelain=v1", "--untracked-files=all"], root).strip():
+    changes = _run(["git", "status", "--porcelain=v1", "--untracked-files=all"], root).splitlines()
+    if changes:
+        listed = ", ".join(line[3:] for line in changes[:5]) + (", ..." if len(changes) > 5 else "")
         raise UpdateError(
-            "update requires a clean checkout; commit or resolve changes without auto-stashing"
+            f"update requires a clean checkout ({len(changes)} change(s) in {root}: {listed}); "
+            "commit or resolve them, nothing is auto-stashed"
         )
 
 
 def _tracked(root: Path) -> None:
     for path in (PROJECTION, config.CONFIG_NAME):
-        if not _run(["git", "ls-files", "--error-unmatch", "--", path], root).strip():
-            raise UpdateError(f"update requires a tracked {path}")
+        # --error-unmatch exits 1 for an untracked path, which `_run` raises as a
+        # bare git failure; say which file instead.
+        try:
+            tracked = _run(["git", "ls-files", "--error-unmatch", "--", path], root).strip()
+        except _CommandError as error:
+            if error.returncode != 1:
+                raise
+            tracked = ""
+        if not tracked:
+            raise UpdateError(f"update requires a tracked {root / path}; commit it first")
 
 
 def _github(
@@ -359,11 +378,11 @@ def _save_receipt(path: Path, receipt: dict[str, object]) -> None:
 def _load_receipt(path: Path) -> dict[str, object]:
     receipt = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(receipt, dict) or receipt.get("schema") != 1:
-        raise UpdateError("invalid update receipt; preserve the backup for manual recovery")
+        raise UpdateError(f"invalid update receipt {path}; preserve the backup for manual recovery")
     if receipt.get("state") not in {"pending", "installed", "rolled-back"}:
-        raise UpdateError("invalid update receipt state")
+        raise UpdateError(f"invalid update receipt state in {path}")
     if not isinstance(receipt.get("inputs"), dict):
-        raise UpdateError("invalid update receipt inputs")
+        raise UpdateError(f"invalid update receipt inputs in {path}")
     return receipt
 
 
@@ -400,21 +419,28 @@ def _restore_targets(
     if not isinstance(backup_name, str) or not re.fullmatch(
         r"relkit-update-[A-Za-z0-9_-]+", backup_name
     ):
-        raise UpdateError("invalid rollback backup directory")
+        raise UpdateError(
+            f"invalid rollback backup directory {backup_name!r} in the update receipt; "
+            "preserve the receipt for manual recovery"
+        )
     backup = _safe_path(git_dir / backup_name, root)
     projection = _safe_path(root / PROJECTION, root)
     previous, artifact = _read_artifact(_safe_path(backup / "relkit.pyz", root))
     if artifact.sha256 != receipt["old_sha256"]:
-        raise UpdateError("rollback backup has changed")
+        raise UpdateError(
+            f"rollback backup has changed: {backup / 'relkit.pyz'}; refusing rollback"
+        )
     _check_inputs(root, receipt["inputs"])
     if protection._sha256(projection) not in {receipt["old_sha256"], receipt["new_sha256"]}:
-        raise UpdateError("installed artifact has changed since the update; refusing rollback")
+        raise UpdateError(
+            f"installed artifact has changed since the update: {projection}; refusing rollback"
+        )
     hook = _safe_path(git_dir / "hooks/pre-push", root)
     old_hook = None
     if receipt["guard_sha256"] is not None:
         old_hook = _safe_path(backup / "pre-push", root).read_bytes()
         if protection._sha256(backup / "pre-push") != receipt["guard_sha256"]:
-            raise UpdateError("guard backup has changed")
+            raise UpdateError(f"guard backup has changed: {backup / 'pre-push'}; refusing rollback")
         # The receipt pins the exact bytes this transaction installs, and rollback
         # must accept them. Recomputing the guard is not an alternative: a release
         # that adds a guarded input or changes the template makes the current hook
@@ -425,9 +451,9 @@ def _restore_targets(
         if not hook.exists() or (
             protection._sha256(hook) not in accepted and not _guard_of_record(root, receipt)
         ):
-            raise UpdateError("guard has changed since the update; refusing rollback")
+            raise UpdateError(f"guard has changed since the update: {hook}; refusing rollback")
     elif hook.exists():
-        raise UpdateError("a guard appeared since the update; refusing rollback")
+        raise UpdateError(f"a guard appeared at {hook} since the update; refusing rollback")
     targets = [(projection, previous, int(receipt["projection_mode"]))]
     if old_hook is not None:
         targets.append((hook, old_hook, int(receipt["guard_mode"])))
@@ -521,7 +547,10 @@ def run(
             digest = canonical.fingerprint(value)
             result.data.update(plan=value, plan_sha256=digest, state="planned")
             if plan_hash and plan_hash != digest:
-                raise UpdateError("reviewed rollback plan is stale; review a new dry run")
+                raise UpdateError(
+                    "reviewed rollback plan is stale; run `relkit update --rollback --dry-run` "
+                    "and pass its plan_sha256 as --plan-hash"
+                )
             print(f"relkit update: restore {receipt['old_version']} from {receipt['backup']}")
             if dry_run:
                 return 0
@@ -617,7 +646,8 @@ def run(
                 <= distribution.version_tuple(old.version)
             ):
                 raise UpdateError(
-                    "refusing a downgrade or changed bytes under the same version; publish a new version"
+                    f"refusing to move {PROJECTION} from {old.version} to {candidate.version}: a "
+                    "downgrade or changed bytes under the same version; publish a new version"
                 )
             if not noop and not refresh_guard:
                 _clean(root)
@@ -672,7 +702,10 @@ def run(
             digest = canonical.fingerprint(value)
             result.data.update(plan=value, plan_sha256=digest, state="planned")
             if plan_hash and plan_hash != digest:
-                raise UpdateError("reviewed update plan is stale; review a new dry run")
+                raise UpdateError(
+                    "reviewed update plan is stale; repeat the same `relkit update --dry-run` "
+                    "and pass its plan_sha256 as --plan-hash"
+                )
             if noop:
                 result.data["state"] = "unchanged"
                 return 0

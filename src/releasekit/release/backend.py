@@ -74,7 +74,10 @@ class Runner:
                 timeout=timeout,
             )
         except subprocess.TimeoutExpired as error:
-            raise Pending(f"{args[0]} timed out; reconcile remote state with resume") from error
+            raise Pending(
+                f"{args[0]} timed out after {timeout}s; if it changed remote state, "
+                "reconcile with `relkit release resume VERSION --publish`"
+            ) from error
         except OSError as error:
             raise ReleaseError(f"cannot execute {args[0]}: {error}") from error
         finally:
@@ -142,7 +145,9 @@ class GitHub:
         matching = [item for item in self.releases() if item["tag_name"] == tag]
         if len(matching) > 1:
             raise ReleaseError(
-                "multiple releases or drafts claim the same tag; reconcile explicitly"
+                f"multiple releases or drafts ({len(matching)}) claim the tag {tag} in "
+                f"{self.repository}; "
+                "delete the extras on its Releases page so exactly one remains, then retry"
             )
         return matching[0] if matching else None
 
@@ -168,7 +173,9 @@ class GitHub:
     def preflight(self):
         if not (self.api("/immutable-releases", optional=True) or {}).get("enabled"):
             raise ReleaseError(
-                "enable immutable releases before publishing; no tag was created (this check needs repository administration read access)"
+                f"enable immutable releases for {self.repository} (Settings > General > "
+                "Releases) before publishing; no tag was created. This check needs repository "
+                "administration read access"
             )
 
     def create_draft(self, tag, sha, title, notes: Path, *, tag_oid: str) -> dict:
@@ -387,59 +394,96 @@ def repository(runner: Runner) -> None:
             "unset Git directory/index/object overrides before coordinating a release: "
             + ", ".join(redirected)
         )
-    if Path(runner.git("rev-parse", "--show-toplevel")).resolve() != root:
-        raise ReleaseError("--root must name the repository root")
+    toplevel = Path(runner.git("rev-parse", "--show-toplevel")).resolve()
+    if toplevel != root:
+        raise ReleaseError(f"--root {root} is not the repository root; pass --root {toplevel}")
     if not (root / ".git").is_dir():
         raise ReleaseError(
-            "release coordination currently requires project-local .git, not a linked worktree"
+            f"{root / '.git'} is not a project-local Git directory (a linked worktree has a "
+            "file there); run release coordination from the main checkout"
         )
     for option in ("--absolute-git-dir", "--git-common-dir"):
-        if (root / runner.git("rev-parse", option)).resolve() != storage.checked(root / ".git"):
-            raise ReleaseError("external Git metadata is not supported by release coordination")
+        found = (root / runner.git("rev-parse", option)).resolve()
+        if found != storage.checked(root / ".git"):
+            raise ReleaseError(
+                f"Git metadata for {root} resolves to {found}, outside {root / '.git'}; "
+                "release coordination needs project-local Git metadata"
+            )
     if runner.git("rev-parse", "--is-shallow-repository") != "false":
-        raise ReleaseError("complete Git history is required; fetch it explicitly before planning")
-    if (
-        runner.git("for-each-ref", "--format=%(refname)", "refs/replace")
-        or (root / ".git/info/grafts").exists()
-    ):
-        raise ReleaseError("replace refs and grafts make release ancestry ambiguous")
+        raise ReleaseError(
+            f"complete Git history is required but {root} is a shallow clone; "
+            "run `git fetch --unshallow` there, then plan again"
+        )
+    if runner.git("for-each-ref", "--format=%(refname)", "refs/replace"):
+        raise ReleaseError(
+            f"refs/replace has entries in {root}, which make release ancestry ambiguous; "
+            "remove them with `git replace -d`"
+        )
+    if (root / ".git/info/grafts").exists():
+        raise ReleaseError(
+            f"{root / '.git/info/grafts'} makes release ancestry ambiguous; remove the file"
+        )
 
 
 def clean(runner: Runner, sha: str | None = None) -> None:
-    if runner.git("status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"):
+    dirty = runner.call(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]
+    ).splitlines()
+    if dirty:
+        shown = "\n".join(f"  {line}" for line in dirty[:5])
+        if len(dirty) > 5:
+            shown += f"\n  ... and {len(dirty) - 5} more"
         raise ReleaseError(
-            "release preparation requires a clean repository; no files were committed or stashed"
+            f"release preparation requires a clean repository ({len(dirty)} change(s) in "
+            f"{runner.root}); commit them or remove what is not needed. Nothing was committed "
+            f"or stashed:\n{shown}"
         )
-    if sha and runner.git("rev-parse", "HEAD") != sha:
-        raise ReleaseError("HEAD changed since the release plan")
-    # Git status intentionally hides these working-tree/index differences.
-    if any(
-        line[:1] in {"S"} or line[:1].islower()
-        for line in runner.git("ls-files", "-v").splitlines()
-    ):
+    if sha and (head := runner.git("rev-parse", "HEAD")) != sha:
         raise ReleaseError(
-            "clear sparse/skip-worktree/assume-unchanged flags before preparing a release"
+            f"HEAD is {head[:12]} but the release plan pinned {sha[:12]}; check out "
+            f"{sha[:12]} or plan again for the new HEAD"
+        )
+    # Git status intentionally hides these working-tree/index differences.
+    hidden = [
+        line[2:]
+        for line in runner.git("ls-files", "-v").splitlines()
+        if line[:1] in {"S"} or line[:1].islower()
+    ]
+    if hidden:
+        listed = ", ".join(hidden[:5]) + (", ..." if len(hidden) > 5 else "")
+        raise ReleaseError(
+            f"{len(hidden)} file(s) carry sparse/skip-worktree/assume-unchanged flags ({listed}); "
+            "clear them with `git update-index --no-skip-worktree --no-assume-unchanged -- PATH` "
+            "before preparing a release"
         )
 
 
 def remote_identity(runner: Runner, remote: str, expected: str) -> None:
     for option in ([], ["--push"]):
         urls = runner.git("remote", "get-url", *option, "--all", remote).splitlines()
+        kind = "push" if option else "fetch"
         if len(urls) != 1:
-            raise ReleaseError("release requires exactly one fetch URL and one push URL")
+            raise ReleaseError(
+                f"release requires exactly one {kind} URL for remote {remote}, found {len(urls)}"
+            )
         match = re.fullmatch(
             r"(?:https://github\.com/|git@github\.com:|ssh://git@github\.com/)([^/]+/[^/]+?)(?:\.git)?",
             urls[0],
         )
         if not match or match[1].casefold() != expected.casefold():
             raise ReleaseError(
-                "fetch/push remote identity does not match release.repository on github.com"
+                f"{remote} {kind} URL {urls[0]} does not match release.repository {expected} on "
+                f"github.com; fix it with `git remote set-url{' --push' if option else ''} "
+                f"{remote} https://github.com/{expected}.git`"
             )
     # push defaults can silently add refs or change the destination despite an explicit refspec.
     for key in (f"remote.{remote}.mirror", "push.followTags"):
         try:
             if runner.git("config", "--bool", "--get", key) == "true":
-                raise ReleaseError(f"{key}=true conflicts with exact release ref pushes")
+                raise ReleaseError(
+                    f"{key}=true conflicts with exact release ref pushes; unset it with "
+                    f"`git config --unset {key}` (add --global if it is set there)"
+                )
         except CommandError as error:
             if error.result.returncode != 1:
                 raise
