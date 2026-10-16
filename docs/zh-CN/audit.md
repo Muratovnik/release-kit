@@ -110,6 +110,7 @@ useDefault = true
 python .github/relkit.pyz audit
 python .github/relkit.pyz audit --staged
 python .github/relkit.pyz audit --history
+python .github/relkit.pyz audit --push --remote origin   # 行由标准输入提供
 ```
 
 工作树范围包括被跟踪的文件，以及未被跟踪但也未被忽略的待发布候选文件。暂存范围读取 Git
@@ -127,6 +128,17 @@ python .github/relkit.pyz audit --history
 检查点引用被刻意排除在此范围之外。未被跟踪但也未被忽略的文件仍可由工作树候选检查覆盖；
 它们并不会因此成为 Git 历史的一部分。历史检查拒绝浅克隆、replace 引用与非空的 Git graft，
 并在其 Git 与扫描器进程中关闭 replace 语义。
+
+push 范围由[仓库防护](#仓库防护)运行。它读取 Git 写入 `pre-push` 钩子的各行
+（`<local ref> <local sha> <remote ref> <remote sha>`）以及 `--remote`（Git 作为钩子第一个
+参数给出的目标），只检查这次 push 所发布的内容：其提交、远端引用名称与附注标签对象，
+规则与历史范围相同，包括对这些提交运行的密钥扫描器。它不要求工作树干净，也不读取任何
+其他引用，因此某个会话未完成的改动或另一个分支上的发现，都不会拒绝一次干净的 push。
+更新从远端当前的顶端起算；新引用，或本克隆从未拉取过的顶端，则从该 remote 的远程跟踪
+引用尚未包含的内容起算，所以向空 remote 的首次 push 会被完整检查。删除与空输入直接通过。
+被推送的提交从 remote 原样继承的文件不会被再次读取。`--strict` 与 `--require-overlay`
+不适用。push 范围是有意收窄的：只存在于从未推送的本地分支中的私有值，在 push 时不会
+暴露。发布流程与 `audit --history` 仍会检查全部历史，因此请在发布前运行它。
 
 在做恢复性复核之前，请先拉取仅存在于托管端的引用：本地检查无法检查克隆中并不存在的对象。
 Git 历史扫描及其链接检查都不覆盖托管的 issues、Actions 日志和单独上传的发布文件。这些独立
@@ -228,7 +240,8 @@ python .github/relkit.pyz protect install --plan-hash REVIEWED
 python .github/relkit.pyz protect check
 ```
 
-已安装的防护位于 `<git-common-dir>/hooks/pre-push`，运行带强制私有所有者策略的历史门禁。
+已安装的防护位于 `<git-common-dir>/hooks/pre-push`，运行门禁的 [push 范围](#范围)，即
+`audit --push --owner`，并强制使用私有所有者策略。
 基础 CLI 安装并不需要它。它会固定被跟踪的投影副本、`relkit.toml`、所配置的密钥策略，以及
 ——对于基于 workflow 的发布配置——发布用的 workflow。对已固定输入的复核性改动需要显式的
 [防护刷新](updates.md#已被修改的文件与防护漂移)。
@@ -236,7 +249,9 @@ python .github/relkit.pyz protect check
 如果 `core.hooksPath` 把 Git 重定向到别处，那位外部所有者必须先提供一个带
 `# git-common-dir-hook-dispatcher: pre-push v1` 标记的可执行调度器。release-kit 会先验证
 兼容性再写入自己的仓库防护；它从不创建或替换外部调度器。防护会解析 `python`、`python3` 或
-`py`。较旧但仍受支持的防护模板会继续执行其固定项，直到被显式刷新。关于 0.5.0 之前的归属
+`py`。较旧但仍受支持的防护模板会继续执行其固定项，直到被显式刷新；push 范围出现之前的防护会在
+每次 push 时检查全部历史，`protect check` 会指明用 `relkit protect install` 换用当前版本。
+防护运行的是仓库固定的投影副本，因此请先更新投影副本。关于 0.5.0 之前的归属
 模型，请遵循[迁移流程](updates.md#迁移防护钩子的所有者)。
 
 本地的 pre-push 防护不是服务端的分支保护。不要绕过它，也不要为了让发布通过而削弱所有者

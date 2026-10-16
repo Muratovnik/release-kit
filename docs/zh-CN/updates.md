@@ -86,7 +86,9 @@ python .github/relkit.pyz protect check
 
 同一模式也用于接纳由更早版本 release-kit 写入的防护。一个固定了当前输入的旧模板不算漂移，
 并且仍在持续生效：`protect check` 会如实报告，刷新操作会在备份、校验与可回滚的前提下重写
-它。这不是需要绕过流程的紧急情况。
+它。这不是需要绕过流程的紧急情况。push 范围出现之前的防护就是这样的模板：在
+`relkit protect install` 换用当前模板之前，它会在每次 push 时检查全部历史与干净的被跟踪
+树，并要求投影副本不早于新增 `audit --push` 的版本。
 
 ## 首次更新与回滚
 

@@ -68,7 +68,7 @@ insufficient, and an unknown remote outcome still needs reconciliation.
 `exposure` returns `data.exposure`: `new` and `baselined` findings with `path`,
 `kind`, `detail`, plus `stale`, `unreadable` and `excluded` string arrays.
 
-`audit` adds `scope` (`worktree`, `staged`, `history`) and `engines`, mapping
+`audit` adds `scope` (`worktree`, `staged`, `history`, `push`) and `engines`, mapping
 engine names to native exit codes or `null` when not completed. Release-kit sets
 Betterleaks' findings exit code to `10`; Lychee uses `2` for link findings.
 Those codes produce audit exit `1`. Other nonzero engine codes mean an
@@ -77,7 +77,8 @@ publication findings. History adds
 `untracked_present`: untracked entries do not by themselves violate the clean
 tracked-tree precondition; configured worktree candidate checks still apply.
 Native engine diagnostics are not invented structured findings. The top-level
-exit also includes history, guard and overlay failures.
+exit also includes history, guard and overlay failures. Push scope adds `remote` and
+`pushed_commits` (commits the push publishes) and runs no link engine.
 
 `engine_cleanup_unconfirmed` is an exit `2` refusal: owned engine descendants
 could not be confirmed stopped. The entire scanner workspace is retained. Verify

@@ -212,6 +212,7 @@ names and configuration keys are never translated.
 | Scanner download or cache error | Check network access and the `.cache/` ignore; `--no-download` only works with complete verified caches |
 | Missing `relkit.toml` or secret policy | Run from the intended project root; check both files from the starter example |
 | History refuses local changes | Use `audit` or `audit --staged` while editing; commit reviewed changes before `--history` |
+| A push is refused over local changes or another branch (older owner guard) | Run `relkit protect check`; `relkit protect install` adopts the guard that checks only the pushed commits |
 | A machine install and a project pin disagree | Prefer the project form for CI and hooks; compare `relkit --version` with the pinned copy |
 | Existing projection or guard drift | Use the [update guide](docs/updates.md), not an overwrite or `--no-verify` |
 | Plugin is not discovered or starts an old version | Follow [plugin troubleshooting](docs/plugin.md#troubleshooting), including native-client reload |

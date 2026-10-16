@@ -120,6 +120,7 @@ a permanent green exception.
 python .github/relkit.pyz audit
 python .github/relkit.pyz audit --staged
 python .github/relkit.pyz audit --history
+python .github/relkit.pyz audit --push --remote origin   # lines on standard input
 ```
 
 Worktree scope includes tracked files and untracked/unignored publication candidates.
@@ -154,6 +155,22 @@ part of Git history. History rejects shallow clones, replace refs and nonempty
 Git grafts, and disables replacement semantics in its Git/scanner processes.
 Public refs pointing directly to a tree or blob are included even when no commit contains
 that object; tree entries retain every path and symlink mode for policy checks.
+
+Push scope is what the [repository guard](#repository-guard) runs. It reads the lines
+Git writes to a `pre-push` hook (`<local ref> <local sha> <remote ref> <remote sha>`) and
+`--remote`, the destination Git names as the hook's first argument, and judges only what
+that push publishes: its commits, the remote ref names and annotated tag objects, with
+the rules history scope applies, including the secret scanner over those commits. It
+neither needs a clean worktree nor reads any other ref, so one session's unfinished
+edits, or another branch's finding, cannot refuse a clean push. An update is judged
+from the remote's current tip; a new ref, or a tip this checkout never fetched, from
+what the remote-tracking refs of that remote do not hold, so the first push to an empty
+remote is judged in full. Deletions and empty input pass. Files a pushed commit
+inherits unchanged from the remote are not read again. `--strict` and
+`--require-overlay` do not apply. Push scope narrows the verdict on purpose: a private
+value that lives only in a local branch that is never pushed does not surface at push.
+The release and `audit --history` still judge the whole history, so run that before
+publishing.
 
 Fetch host-only refs before a recovery review: local checks cannot inspect objects
 the checkout does not possess. Neither Git history scanning nor its link checker
@@ -270,8 +287,9 @@ python .github/relkit.pyz protect install --plan-hash REVIEWED
 python .github/relkit.pyz protect check
 ```
 
-The installed guard lives at `<git-common-dir>/hooks/pre-push` and runs the history
-gate with mandatory private owner policy. It is not required for the basic CLI
+The installed guard lives at `<git-common-dir>/hooks/pre-push` and runs the
+[push scope](#scopes) of the gate, `audit --push --owner`, with mandatory private owner
+policy. It is not required for the basic CLI
 installation. It pins the tracked projection, `relkit.toml`, the configured secret
 policy and, for a workflow-backed release configuration, the publishing workflow.
 Reviewed changes to pinned inputs require an explicit
@@ -282,7 +300,9 @@ an executable dispatcher with `# git-common-dir-hook-dispatcher: pre-push v1`.
 Release-kit verifies compatibility before writing its repository guard; it never
 creates/replaces the external dispatcher. The guard resolves `python`, `python3`
 or `py`. Older supported guard templates keep enforcing their pins until explicitly
-refreshed. For pre-0.5.0 ownership, follow the
+refreshed; guards from before this scope judge the whole history at every push, and
+`protect check` names `relkit protect install` to adopt the current one. The guard runs
+the projection the repository pins, so update the projection first. For pre-0.5.0 ownership, follow the
 [migration procedure](updates.md#migrating-the-guard-owner).
 
 The local pre-push guard is not server-side branch protection. Do not bypass it or

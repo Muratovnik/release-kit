@@ -191,6 +191,7 @@ Lychee 构件。对未知或未固定的扫描器平台，工具会拒绝执行�
 | 扫描器下载或缓存错误 | 检查网络访问与 `.cache/` 忽略规则；`--no-download` 仅在缓存完整且已校验时可用 |
 | 缺少 `relkit.toml` 或密钥策略 | 请在预期的项目根目录下运行；对照起始示例检查这两个文件 |
 | 历史检查因本地改动而拒绝执行 | 编辑期间使用 `audit` 或 `audit --staged`；在 `--history` 之前提交已复核的改动 |
+| push 因本地改动或其他分支而被拒绝（旧版所有者防护） | 运行 `relkit protect check`；`relkit protect install` 换用只检查被推送提交的防护 |
 | 机器级安装与项目固定版本不一致 | CI 与钩子请以项目内形式为准；把 `relkit --version` 与固定副本作对比 |
 | 既有投影副本或防护出现漂移 | 使用[更新指南](docs/zh-CN/updates.md)，而不是覆盖或 `--no-verify` |
 | 插件未被发现或启动了旧版本 | 按 [plugin troubleshooting](docs/plugin.md#troubleshooting)（英文）处理，包括重新加载原生客户端 |
