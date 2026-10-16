@@ -150,7 +150,9 @@ def _normalized(text: str) -> str:
     if text.isascii():
         return text
     normalized = unicodedata.normalize("NFKC", text)
-    if not any(unicodedata.category(character) == "Cf" for character in normalized):
+    # Asking once per distinct character, not once per character: a long non-ASCII
+    # file repeats the same few hundred characters, and history scans thousands.
+    if not any(unicodedata.category(character) == "Cf" for character in set(normalized)):
         return normalized
     return "".join(character for character in normalized if unicodedata.category(character) != "Cf")
 
@@ -168,6 +170,10 @@ class _Prepared(NamedTuple):
     collapsed: str
 
 
+# The same text is prepared for several rules in a row - wrapped values, workflows,
+# then every structural rule - and each preparation is a full pass. The forms depend on
+# the text alone, so the latest few are kept for this process.
+@lru_cache(maxsize=4)
 def _prepare(text: str) -> _Prepared:
     normalized = _normalized(text)
     folded = normalized.casefold()
