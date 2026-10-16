@@ -32,6 +32,9 @@ class Runner:
     def __init__(self, root: Path):
         self.root = root
         self.log: Path | None = None
+        # The invocation's own run.log. While a candidate is prepared in the same
+        # invocation `log` is the attempt's, and stage lines go to both.
+        self.run_log: Path | None = None
         self.temporary: Path | None = None
 
     def call(
@@ -425,18 +428,55 @@ def repository(runner: Runner) -> None:
         )
 
 
+def _changes(runner: Runner) -> list[tuple[str, str]]:
+    """Status code and exact path of every change, read NUL-separated so no path is quoted."""
+    records = runner.call(
+        [
+            "git",
+            "status",
+            "--porcelain=v1",
+            "-z",
+            "--untracked-files=all",
+            "--ignore-submodules=none",
+        ]
+    ).split("\0")
+    changes: list[tuple[str, str]] = []
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        code, path = record[:2], record[3:]
+        changes.append((code, path))
+        if code[0] in "RC" or code[1] in "RC":
+            index += 1  # a rename or copy carries its source as the next record
+    return changes
+
+
 def clean(runner: Runner, sha: str | None = None) -> None:
-    dirty = runner.call(
-        ["git", "status", "--porcelain=v1", "--untracked-files=all", "--ignore-submodules=none"]
-    ).splitlines()
+    dirty = _changes(runner)
     if dirty:
-        shown = "\n".join(f"  {line}" for line in dirty[:5])
+        shown = "\n".join(f"  {code} {path}" for code, path in dirty[:5])
         if len(dirty) > 5:
             shown += f"\n  ... and {len(dirty) - 5} more"
+        untracked = [path for code, path in dirty if code == "??"]
+        fix = ""
+        if untracked:
+            # Owner decision: an untracked runtime file stays dirt for a release, because
+            # only the adopting repository can say it is not part of the source. Naming
+            # the paths and the one fix that applies is the whole remedy.
+            listed = ", ".join(untracked[:5]) + (
+                f" and {len(untracked) - 5} more" if len(untracked) > 5 else ""
+            )
+            fix = (
+                f"\nuntracked: {listed}; if it is runtime output, add it to .gitignore "
+                "(one line per path) and commit .gitignore, otherwise delete it"
+            )
         raise ReleaseError(
             f"release preparation requires a clean repository ({len(dirty)} change(s) in "
             f"{runner.root}); commit them or remove what is not needed. Nothing was committed "
-            f"or stashed:\n{shown}"
+            f"or stashed:\n{shown}{fix}"
         )
     if sha and (head := runner.git("rev-parse", "HEAD")) != sha:
         raise ReleaseError(

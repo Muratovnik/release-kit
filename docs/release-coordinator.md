@@ -200,9 +200,9 @@ preparation is reused only by an identical plan; changed source, policy, predece
 or host requires preparation again. Each attempt remains under the project's
 service directory `candidates/TAG/`; `ready.json` selects the latest successful one.
 
-At publication, local checks run again and the candidate is downloaded/revalidated
-before creating the release annotation. The annotation records run, attempt and
-manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
+At publication in a separate invocation, local checks run again and the candidate is
+downloaded/revalidated before creating the release annotation. The annotation records
+run, attempt and manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
 DIRECTORY` to retrieve exactly those bytes into an empty directory, then creates
 the draft. `relkit release draft VERSION --assets DIRECTORY` checks the promoted
 files, committed notes and full remote inventory before CI lifts the draft. These
@@ -212,6 +212,37 @@ promotion attestation must not claim the original build ran under a tag.
 For a prerelease tag, CI must create a draft marked as a prerelease; the draft
 and published verifiers reject a channel mismatch. The local GitHub adapter sets
 that flag itself.
+
+### One invocation
+
+```bash
+relkit release plan v1.0.0
+relkit release run v1.0.0 --publish --prepare --ci-run RUN_ID --plan-hash REVIEWED_SHA256
+```
+
+`prepare` followed by a separate `run` runs the local gate twice, once in each process.
+`run --prepare --ci-run RUN_ID` does what `prepare` does and then publishes inside the
+same process, so the checks, both audits and the candidate smoke run once. The hash to
+review is the one `plan` prints before a candidate exists, as for a
+[local candidate](local-releases.md#one-invocation); the candidate is bound to that plan
+after preparation and its receipt is written as usual. The run receipt records
+`preparation.invocation = "same"`, the attempt and the CI run.
+
+The no-reuse rule below is unchanged. Nothing runs between that gate and the tag but the
+coordinator, so a check result is not carried across invocations; a later `resume`, or a
+`run` after a separate `prepare`, is a new invocation and runs the gate again. Before the
+tag, the candidate is revalidated from the bytes already on disk: the CI run, its jobs and
+attempt are read again, every file is hashed again and compared with the manifest.
+
+The candidate is downloaded once. Any `run` that downloaded the candidate in its own
+invocation verifies from those bytes, so this also holds for `run` after a separate
+`prepare`; `resume` and `verify` downloaded nothing and download the published files.
+After publication, verification takes each published
+asset from those bytes when its size and SHA-256 equal the published identity, which
+`relkit` has already matched to GitHub's signed release attestation; the signature,
+provenance and smoke checks then run on the copies. A candidate file that changed on disk
+is not trusted: that asset is downloaded and verified as in `resume`, which always
+downloads. Published files that differ from the prepared candidate still fail verification.
 
 This uses native [workflow dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 and [run artifact downloads](https://cli.github.com/manual/gh_run_download), with
@@ -267,8 +298,10 @@ The saved receipt binds the plan, repository ID, SHA, tag object, CI run/attempt
 release ID, asset IDs/sizes/digests and separate publication/verification/cleanup
 results. A repository-wide exclusive lock prevents concurrent runs; it is never
 stolen automatically. A busy lock reports its recorded PID, tag and root together
-with whether that PID is still running; remove only that exact stale lock after
-proving the process is inactive.
+with whether that PID is still running. After a crash, `relkit release unlock
+[VERSION]` removes that exact lock once it has proven the owner is gone, and
+otherwise refuses with the unmet condition and the lock's path; see
+[removing a stale lock](#removing-a-stale-lock).
 
 `resume` first checks actual remote identity/refs/release, including after a lost
 push response. It never adopts an unrelated tag/release or silently substitutes
@@ -312,7 +345,8 @@ as `.git/relkit/releases/vX.Y.Z.abandoned-<timestamp>/` and starts a new one. An
 older receipt can be abandoned by a newer release-kit.
 
 Local checks are not cached across invocations: a commit SHA does not identify
-ignored dependencies, environment, tool binaries or hooks. After a verified push,
+ignored dependencies, environment, tool binaries or hooks. `run --prepare` is one
+invocation, so it runs them once; `prepare` and a later `run` are two and run them twice. After a verified push,
 new local edits are left alone and reported separately; they do not become release
 inputs. A repeated resume re-verifies publication without pushing or publishing
 again. It can therefore detect later edits to notes, which GitHub still allows on
@@ -357,6 +391,79 @@ GitHub CLI 2.98.0 routes its TUF cache through
 [the CLI-owned cache directory](https://github.com/cli/cli/blob/v2.98.0/pkg/cmd/attestation/verification/tuf.go).
 release-kit sets process-local cache/temp paths, not user-wide GitHub settings.
 
+## Removing a stale lock
+
+`relkit release unlock [VERSION]` is the one sanctioned way to remove
+`.git/relkit/release.lock`. It exists because the lock is kept on purpose, never taken
+over, and a stopped PID alone is not enough to know it is stale: the owner's project
+commands and their descendants may still be writing to the checkout. It removes the lock
+only after proving all of the following, and otherwise refuses, naming the unmet
+condition and the lock path. It never signals or stops a process.
+
+- The owner record is readable and names this root; `VERSION`, if given, is the tag the
+  lock is held for. A lock taken on another host is refused, since this machine cannot
+  see that host's processes. A record written before hosts were recorded is judged on the
+  rest.
+- The recorded PID is not running. A running process with that PID is refused even if it
+  is a different one that reused the number, because release-kit cannot tell.
+- No receipt for that tag written while the lock existed (`state.json`, the candidate
+  attempts) records that owned commands could not be confirmed stopped. That is the case
+  the lock is retained for; verify the commands by hand, then remove the lock by hand.
+  A receipt that cannot be read is refused the same way.
+- No such receipt was left mid-stage by the owner's death, unless the platform ends the
+  owner's commands with it. A Windows job object does. A POSIX process group does not,
+  and its members are not recorded, so there a lock left mid-stage is removed by hand
+  after checking that the commands have stopped.
+- The lock is unchanged between the inspection and the removal.
+
+With no lock it reports that and exits `0`; a refusal exits `2`. `--json` reports
+`data.unlock` with the lock path, `removed` and, on removal, the owner and the proof. The
+MCP adapter has no tool for this; use the CLI.
+
+## Stage lines in the logs
+
+A release spends its minutes in a few long steps whose output goes to the owned log:
+the project's checks, the audits, a download of the candidate, a pre-push hook. Each
+coordinator stage therefore writes timestamped lines into the log it runs under, in the
+same shape as the audit's [stage lines](cli-json.md#summary-line-and-stage-lines):
+
+```text
+[2026-10-16T12:34:56+03:00] stage local-checks: start
+[2026-10-16T12:35:26+03:00] stage local-checks: running (30s)
+[2026-10-16T12:41:02+03:00] stage local-checks: done (366.1s)
+```
+
+The outcome is `done` or `failed`, with the stage's duration; a heartbeat appears every
+30 seconds while a stage runs, so a silent stage can be told from a hung one. A run's
+lines are in `run.log` under its receipt directory; a preparation's are in the
+attempt's log beside its receipt. `run --prepare` prepares in the same invocation and
+writes the preparation's stage lines to both, so `run.log` has no unexplained gap; it is
+opened before the candidate is prepared, so a preparation that fails still leaves its
+lines there. The audit's own engine stages appear inside `worktree-audit` and
+`history-audit`.
+
+| Stage | What it covers |
+| --- | --- |
+| `preflight` | Reconciling remote refs, release and identity; re-checking plan inputs |
+| `local-checks` | The project's `checks` commands |
+| `worktree-audit`, `history-audit` | The two publication audits |
+| `source-snapshot` | Materializing the committed tree for smoke |
+| `build` | The project's `build` commands (local preparation) |
+| `candidate-download` | Downloading the CI candidate artifact |
+| `candidate-smoke` | Smoke commands before a tag exists |
+| `annotated-tag` | Creating the tag and checking its metadata |
+| `push` | The atomic push, including any pre-push hook |
+| `publish` | Draft, upload and publication by the local GitHub or directory adapter |
+| `ci` | Waiting for the tag workflow to publish |
+| `publication-verification` | Published identity, notes, assets and checksums |
+| `asset-download` | Downloading published assets for verification |
+| `signatures` | Signature and provenance verification |
+| `application-smoke` | Smoke commands against the published files |
+| `cleanup` | Removing the run's inventoried scratch files |
+
+These are labels for a reader, not stable identifiers; `state.json` keeps its own,
+older stage record.
+
 ## Service-file policy and cleanup
 
 All release-kit service files default to locations **inside the owning project**.
@@ -395,6 +502,15 @@ anywhere else are still never claimed retroactively. Project commands should
 clean their own outputs. Logs may contain private command output and must be
 reviewed before sharing.
 
+A failed preparation (its `tmp/candidate-*` workspace) removes what it inventoried and
+found unchanged: the downloaded candidate, the source snapshot, the tool's own `gh` and
+Git scratch and the empty scratch directory. It keeps the rest, which is output a project
+command left in `{temp}` or a file that changed, and names those files
+(`kept in DIR: project-temp/evidence.txt`); the attempt's receipt records them as
+`retained`. It never follows a link, and after an unconfirmed termination it removes
+nothing. A workspace an earlier release-kit version left behind is not claimed
+retroactively.
+
 Later runs preserve retained workspaces regardless of age. A timestamp cannot
 establish ownership or whether recovery data is still needed. Inspect the reported
 directory and reconcile its owned processes before explicitly removing reviewed
@@ -413,5 +529,6 @@ when it is refused. All commands accept the opt-in [structured CLI contract](cli
 recorded publication, verification and cleanup remain separate fields.
 Status can also inspect a receipt whose process cleanup is unconfirmed. The
 retained release lock continues to block execution until the operator confirms
-that the owned commands and descendants have stopped and removes that exact lock;
-reading the receipt does not authorize another run.
+that the owned commands and descendants have stopped and removes that exact lock by
+hand, because `release unlock` refuses a lock whose receipt records unconfirmed
+cleanup; reading the receipt does not authorize another run.

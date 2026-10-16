@@ -11,7 +11,7 @@ from releasekit.release import candidate, coordinator
 from releasekit.release.backend import ReleaseError
 
 
-class CandidateTests(ReleaseFixture):
+class CandidateFixture(ReleaseFixture):
     def setUp(self):
         super().setUp()
         path = self.root / "relkit.toml"
@@ -63,6 +63,8 @@ class CandidateTests(ReleaseFixture):
         with patch.object(coordinator, "_audit"):
             return self.invoke("prepare", publish=False, ci_run=35)
 
+
+class CandidateTests(CandidateFixture):
     def test_prepare_promote_and_draft_keep_exact_bytes_without_preparation_tag(self):
         code, output = self.prepare()
         self.assertEqual(0, code, output)
@@ -95,6 +97,32 @@ class CandidateTests(ReleaseFixture):
         receipts = list(candidate.receipt_path(self.root, "v1.0.0").parent.glob("*.json"))
         self.assertEqual(3, len(receipts))
         self.assertEqual("", self.runner.git("tag", "--list"))
+
+    def test_prepare_names_an_untracked_runtime_file_and_the_one_fix(self):
+        # Field case: a dev server left serve.pid beside the sources and `prepare` refused
+        # without saying which file. Such a file stays dirt, since only the adopting
+        # repository can say it is not source, so the refusal has to name it exactly.
+        (self.root / "serve.pid").write_text("4242")
+        (self.root / "run state.pid").write_text("4243")
+        code, output = self.prepare()
+        self.assertNotEqual(0, code)
+        self.assertIn("?? serve.pid", output)
+        self.assertIn("?? run state.pid", output, "a path with a space is named unquoted")
+        self.assertIn("add it to .gitignore", output)
+        self.assertEqual("", self.runner.git("tag", "--list"))
+        (self.root / "serve.pid").unlink()
+        (self.root / "run state.pid").unlink()
+        self.assertEqual(0, self.prepare()[0])
+
+    def test_a_staged_rename_counts_once_and_names_its_new_path(self):
+        from releasekit.release.backend import clean
+
+        self.runner.git("mv", "smoke.py", "smoke-renamed.py")
+        with self.assertRaises(ReleaseError) as raised:
+            clean(self.runner)
+        self.assertIn("(1 change(s)", str(raised.exception))
+        self.assertIn("smoke-renamed.py", str(raised.exception))
+        self.assertNotIn("untracked:", str(raised.exception))
 
     def test_run_without_preparation_refuses_before_any_tag(self):
         code, output = self.invoke()

@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from .. import canonical, processes, semver, storage
-from . import candidate, coordinator
+from . import candidate, coordinator, stagelog
 from .backend import ReleaseError, clean
 
 
@@ -121,7 +121,13 @@ def prepare(runner, store, value, no_download, result):
                 directory.parent.mkdir(parents=True)
                 if value["settings"]["build"]:
                     coordinator._commands(
-                        runner, value["settings"]["build"], value, snapshot, directory, temporary
+                        runner,
+                        value["settings"]["build"],
+                        value,
+                        snapshot,
+                        directory,
+                        temporary,
+                        stage="build",
                     )
                 else:
                     # A release without files: the inventory below still records
@@ -129,17 +135,22 @@ def prepare(runner, store, value, no_download, result):
                     directory.mkdir()
                 files = candidate.inventory(value, directory)
                 coordinator._commands(
-                    runner, value["settings"]["smoke"], value, snapshot, directory, temporary
+                    runner,
+                    value["settings"]["smoke"],
+                    value,
+                    snapshot,
+                    directory,
+                    temporary,
+                    stage="candidate-smoke",
                 )
                 if candidate.inventory(value, directory) != files:
                     raise ReleaseError("candidate files changed during smoke")
                 clean(runner, value["sha"])
-                if (
-                    coordinator.plan(
+                with stagelog.stage(runner, "preflight"):
+                    replanned = coordinator.plan(
                         runner, value["version"], github=store, candidate_receipt=False
                     )
-                    != value
-                ):
+                if replanned != value:
                     raise ReleaseError("release plan changed during preparation")
                 record = {
                     "schema": 1,
@@ -169,6 +180,8 @@ def prepare(runner, store, value, no_download, result):
     except BaseException as error:
         unconfirmed = isinstance(error, processes.CleanupError)
         state.update(status="cleanup-unconfirmed" if unconfirmed else "failed", error=str(error))
+        if kept := candidate.report_retained(state.get("temporary")):
+            state["retained"] = kept
         storage.atomic_json(path, state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(

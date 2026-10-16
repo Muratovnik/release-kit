@@ -166,7 +166,9 @@ pass. The hash to review is the one `plan` prints before a candidate exists; the
 candidate is bound to the plan after preparation, and its receipt is written as
 usual. The run receipt records `preparation.invocation = "same"`. A `resume`
 after an interruption is a new invocation and runs the gate again before the tag.
-The Actions adapter refuses the flag; its candidate comes from CI.
+The Actions adapter's candidate comes from CI, so there the flag needs the run that
+built it: `run VERSION --publish --prepare --ci-run ID`. See
+[one invocation](release-coordinator.md#one-invocation) for what is downloaded once.
 
 Directory delivery writes `VERSION/assets/` and `VERSION/relkit-release.json`
 below the destination, staging the complete set before a directory rename.
