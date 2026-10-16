@@ -758,8 +758,9 @@ def _execute(argv: list[str], json_mode: bool, invocation: _Invocation) -> int:
             if arguments.command == "update" and not arguments.dry_run and not arguments.yes:
                 result.error(
                     "confirmation_required",
-                    "JSON updates require explicit --yes; review `relkit update --dry-run --json`, "
-                    "then repeat with --yes --plan-hash HASH",
+                    "JSON updates never prompt and require explicit --yes; review "
+                    "`relkit update --dry-run --json` and repeat with --yes, adding "
+                    "--plan-hash HASH to bind it to exactly that plan",
                 )
                 code = 2
             else:

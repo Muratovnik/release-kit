@@ -243,8 +243,9 @@ python .github/relkit.pyz protect check
 已安装的防护位于 `<git-common-dir>/hooks/pre-push`，运行门禁的 [push 范围](#范围)，即
 `audit --push --owner`，并强制使用私有所有者策略。
 基础 CLI 安装并不需要它。它会固定被跟踪的投影副本、`relkit.toml`、所配置的密钥策略，以及
-——对于基于 workflow 的发布配置——发布用的 workflow。对已固定输入的复核性改动需要显式的
-[防护刷新](updates.md#已被修改的文件与防护漂移)。
+——对于基于 workflow 的发布配置——发布用的 workflow。已提交的固定策略输入的修改会由下一次 `relkit update` 重新固定；对已固定输入的其他复核性改动需要显式的
+[防护刷新](updates.md#已被修改的文件与防护漂移)。防护需要 0.33.0 或更新版本的投影副本，`protect install`
+会拒绝更旧的副本并给出修复方法（先运行 `relkit update`）。
 
 如果 `core.hooksPath` 把 Git 重定向到别处，那位外部所有者必须先提供一个带
 `# git-common-dir-hook-dispatcher: pre-push v1` 标记的可执行调度器。release-kit 会先验证

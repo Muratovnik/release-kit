@@ -206,5 +206,66 @@ class GuardTemplateMigrationTests(push_audit.PushRepository):
         self.assertEqual([], json.loads(out.getvalue())["warnings"])
 
 
+class PinnedProjectionTests(push_audit.PushRepository):
+    """The guard calls `audit --push`, so the projection it pins must know that option."""
+
+    def pin(self, version: str) -> None:
+        from test_update import artifact_bytes
+
+        projection = self.root / ".github" / "relkit.pyz"
+        projection.write_bytes(artifact_bytes(version))
+        self.commit(f"chore: pin release-kit {version}")
+
+    def hook_path(self) -> Path:
+        return protection.hook_path(self.root)
+
+    def test_an_older_projection_refuses_the_guard_and_names_the_exact_fix(self) -> None:
+        self.pin("0.32.0")
+        out = io.StringIO()
+
+        with redirect_stdout(out), redirect_stderr(io.StringIO()):
+            code = cli.main(["--json", "protect", "install", "--root", str(self.root)])
+
+        envelope = json.loads(out.getvalue())
+        self.assertEqual(2, code, envelope)
+        (error,) = envelope["errors"]
+        self.assertEqual("protection_error", error["code"])
+        self.assertIn("release-kit 0.32.0 has no `audit --push`", error["message"])
+        self.assertIn("`relkit update`", error["message"])
+        self.assertIn("0.33.0", error["message"])
+        self.assertIn("`relkit protect install`", error["message"])
+        self.assertFalse(self.hook_path().exists(), "nothing may be written for a refused plan")
+
+    def test_the_preview_refuses_too_instead_of_promising_a_guard_it_cannot_write(self) -> None:
+        self.pin("0.32.0")
+        with self.assertRaisesRegex(protection.ProtectionError, "relkit update"):
+            protection.install_plan(self.root)
+        with self.assertRaisesRegex(protection.ProtectionError, "relkit update"):
+            protection.install(self.root)
+        self.assertFalse(self.hook_path().exists())
+
+    def test_the_boundary_is_the_release_that_added_the_push_audit(self) -> None:
+        for version, accepted in (
+            ("0.32.9", False),
+            ("0.33.0", True),
+            ("0.34.0", True),
+            ("1.0.0", True),
+        ):
+            with self.subTest(version=version):
+                self.pin(version)
+                if accepted:
+                    plan = protection.install_plan(self.root)
+                    self.assertEqual(str(self.hook_path()), plan["path"])
+                else:
+                    with self.assertRaises(protection.ProtectionError):
+                        protection.install_plan(self.root)
+
+    def test_a_projection_that_is_not_a_release_kit_archive_is_left_to_the_guard(self) -> None:
+        # The default fixture's projection is a stand-in script. The guard runs the file on
+        # every push and fails closed, which is a better diagnostic than guessing a version.
+        self.assertIsNotNone(protection.install(self.root))
+        self.assertIsNone(protection.projection_problem(self.root))
+
+
 if __name__ == "__main__":
     unittest.main()

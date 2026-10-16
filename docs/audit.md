@@ -292,8 +292,11 @@ The installed guard lives at `<git-common-dir>/hooks/pre-push` and runs the
 policy. It is not required for the basic CLI
 installation. It pins the tracked projection, `relkit.toml`, the configured secret
 policy and, for a workflow-backed release configuration, the publishing workflow.
-Reviewed changes to pinned inputs require an explicit
-[guard refresh](updates.md#already-updated-files-and-guard-drift).
+A committed edit of a pinned policy input is re-pinned by the next `relkit update`;
+other reviewed changes to pinned inputs require an explicit
+[guard refresh](updates.md#already-updated-files-and-guard-drift). The guard needs a
+projection of 0.33.0 or newer, and `protect install` refuses an older one with the fix
+(`relkit update` first).
 
 If `core.hooksPath` redirects Git elsewhere, that external owner must first provide
 an executable dispatcher with `# git-common-dir-hook-dispatcher: pre-push v1`.

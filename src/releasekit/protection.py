@@ -10,12 +10,15 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import canonical, storage
+from . import canonical, distribution, storage
 from . import config as config_module
 
 MARKER = "# managed by release-kit: owner publication guard v1"
 COMPATIBLE_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: pre-push v1"
 PROJECTION_PATH = ".github/relkit.pyz"
+# The release that added `audit --push`, which the current guard template calls. A guard
+# pinned to an older projection would fail every push with a usage error.
+PUSH_AUDIT_VERSION = "0.33.0"
 
 
 class ProtectionError(Exception):
@@ -28,6 +31,26 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def push_audit_problem(version: str) -> str | None:
+    """Why a projection of this version cannot run the current guard, or None."""
+    if distribution.version_tuple(version) >= distribution.version_tuple(PUSH_AUDIT_VERSION):
+        return None
+    return f"release-kit {version} has no `audit --push` (added in {PUSH_AUDIT_VERSION})"
+
+
+def projection_problem(root: Path) -> str | None:
+    """Whether the pinned projection can run the guard `protect install` would write.
+
+    A file that is not an inspectable release-kit zipapp is not judged here: the guard
+    runs it on every push and fails closed, which names the file as the problem.
+    """
+    try:
+        found = distribution.inspect((root / PROJECTION_PATH).read_bytes())
+    except (OSError, distribution.DistributionError):
+        return None
+    return push_audit_problem(found.version)
 
 
 def guarded_inputs(policy: config_module.Config) -> list[str]:
@@ -342,6 +365,12 @@ def install_plan(root: Path) -> dict:
     effective = effective_hook_path(root)
     if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
         raise ProtectionError(dispatcher_problem)
+    if problem := projection_problem(root):
+        raise ProtectionError(
+            f"the pinned {PROJECTION_PATH} cannot run the guard: {problem}; the guard would "
+            f"refuse every push. Run `relkit update` first to move the projection to "
+            f"{PUSH_AUDIT_VERSION} or newer, then run `relkit protect install` again"
+        )
     inputs = _guarded_digests(root)
     for relative in inputs:
         try:

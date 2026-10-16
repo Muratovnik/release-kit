@@ -6,6 +6,7 @@ import io
 import json
 import os
 import runpy
+import shutil
 import signal
 import subprocess
 import sys
@@ -21,6 +22,8 @@ from unittest.mock import patch
 from releasekit import __version__, distribution, engines, processes, protection, toolchain, update
 
 ROOT = Path(__file__).resolve().parents[1]
+# The fixtures lower the threshold; a real zipapp built from this tree enforces the real one.
+PUSH_AUDIT_VERSION = protection.PUSH_AUDIT_VERSION
 POLICY = "[exposure]\ncheck_secrets = false\ncheck_links = false\n"
 
 
@@ -258,6 +261,11 @@ class DistributionTests(unittest.TestCase):
 
 class UpdateFixture(unittest.TestCase):
     def setUp(self) -> None:
+        # These fixtures model old projections (0.5.0, 0.6.0) beside a guard, which the
+        # current guard template refuses to pair; tests of that rule restore the real value.
+        older_guard = patch.object(protection, "PUSH_AUDIT_VERSION", "0.0.0")
+        older_guard.start()
+        self.addCleanup(older_guard.stop)
         temporary = tempfile.TemporaryDirectory()
         self.addCleanup(temporary.cleanup)
         self.directory = Path(temporary.name).resolve()
@@ -713,12 +721,169 @@ class UpdateTests(UpdateFixture):
         self.assertEqual([], result.data["plan"]["files"])
         self.assertEqual(older, self.hook.read_bytes())
 
-    def test_normal_update_does_not_silently_approve_existing_guard_drift(self) -> None:
+    def commit_policy(self, text: str) -> None:
+        self.policy.write_text(text)
+        self.git("add", "relkit.toml")
+        self.git("commit", "-qm", "chore: change the policy")
+
+    def test_a_committed_policy_edit_is_repinned_by_the_reviewed_update_itself(self) -> None:
+        # The edit has to be committed, because an update requires a clean checkout, and it
+        # has to be shown: the plan names the pin it changes instead of asking for a
+        # separate `--refresh-guard` run first.
         self.guard()
-        self.policy.write_text(POLICY + "# new policy\n")
+        self.commit_policy(POLICY + "# reviewed policy change\n")
+        self.assertIn("relkit.toml", protection.problem(self.root), "the drift is real")
+        before = protection.recorded_digests(self.root)
+        result = update.Result()
+
+        code, output = self.invoke(result=result)
+
+        self.assertEqual(0, code, output)
+        self.assertIsNone(protection.problem(self.root))
+        pins = protection.recorded_digests(self.root)
+        self.assertEqual(protection._sha256(self.policy), pins["relkit.toml"])
+        self.assertEqual(sha(self.new), pins[update.PROJECTION])
+        self.assertIn(
+            f"re-pinned in the guard: relkit.toml: pinned {before['relkit.toml']}", output
+        )
+        plan = result.data["plan"]
+        self.assertEqual(before, plan["guard_inputs_before"])
+        self.assertEqual(pins, plan["guard_inputs_after"])
+        self.assertEqual(["update"], [plan["action"]])
+        self.assertEqual(self.new, self.projection.read_bytes())
+
+    def test_a_policy_edit_is_not_repinned_by_a_dry_run_or_a_declined_prompt(self) -> None:
+        old_hook = self.guard()
+        self.commit_policy(POLICY + "# reviewed policy change\n")
+        self.assertEqual(0, self.invoke(dry_run=True)[0])
+        with (
+            patch.object(sys.stdin, "isatty", return_value=True),
+            patch("builtins.input", return_value="n"),
+        ):
+            code, output = self.invoke(yes=False)
+        self.assertEqual(2, code)
+        self.assertIn("cancelled", output)
+        self.assertEqual(old_hook, self.hook.read_bytes())
+        self.assertEqual(self.old, self.projection.read_bytes())
+
+    def test_a_projection_the_guard_does_not_pin_still_needs_the_explicit_refresh(self) -> None:
+        # Re-pinning a reviewed policy file is part of the plan; trusting different code
+        # than the guard was installed for is not.
+        self.guard()
+        drifted = artifact_bytes("0.5.1")
+        self.projection.write_bytes(drifted)
+        self.git("add", ".github/relkit.pyz")
+        self.git("commit", "-qm", "chore: replace the projection by hand")
+
         code, output = self.invoke()
+
         self.assertEqual(2, code)
         self.assertIn("existing guard must be valid", output)
+        self.assertIn("update --refresh-guard", output)
+        self.assertEqual(drifted, self.projection.read_bytes())
+        self.assertFalse(list((self.root / ".git").glob("relkit-update-*")))
+
+    def test_one_command_update_shows_the_plan_then_applies_after_confirmation(self) -> None:
+        old_hook = self.guard()
+        asked = []
+
+        def answer(prompt: str) -> str:
+            sys.stdout.write(prompt)
+            asked.append(prompt)
+            return "y"
+
+        with (
+            patch.object(sys.stdin, "isatty", return_value=True),
+            patch("builtins.input", side_effect=answer),
+        ):
+            code, output = self.invoke(yes=False)
+
+        self.assertEqual(0, code, output)
+        self.assertEqual(["Apply these changes? [y/N] "], asked)
+        plan = output[: output.index("Apply these changes?")]
+        for shown in (
+            str(self.projection),
+            str(self.hook),
+            str(self.candidate.resolve()),
+            "0.5.0",
+            "0.6.0",
+            f"sha256:{sha(self.old)}",
+            f"sha256:{sha(self.new)}",
+            f"sha256:{sha(old_hook)}",
+            f"sha256:{sha(self.hook.read_bytes())}",
+        ):
+            self.assertIn(shown, plan)
+        self.assertEqual(self.new, self.projection.read_bytes())
+        self.assertEqual("installed", self.receipt()["state"])
+        self.assertIsNone(protection.problem(self.root))
+
+    def test_without_a_terminal_the_update_refuses_and_names_both_ways_forward(self) -> None:
+        self.guard()
+        with patch.object(sys.stdin, "isatty", return_value=False):
+            code, output = self.invoke(yes=False)
+        self.assertEqual(2, code)
+        self.assertIn("`relkit update` in a terminal", output)
+        self.assertIn("--yes", output)
+        self.assertNotIn("--plan-hash HASH only after", output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertFalse(list((self.root / ".git").glob("relkit-update-*")))
+        self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
+
+    def test_a_reviewed_plan_hash_is_optional_but_still_binds_the_apply(self) -> None:
+        self.guard()
+        preview = update.Result()
+        self.assertEqual(0, self.invoke(dry_run=True, result=preview)[0])
+        reviewed = preview.data["plan_sha256"]
+
+        code, output = self.invoke(plan_hash="0" * 64)
+
+        self.assertEqual(2, code)
+        self.assertIn("reviewed update plan is stale", output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
+
+        code, output = self.invoke(plan_hash=reviewed)
+
+        self.assertEqual(0, code, output)
+        self.assertEqual(self.new, self.projection.read_bytes())
+
+    def test_update_refuses_to_write_a_guard_the_candidate_cannot_run(self) -> None:
+        old_hook = self.guard()
+        with patch.object(protection, "PUSH_AUDIT_VERSION", "0.33.0"):
+            code, output = self.invoke()
+        self.assertEqual(2, code)
+        self.assertIn("audit --push", output)
+        self.assertIn("0.33.0 or newer", output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+        self.assertEqual(old_hook, self.hook.read_bytes())
+        self.assertFalse((self.root / ".git" / update.RECEIPT).exists())
+
+    def test_a_project_without_a_guard_is_not_held_to_the_push_audit_threshold(self) -> None:
+        with patch.object(protection, "PUSH_AUDIT_VERSION", "0.33.0"):
+            code, output = self.invoke()
+        self.assertEqual(0, code, output)
+        self.assertEqual(self.new, self.projection.read_bytes())
+        self.assertFalse(self.hook.exists(), "no guard is written, so none can break a push")
+
+    def test_the_last_release_without_the_push_audit_is_refused_with_a_guard(self) -> None:
+        # The fixtures use small versions, so the boundary moves with them: the threshold
+        # is 0.6.0 here and the candidate is the release just below it.
+        self.guard()
+        self.candidate.write_bytes(artifact_bytes("0.5.9"))
+        with patch.object(protection, "PUSH_AUDIT_VERSION", "0.6.0"):
+            code, output = self.invoke(sha256=sha(self.candidate.read_bytes()))
+        self.assertEqual(2, code, output)
+        self.assertIn("release-kit 0.5.9 has no `audit --push`", output)
+        self.assertEqual(self.old, self.projection.read_bytes())
+
+    def test_the_first_release_with_the_push_audit_is_updated_with_the_current_guard(self) -> None:
+        self.guard()
+        with patch.object(protection, "PUSH_AUDIT_VERSION", "0.6.0"):
+            code, output = self.invoke()
+        self.assertEqual(0, code, output)
+        self.assertEqual(self.new, self.projection.read_bytes())
+        self.assertIn('--push --owner --remote "$1"', self.hook.read_text(encoding="utf-8"))
+        self.assertFalse(protection.outdated_template(self.root))
 
     def test_guard_only_audit_failure_leaves_hook_and_projection_untouched(self) -> None:
         old_hook = self.guard()
@@ -1032,39 +1197,49 @@ class GitHubSourceTests(unittest.TestCase):
 
 
 class ZipappIntegrationTests(UpdateFixture):
-    def test_real_zipapp_bootstrap_self_update_and_rollback(self) -> None:
-        built = self.directory / "relkit.pyz"
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools/build_zipapp.py"),
-                str(built),
-                "--repository",
-                "example/release-kit",
-            ],
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-            check=False,
+    def build_release_tree(self) -> tuple[str, Path]:
+        """This checkout's code as the release that follows it would declare itself.
+
+        The guard calls `audit --push`, so a zipapp that declares a version without it
+        cannot be paired with one. While the checkout still declares the previous release,
+        the same files are built under the first version that has the option.
+        """
+        version = __version__
+        if distribution.version_tuple(version) < distribution.version_tuple(PUSH_AUDIT_VERSION):
+            version = PUSH_AUDIT_VERSION
+        tree = self.directory / "release-tree"
+        shutil.copytree(
+            ROOT / "src/releasekit",
+            tree / "src/releasekit",
+            ignore=shutil.ignore_patterns("__pycache__"),
         )
-        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
-        payload = built.read_bytes()
+        declaration = tree / "src/releasekit/__init__.py"
+        declaration.write_text(
+            declaration.read_text(encoding="utf-8").replace(
+                f'__version__ = "{__version__}"', f'__version__ = "{version}"'
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+        for name in ("pyproject.toml", "LICENSE"):
+            shutil.copy2(ROOT / name, tree / name)
+        (tree / "CHANGELOG.md").write_text(f"## [{version}] (2026-01-01)\n", encoding="utf-8")
+        return version, tree
+
+    def test_real_zipapp_bootstrap_self_update_and_rollback(self) -> None:
+        version, tree = self.build_release_tree()
+        builder = runpy.run_path(str(ROOT / "tools/build_zipapp.py"))["build"]
+        built = self.directory / "relkit.pyz"
+        with patch.dict(builder.__globals__, {"ROOT": tree, "SOURCE": tree / "src/releasekit"}):
+            builder(built, repository="example/release-kit")
+            payload = built.read_bytes()
+            built.unlink()
+            builder(built, repository="example/release-kit")
         identity = distribution.inspect(payload)
-        self.assertEqual(__version__, identity.version)
+        self.assertEqual(version, identity.version)
         self.assertEqual("example/release-kit", identity.repository)
         self.assertEqual(
             f"{sha(payload)}  relkit.pyz\n", built.with_suffix(".pyz.sha256").read_text()
-        )
-        subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "tools/build_zipapp.py"),
-                str(built),
-                "--repository",
-                "example/release-kit",
-            ],
-            cwd=ROOT,
-            check=True,
         )
         self.assertEqual(payload, built.read_bytes(), "build must be deterministic")
         self.guard()
@@ -1084,16 +1259,16 @@ class ZipappIntegrationTests(UpdateFixture):
             ],
             self.root,
         )
-        self.assertIn(f"installed {__version__}", result)
+        self.assertIn(f"installed {version}", result)
         self.assertIsNone(protection.problem(self.root))
         self.git("add", update.PROJECTION)
         self.git("commit", "-qm", "chore: update publication gate")
         with zipfile.ZipFile(io.BytesIO(payload)) as archive:
             entries = {name: archive.read(name) for name in archive.namelist()}
-        major, minor, patch_version = distribution.version_tuple(__version__)
+        major, minor, patch_version = distribution.version_tuple(version)
         next_version = f"{major}.{minor}.{patch_version + 1}"
         entries["releasekit/__init__.py"] = entries["releasekit/__init__.py"].replace(
-            __version__.encode(), next_version.encode()
+            version.encode(), next_version.encode()
         )
         metadata = json.loads(entries[distribution.BUILD_INFO])
         metadata["version"] = next_version
@@ -1119,6 +1294,6 @@ class ZipappIntegrationTests(UpdateFixture):
         result = update._run(
             [sys.executable, str(self.projection), "update", "--rollback", "--yes"], self.root
         )
-        self.assertIn(f"restored {__version__}", result)
+        self.assertIn(f"restored {version}", result)
         self.assertEqual(payload, self.projection.read_bytes())
         self.assertIsNone(protection.problem(self.root))

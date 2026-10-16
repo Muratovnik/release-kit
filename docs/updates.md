@@ -6,12 +6,17 @@ For a first installation, use the [quick start](../README.md#first-check-in-an-e
 
 ## Updating a project
 
-From a project containing a 0.6.0-or-newer projection:
+From a project containing a 0.6.0-or-newer projection, one command is enough:
 
 ```text
-python .github/relkit.pyz update --dry-run
 python .github/relkit.pyz update
 ```
+
+It downloads the latest release, prints the plan (the old and new version, the
+paths and SHA-256 values of the projection and of an existing owned guard, and any
+policy input the guard will newly pin), asks `Apply these changes? [y/N]` and then
+applies it. Nothing is written before you answer. `--dry-run` prints the same plan
+and stops.
 
 If the Python package is installed, the equivalent command is `relkit update`.
 Both update this project's projection, not the global Python package, source
@@ -49,10 +54,12 @@ auto-stash. Linked worktrees, aliased update paths, Git directory/index environm
 overrides, arbitrary hooks and incompatible external dispatchers are refused.
 Protected pre-0.5.0 installations need the [guard-owner migration](#migrating-the-guard-owner).
 
-Interactive use asks for confirmation. Non-interactive use refuses unless `--yes`
-is supplied after the exact changes have been approved. Separate hook permission
-required by a project's instructions remains required. The flag acknowledges
-approval; it does not override authorization.
+Interactive use asks for confirmation. Non-interactive use refuses, changing
+nothing, unless `--yes` is supplied after the plan has been reviewed (`--dry-run`
+prints it). `--plan-hash HASH` is optional: it binds `--yes` to exactly the plan
+that was reviewed and refuses if the release, the files or the guard change in
+between. Separate hook permission required by a project's instructions remains
+required. The flag acknowledges approval; it does not override authorization.
 
 `--dry-run` inspects/downloads but never executes the candidate, persists a backup
 or changes the projection/guard. A temporary repository-local lock serializes runs.
@@ -84,9 +91,16 @@ Their worktree check is not the final owner publication verdict.
 
 ## Already-updated files and guard drift
 
-If a projection or configuration was manually changed, `protect check` names each
-changed input with pinned/current SHA-256 values. Review those changes and obtain
-any required hook permission before:
+A policy file the guard pins (`relkit.toml` and the files it names) changes when you
+edit it. Once that edit is committed, the next `relkit update` shows it in the plan
+as `re-pinned in the guard` and the same confirmation covers it: there is no
+separate step. The updater refuses only a guard that is invalid, or whose pinned
+**projection** is not the file in the checkout, because trusting a different
+executable is not a side effect of an update.
+
+If a projection was manually changed, `protect check` names each changed input with
+pinned/current SHA-256 values. Review those changes and obtain any required hook
+permission before:
 
 ```text
 python .github/relkit.pyz update --refresh-guard --dry-run
@@ -96,9 +110,9 @@ python .github/relkit.pyz protect check
 
 This mode permits a dirty checkout, checks current artifact/policy, backs up the old
 guard and changes only the supported guard's trust pins. It does not download a
-release or edit the projection/configuration. Normal update refuses existing drift
-rather than treating an unrelated update as permission to trust it. Custom or
-modified hook templates need manual owner review.
+release or edit the projection/configuration. A normal update refuses a changed
+projection pin rather than treating an unrelated update as permission to trust it.
+Custom or modified hook templates need manual owner review.
 
 The same mode adopts a guard written by an earlier release-kit. An older template
 pinning current inputs is not drift and keeps enforcing them: `protect check`
@@ -106,7 +120,14 @@ reports it, and refresh rewrites it under backup, validation and rollback. It is
 not an emergency requiring a bypass. A guard from before the
 [push scope](audit.md#scopes) is such a template: it judges the whole history and a
 clean tracked tree at every push until `relkit protect install` adopts the current
-one, and it needs the projection to be at least the release that adds `audit --push`.
+one, and it needs the projection to be at least the release that adds `audit --push`
+(0.33.0).
+
+The guard calls `audit --push`, so it is never written for an older projection.
+`relkit protect install` and `relkit update` both refuse that pairing, before changing
+anything, and name the fix: run `relkit update` first to move the projection to 0.33.0
+or newer. That update refreshes an installed guard to the current template in the same
+transaction. A project without a guard is not held to this threshold.
 
 ## First update and rollback
 

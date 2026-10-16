@@ -362,7 +362,10 @@ class ReleaseTests(ReleaseFixture):
         ]
         build(self.root / ".github/relkit.pyz")
         self.commit()
-        protection.install(self.root)
+        # The zipapp is built from this checkout, which may still declare the release
+        # before the one that added `audit --push`; the plan never runs it.
+        with patch.object(protection, "PUSH_AUDIT_VERSION", "0.0.0"):
+            protection.install(self.root)
         code, output = self.invoke("plan")
         self.assertEqual(0, code, output)
         self.assertEqual(str(self.root), self.plan_json(output)["root"])
