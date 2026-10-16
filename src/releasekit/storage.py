@@ -131,6 +131,30 @@ def identity(path: Path) -> tuple[int, int, int]:
     return info.st_dev, info.st_ino, stat.S_IMODE(info.st_mode)
 
 
+_WRITE_BITS = stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH
+
+
+def _written_state(path: Path) -> tuple[int, ...]:
+    """What a file this run wrote looks like, from its own entry and without opening it.
+
+    The file is recorded read-only, so rewriting it first means changing its mode. A
+    replacement is a different file, an added hard link raises the link count, and a
+    write moves the size or the modification time; each makes it no longer the file
+    recorded. The modification time alone would not do: two writes within one tick of
+    the system clock can leave the same value behind.
+    """
+    info = checked(path).lstat()
+    return (
+        info.st_dev,
+        info.st_ino,
+        info.st_mode,
+        info.st_size,
+        info.st_mtime_ns,
+        info.st_ctime_ns,
+        info.st_nlink,
+    )
+
+
 # Only these move Git's directory, index or object store. The rest of the GIT_*
 # namespace describes how Git talks to its operator (pager, askpass, ssh command,
 # committer identity); refusing those rejects ordinary workstations for nothing.
@@ -269,6 +293,7 @@ class Workspace:
         self.path = Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
         self.identity = identity(self.path)
         self.files: dict[str, tuple[str, tuple[int, int, int]]] = {}
+        self.written: dict[str, tuple[int, ...]] = {}
         self.directories: dict[str, tuple[int, int, int]] = {}
         self.scratches: dict[str, tuple[int, int, int]] = {}
         self._retain_scratch = False
@@ -293,6 +318,38 @@ class Workspace:
                 self.files.setdefault(
                     item.relative_to(self.path).as_posix(), (digest(item), identity(item))
                 )
+
+    def remember_written(self, path: Path) -> None:
+        """Inventory a tree this run has just written, without reading the files back.
+
+        `remember` hashes every file, which costs an open per file; on Windows the
+        first open of a file just written waits for the malware scanner, and a
+        repository snapshot made that wait the larger part of an audit. A tree this
+        run produced from bytes it already holds needs no digest to be recognised:
+        each file is recorded by its own entry instead. Cleanup still removes only
+        an entry that is exactly the one recorded and keeps anything added, replaced,
+        rewritten or linked since, so a child's output survives as before.
+        """
+        target = inside(self.path, path)
+        for parent in (target, *target.parents):
+            if parent == self.path:
+                break
+            self.directories.setdefault(parent.relative_to(self.path).as_posix(), identity(parent))
+        pending = [target]
+        while pending:
+            directory = pending.pop()
+            for entry in os.scandir(directory):
+                item = inside(self.path, Path(entry.path))
+                relative = item.relative_to(self.path).as_posix()
+                if entry.is_dir(follow_symlinks=False):
+                    self.directories.setdefault(relative, identity(item))
+                    pending.append(item)
+                elif entry.is_file(follow_symlinks=False):
+                    if relative not in self.written:
+                        item.chmod(stat.S_IMODE(item.lstat().st_mode) & ~_WRITE_BITS)
+                        self.written[relative] = _written_state(item)
+                else:
+                    raise StorageError(f"written tree holds an entry that is not a file: {item}")
 
     def scratch(self, path: Path) -> None:
         """Declare a directory this run creates only to be another process's temporary one.
@@ -325,6 +382,17 @@ class Workspace:
         for relative, expected in self.files.items():
             item = inside(self.path, self.path / relative)
             if item.is_file() and (digest(item), identity(item)) == expected:
+                item.unlink()
+        for relative, expected_state in self.written.items():
+            item = inside(self.path, self.path / relative)
+            try:
+                observed = _written_state(item)
+            except FileNotFoundError:
+                continue
+            if observed == expected_state:
+                # Windows refuses to unlink a read-only file; the entry was just
+                # confirmed to be the recorded file and not a link.
+                item.chmod(stat.S_IMODE(expected_state[2]) | stat.S_IWUSR)
                 item.unlink()
         for relative in sorted(self.directories, key=lambda value: value.count("/"), reverse=True):
             item = inside(self.path, self.path / relative)
