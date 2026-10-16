@@ -23,7 +23,7 @@ from pathlib import Path
 from build_zipapp import ROOT, SOURCE, _write, distribution
 
 TAG = "py3-none-any"
-PACKAGES = ("releasekit", "releasekit_mcp")
+PACKAGES = ("releasekit",)
 
 
 def _record_digest(payload: bytes) -> str:

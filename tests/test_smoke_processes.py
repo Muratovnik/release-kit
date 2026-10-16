@@ -303,10 +303,6 @@ class SmokeProcessTests(unittest.TestCase):
                     calls.append(command)
                     if command[:3] == ["uv", "tool", "install"]:
                         marker.touch()
-                        other = marker.with_name(
-                            "relkit-mcp.exe" if sys.platform == "win32" else "relkit-mcp"
-                        )
-                        other.touch()
                         return subprocess.CompletedProcess(command, 0, "installed", "")
                     if command[:3] == ["uv", "tool", "uninstall"]:
                         marker.unlink()

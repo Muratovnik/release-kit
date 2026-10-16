@@ -22,7 +22,7 @@ is promised by this document.
 
 Hash pinning and package inventories detect changes relative to approved inputs;
 they do not make initially malicious code safe. Project commands are trusted code,
-not an operating-system sandbox. See the [MCP trust boundary](docs/mcp.md) and
+not an operating-system sandbox. See
 [distribution integrity](docs/distribution.md#integrity-and-trust).
 
 Before a previously private repository or artifact is made public, follow the

@@ -89,7 +89,10 @@ jobs:
 的所有事件上重新启动。审计无法读取其结构的作业，例如流式映射或合并键，会以 `hosted-ci`
 失败而不是通过。只检查当前工作树。
 
-默认配置启用密钥与链接检查。常规的 `.betterleaks.toml` 在所维护的默认规则之上扩展：
+默认配置启用密钥与链接检查。项目不需要 `.betterleaks.toml`：没有它时，Betterleaks 使用其所维护的默认
+规则扫描，且规则是显式选定的，因此结果不依赖环境或用户主目录中发现的配置。`betterleaks_config` 指向
+不存在的文件时同样如此。防护会固定这种“不存在”的状态，所以之后再添加该文件是需要复核的变更，而不是
+悄悄生效。常规的 `.betterleaks.toml` 在所维护的默认规则之上扩展：
 
 ```toml
 title = "project secret scanning"
@@ -187,8 +190,8 @@ Git LFS 指针与子模块 gitlink 会失败，因为它们的外部内容并不
    目录解析。
 3. 约定的同级目录 `../<克隆名>-private`。
 
-面向所有者与 overlay 的 CLI 命令、已安装的所有者防护、协调器的所有者审计以及 MCP 的所有者
-请求，都使用同一套选择顺序。
+面向所有者与 overlay 的 CLI 命令、已安装的所有者防护以及协调器的所有者审计，都使用同一套
+选择顺序。
 
 在不新增被跟踪项目文件的前提下，为仓库设置持久选择：
 
@@ -243,8 +246,9 @@ python .github/relkit.pyz protect check
 已安装的防护位于 `<git-common-dir>/hooks/pre-push`，运行门禁的 [push 范围](#范围)，即
 `audit --push --owner`，并强制使用私有所有者策略。
 基础 CLI 安装并不需要它。它会固定被跟踪的投影副本、`relkit.toml`、所配置的密钥策略，以及
-——对于基于 workflow 的发布配置——发布用的 workflow。对已固定输入的复核性改动需要显式的
-[防护刷新](updates.md#已被修改的文件与防护漂移)。
+——对于基于 workflow 的发布配置——发布用的 workflow。已提交的固定策略输入的修改会由下一次 `relkit update` 重新固定；对已固定输入的其他复核性改动需要显式的
+[防护刷新](updates.md#已被修改的文件与防护漂移)。防护需要 0.33.0 或更新版本的投影副本，`protect install`
+会拒绝更旧的副本并给出修复方法（先运行 `relkit update`）。
 
 如果 `core.hooksPath` 把 Git 重定向到别处，那位外部所有者必须先提供一个带
 `# git-common-dir-hook-dispatcher: pre-push v1` 标记的可执行调度器。release-kit 会先验证
@@ -296,9 +300,8 @@ python -m pip install "<reviewed-source-checkout>[overlay-yaml]"
 许可。基础 CLI 命令与 JSON overlay 不需要这个额外依赖。
 
 **兼容性说明：** 仅升级 zipapp 并不会安装 PyYAML。在采用此项变更之前，请确认实际执行的解释
-器，包括钩子所使用的解释器。已构建插件那套既有的锁定 SDK 环境中不包含 PyYAML：这条路径请在
-共享清单中使用 JSON，或者单独安装带 `[mcp,overlay-yaml]` 的独立适配器。不要修改已安装插件的
-锁文件，也不要用未经复核的全局安装来掩盖该错误。任何清单都不会被自动改写或重命名。可选的
+器，包括钩子所使用的解释器。zipapp 中不包含 PyYAML：这条路径请在共享清单中使用 JSON。不要用未经复核
+的全局安装来掩盖该错误。任何清单都不会被自动改写或重命名。可选的
 YAML 转 JSON 原地迁移必须完整保留整份 Dotbot 文档，而不只是其中的链接，并且必须是一次显式
 的、经所有者复核的改动。
 

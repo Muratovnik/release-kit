@@ -1,22 +1,16 @@
 # Building and qualifying a distribution
 
-Users install the [published CLI](../README.md#first-check-in-an-existing-project)
-or [built plugin](plugin.md). This page is for maintainers. The source template in
-`plugins/release-kit/` is not an installable plugin.
+Users install the [published CLI](../README.md#first-check-in-an-existing-project).
+This page is for maintainers.
 
 ## Identity and build
 
-CLI and plugin releases use one version and one zipapp payload. Before distributing
-changed bytes, run `python tools/set_version.py X.Y.Z`. The runtime declaration is
-the source of truth; the tool updates the plugin manifest, plugin project, README
-install references and the uv-managed lock, then validates their agreement. A failed
-rewrite or lock validation restores the previous file bytes after resolver teardown
-is confirmed. If teardown is unconfirmed, the tool preserves the current files and
-reports a `.cache/version-recovery-*` directory containing the original bytes and an
-exact-path manifest; stop the owned processes before restoring. A failed restoration
-also retains that recovery directory. Review a reported lock
-metadata change separately; dependency version changes are refused. Draft the dated
-changelog entry from committed changes with `relkit notes X.Y.Z --draft`, using
+The zipapp and the wheel share one version. Before distributing changed bytes, run
+`python tools/set_version.py X.Y.Z`. The runtime declaration is the source of truth;
+the tool rewrites it and the README install references, then validates their
+agreement. A failed rewrite restores the previous file bytes. If restoring fails, the
+tool retains a `.cache/version-recovery-*` directory containing the original bytes and
+an exact-path manifest. Draft the dated changelog entry from committed changes with `relkit notes X.Y.Z --draft`, using
 `--from-tag` for the actual published predecessor, and keep older entries.
 Even a documentation-only package rebuild needs a new distribution identity;
 never replace already-published bytes under the same version/tag.
@@ -27,15 +21,13 @@ From a reviewed checkout, after the [full check](../CONTRIBUTING.md#checks):
 python tools/build_release.py dist/VERSION
 ```
 
-This produces `relkit.pyz`, `release-kit-plugin.zip`,
-`release_kit-VERSION-py3-none-any.whl`, their three SHA-256 sidecars and
-`release.json`. Distribute the complete set together. The builder refuses an
+This produces `relkit.pyz`, `release_kit-VERSION-py3-none-any.whl`, their two
+SHA-256 sidecars and `release.json`. Distribute the complete set together. The builder refuses an
 existing nonempty output directory. In a checkout it also refuses missing or
 changed tracked files and uncommitted inputs, including ignored Python modules
-that would enter the packages. Required metadata, license, changelog and plugin
-payload files must be committed too, including the README selected by verified
-package metadata. Tracked links and gitlinks cannot stand in for those exact bytes.
-The plugin bundles the exact standalone CLI.
+that would enter the packages. Required metadata, license and changelog files must
+be committed too, including the README selected by verified package metadata. Tracked
+links and gitlinks cannot stand in for those exact bytes.
 
 For CLI-only development, not the joint publication path:
 
@@ -45,28 +37,23 @@ python tools/build_zipapp.py dist/relkit.pyz --repository example/release-kit
 ```
 
 `--repository` records the maintainer's actual trusted OWNER/REPO for project
-updates. `tools/build_plugin.py` remains a plugin-only development builder.
-Working-tree test builds do not qualify a release source commit.
+updates. Working-tree test builds do not qualify a release source commit.
 
 The ZIP layout fixes file order, timestamps and host attributes. Source/package
 versions and the dated changelog must agree. The CLI carries the full MIT license
-and maintainer metadata in its existing `releasekit/build.json` entry; the plugin
-and source also carry `LICENSE`.
-
-The plugin packages user instructions, CLI/MCP references, license and starter
-examples. CONTRIBUTING, this distribution guide and the disclosure procedure stay
-in source; their links in packaged Markdown point to the matching `vVERSION` tag,
-including section anchors. Do not distribute a test package under an existing tag.
+and maintainer metadata in its existing `releasekit/build.json` entry; the wheel
+and source also carry `LICENSE`. Do not distribute a test package under an existing
+tag.
 
 ## Integrity and trust
 
 A SHA-256 sidecar detects changed bytes relative to that digest; it is not an
-independent identity check when downloaded beside the file. The plugin's
-`package.json` is a **hash inventory, not a digital signature**. Review/trust of
-the original distribution remains necessary; malicious code can carry matching hashes.
+independent identity check when downloaded beside the file. `release.json` is a
+**hash inventory, not a digital signature**. Review/trust of the original
+distribution remains necessary; malicious code can carry matching hashes.
 
-Before candidate code runs, package checks require exactly seven ordinary files,
-three correct sidecars, and a `release.json` naming every other file once. Missing
+Before candidate code runs, package checks require exactly five ordinary files,
+two correct sidecars, and a `release.json` naming every other file once. Missing
 or extra entries, partial/empty manifests, duplicate keys and bad hashes fail.
 The inventory is compared before and after all package checks; reports retain the
 checked hashes. This proves consistency and observed absence of drift, not origin.
@@ -119,14 +106,10 @@ python tools/check_distribution.py --assets dist --version X.Y.Z
 
 Package mode never rebuilds or runs source tests. It validates the complete set,
 runs CLI and real-scanner onboarding checks, installs the wheel into an isolated
-environment, checks generated changelogs with pinned git-cliff, and launches the extracted plugin
-through its own `.mcp.json`, including cwd, env and timeouts. Launcher failure
-reports the exit code and a bounded stderr tail (stdout when stderr is empty).
-The onboarding scenario includes a never-issued synthetic token: Betterleaks must
+environment and checks generated changelogs with pinned git-cliff. The onboarding scenario includes a never-issued synthetic token: Betterleaks must
 return its findings exit while Lychee passes, then both must pass after removing
 that fixture. Operational errors do not count as detection. Broken-link and index
 checks remain separate. A mocked helper test does not qualify the real scanners.
-An SDK test does not establish desktop discovery.
 
 The changelog check runs the candidate CLI against a temporary Git history. It
 covers first releases and prereleases, stable-to-final and RC-to-RC note boundaries,
@@ -144,11 +127,6 @@ never discovers an ancestor's checkout or invents a source SHA: the coordinator
 receipt binds its source and candidate. A standalone package check proves the
 behavior of the supplied bytes, not their source origin.
 
-The packaged stdio smoke starts two clients concurrently against a fresh runtime.
-On Windows it also nests the extracted package so dependency installation crosses
-the legacy path-length boundary even when the selected scratch parent is short.
-Both clients must discover tools, inspect the fixture and report aligned files.
-
 ## Check state and reports
 
 A checkout defaults to ignored `.cache/release-kit-checks/`. With `--work-dir`,
@@ -156,20 +134,15 @@ state lives under `REVIEWED_PARENT/release-kit-checks/`. Reuse is scoped to that
 selected parent; independent coordinator scratch parents do not share an implicit
 external cache. No ancestor path or user-wide environment is adopted automatically.
 
-That state holds one uv cache, one SDK environment per interpreter cache tag, and
-compact `reports/run-ID.json` files. `uv run --locked --exact` owns synchronization
-against the existing plugin lock; see [uv synchronization](https://docs.astral.sh/uv/concepts/projects/sync/).
-Changing the lock does not require a bespoke environment migration. Runs sharing
-state serialize through `check.lock`; a busy lock refuses without modifying it.
+That state holds compact `reports/run-ID.json` files and the ownership marker. Runs
+sharing state serialize through `check.lock`; a busy lock refuses without modifying it.
 A dead recorded PID is not proof that all descendants stopped. After an abrupt
 host kill, preserve the lock and diagnostics until the owned workers are reconciled,
 or select a new explicitly owned parent. No automatic stale-lock deletion occurs.
 A directory owned by another tool is not adopted.
 
-Every run has fresh disposable fixtures. A package test still provisions a new
-installed-plugin runtime; the reusable SDK is the test client's environment, not
-a substitute for testing first startup. On success the newly allocated fixture
-roots are removed, while reusable state and the compact report remain. Unknown
+Every run has fresh disposable fixtures. On success the newly allocated fixture
+roots are removed, while the check state and the compact report remain. Unknown
 run-root entries, leftover process scratch, aliases or a failed check retain the
 run for inspection. Cleanup does not touch input candidate files, previous runs,
 other tools' directories or user installations. Trusted fixture code runs normally;
@@ -188,18 +161,14 @@ Commands receive separate arguments and noninteractive stdin. Each source suite
 has a 3600-second limit; build and package stages retain a 1800-second limit.
 The full base suite can exceed thirty minutes on Windows with owned process
 startup and teardown. This project's coordinator allows 7200 seconds for its
-combined base/MCP command; other repositories retain their configured limit.
+source command; other repositories retain their configured limit.
 POSIX execution owns a process group. Cooperative release-kit runners handle SIGTERM,
 stop their nested workers and unwind before releasing shared state. Every nested
 runner relays that signal before waiting; a bounded grace period precedes the final
 group kill. Windows uses a native kill-on-close Job Object
 and a startup barrier so the command cannot spawn outside the job before assignment.
 Windows cleanup waits for process teardown as well as empty job accounting before
-returning. The asynchronous MCP executor also uses this Windows Job adapter and
-waits for its cleanup without blocking the event loop. On POSIX it first signals
-the CLI to finish nested command cleanup, then confirms process-group termination.
-An unconfirmed MCP cleanup reports `process_cleanup_unconfirmed` and retains scratch.
-On POSIX a forced group kill or an abnormal exit during cancellation is unconfirmed:
+returning. On POSIX a forced group kill or an abnormal exit during cancellation is unconfirmed:
 the immediate group's disappearance cannot prove that a relay stopped its separately
 owned groups. The CLI's interruption status 3, developer tools' status 130 and native
 SIGINT/SIGTERM exits preserve cooperative cancellation. Custom commands must report
@@ -233,10 +202,9 @@ Native Windows/macOS execution still needs platform-specific acceptance evidence
 This reuses [Python subprocess/process groups](https://docs.python.org/3/library/subprocess.html)
 and [Windows Job Objects](https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects),
 not a scheduler. The synchronous runner owns only command lifetime, not environments,
-reports or product policy. MCP transport and structured output remain with the SDK.
-`uv` continues to resolve/install/synchronize dependencies and `unittest` owns tests.
-Nox or an additional lock library would currently add a parallel lifecycle without
-removing candidate validation; neither is introduced. The required exact package
+reports or product policy. `uv` installs the wheel in the package smoke and
+`unittest` owns tests. Nox or an additional lock library would currently add a
+parallel lifecycle without removing candidate validation; neither is introduced. The required exact package
 membership and source/candidate relationship remain release-kit rules.
 
 ## Releasing this repository

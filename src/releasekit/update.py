@@ -171,15 +171,22 @@ def _read_artifact(path: Path) -> tuple[bytes, distribution.Artifact]:
     return payload, distribution.inspect(payload)
 
 
-def _guard(root: Path, git_dir: Path, *, refresh: bool = False) -> tuple[Path, bytes | None, int]:
+def _guard(root: Path, git_dir: Path) -> tuple[Path, bytes | None, int]:
+    """The installed guard, which must be an intact known template Git can still run.
+
+    A pinned input that has changed since the guard was written is not a reason to
+    refuse: the plan names every such pin and the operator approves re-pinning it, so a
+    reviewed edit of `relkit.toml` needs no separate `--refresh-guard` run. A guard that
+    is not one of our templates, or that Git cannot reach, is somebody else's file.
+    """
     path = _safe_path(git_dir / "hooks/pre-push", root)
     if path.exists():
-        if refresh:
+        try:
             protection.recorded_digests(root)
             effective = protection.effective_hook_path(root)
-            if effective != path and (problem := protection._dispatcher_problem(effective)):
-                raise UpdateError(problem)
-        elif problem := protection.problem(root):
+        except protection.ProtectionError as error:
+            raise UpdateError(f"existing guard must be valid before updating: {error}") from error
+        if effective != path and (problem := protection._dispatcher_problem(effective)):
             raise UpdateError(f"existing guard must be valid before updating: {problem}")
         return path, path.read_bytes(), stat.S_IMODE(path.stat().st_mode)
     return path, None, 0o755
@@ -235,8 +242,10 @@ def _confirm(yes: bool) -> None:
         return
     if not sys.stdin.isatty():
         raise UpdateError(
-            "review `relkit update --dry-run` first; pass --yes --plan-hash HASH only after "
-            "approving the displayed file/guard changes"
+            "nothing was changed: there is no terminal to confirm on. Run `relkit update` "
+            "in a terminal to review the plan and confirm it, or pass --yes after reviewing "
+            "the plan above (`--dry-run` previews it; add --json and --plan-hash HASH to "
+            "bind --yes to exactly the reviewed plan)"
         )
     if input("Apply these changes? [y/N] ").strip().casefold() not in {"y", "yes"}:
         raise UpdateError("cancelled; no project files or guard changed")
@@ -386,10 +395,17 @@ def _load_receipt(path: Path) -> dict[str, object]:
     return receipt
 
 
+def _input_digest(root: Path, relative: str, *, optional: bool = False) -> str:
+    path = root / relative
+    if optional and not os.path.lexists(path):
+        return protection.ABSENT
+    return protection._sha256(_safe_path(path, root))
+
+
 def _check_inputs(root: Path, inputs: dict[str, str]) -> None:
     for relative, digest in inputs.items():
-        path = _safe_path(root / relative, root)
-        if protection._sha256(path) != digest:
+        # A pinned absence is checked as one, so the file appearing mid-update is refused.
+        if _input_digest(root, relative, optional=digest == protection.ABSENT) != digest:
             raise UpdateError(
                 f"guarded input changed during update: {relative}; refusing to re-pin it"
             )
@@ -573,13 +589,25 @@ def run(
         _tracked(root)
         projection = _safe_path(root / PROJECTION, root)
         old_payload, old = _read_artifact(projection)
-        hook, old_hook, hook_mode = _guard(root, git_dir, refresh=refresh_guard)
+        hook, old_hook, hook_mode = _guard(root, git_dir)
         if old_hook is not None and distribution.version_tuple(old.version) < (0, 5, 0):
             raise UpdateError(
                 "guard ownership before 0.5.0 requires the documented side-by-side migration"
             )
+        pinned_projection = (
+            protection.recorded_digests(root).get(PROJECTION) if old_hook is not None else None
+        )
+        if old_hook is not None and not refresh_guard and pinned_projection != old.sha256:
+            # Re-pinning other inputs is part of the reviewed plan; the projection is
+            # the code the guard runs, so replacing it behind the guard's back is not.
+            raise UpdateError(
+                f"existing guard must be valid before updating: it pins a different {PROJECTION} "
+                f"(sha256:{pinned_projection}) than the working tree holds (sha256:{old.sha256}); "
+                "review that file, then run `relkit update --refresh-guard`"
+            )
+        optional = protection.optional_inputs(settings)
         inputs = {
-            relative: protection._sha256(_safe_path(root / relative, root))
+            relative: _input_digest(root, relative, optional=relative in optional)
             for relative in protection.guarded_inputs(settings)
             if relative != PROJECTION
         }
@@ -602,6 +630,7 @@ def run(
                 for change in changes:
                     print(f"relkit update: {change}")
                 payload, candidate = old_payload, old
+                source = "none (re-pins the installed guard only)"
             elif artifact_path is not None:
                 if repository or release or not re.fullmatch(r"[0-9a-fA-F]{64}", sha256):
                     raise UpdateError(
@@ -612,6 +641,7 @@ def run(
                     raise UpdateError(
                         "local artifact SHA-256 does not match the explicitly supplied digest"
                     )
+                source = f"local artifact {artifact_path.resolve()} (digest supplied by you)"
             else:
                 if sha256:
                     raise UpdateError("--sha256 requires --artifact")
@@ -621,6 +651,7 @@ def run(
                         "no update repository recorded; supply --repository OWNER/REPO or --artifact with --sha256"
                     )
                 payload, candidate = _github(root, repository, release, Path(temporary))
+                source = f"GitHub {repository} release v{candidate.version} (digest checked)"
                 workspace.remember(Path(temporary) / "relkit.pyz")
                 # The workspace confines XDG_* for the child, so gh writes its own
                 # state (a device id) beside the download. Only files inventoried
@@ -651,15 +682,31 @@ def run(
                 )
             if not noop and not refresh_guard:
                 _clean(root)
+            print(f"relkit update: plan for {root}")
+            print(f"relkit update:   source: {source}")
             print(
-                f"relkit update: {PROJECTION}: {old.version} sha256:{old.sha256} -> {candidate.version} sha256:{candidate.sha256}"
+                f"relkit update:   {projection}: {old.version} sha256:{old.sha256} -> "
+                f"{candidate.version} sha256:{candidate.sha256}"
             )
             new_hook = None
             new_digests = {}
             if old_hook is not None:
+                if not noop and (problem := protection.push_audit_problem(candidate.version)):
+                    # The hook this transaction writes calls `audit --push`, which the
+                    # projection it pins must know; otherwise every push would fail.
+                    raise UpdateError(
+                        f"refusing to write a guard the projection cannot run: {problem}; "
+                        f"update the projection to release-kit {protection.PUSH_AUDIT_VERSION} "
+                        "or newer first"
+                    )
                 new_digests = protection._guarded_digests(root)
                 new_digests[PROJECTION] = candidate.sha256
                 new_hook = protection.hook_content(root, digests=new_digests).encode()
+                if not refresh_guard:
+                    # An edited, committed policy input is re-pinned by this plan; say so.
+                    for change in protection.digest_changes(root):
+                        if not change.startswith(f"{PROJECTION}:"):
+                            print(f"relkit update:   re-pinned in the guard: {change}")
                 if noop:
                     # Nothing is written on this path, and the plan promises a no-op has
                     # no changed files. A reported hook transition that never happens is
@@ -671,6 +718,8 @@ def run(
                     print(
                         f"relkit update: guard sha256:{hashlib.sha256(old_hook).hexdigest()} -> sha256:{hashlib.sha256(new_hook).hexdigest()}"
                     )
+            elif not noop:
+                print("relkit update:   no guard is installed; none is created")
             files = []
             for path, before, after in (
                 (projection, old_payload, payload),
@@ -800,7 +849,7 @@ def run(
                 if protection._sha256(_safe_path(projection, root)) != candidate.sha256:
                     raise UpdateError("projection changed during validation")
                 if old_hook is not None:
-                    _guard(root, git_dir, refresh=True)
+                    _guard(root, git_dir)
                     if hook.read_bytes() != old_hook:
                         raise UpdateError("guard changed during validation")
                     # Write the exact approved pins, never recompute trust from live files.

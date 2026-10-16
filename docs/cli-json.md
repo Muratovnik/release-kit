@@ -2,7 +2,7 @@
 
 Available since release-kit 0.8.0. Use the project's pinned
 `.github/relkit.pyz`; a global package may be a different version. This process
-interface needs no MCP server, service registration or Python runtime dependency.
+interface needs no service registration or Python runtime dependency.
 
 ```text
 python .github/relkit.pyz --version --json
@@ -144,8 +144,10 @@ mounts). Inspect `errors` before concluding that checked mounts are valid.
 `path`. A valid old template adds `guard_template_outdated`; its pins remain
 active. `install --dry-run` returns `data.plan` with exact before/after hook
 hashes, guarded inputs, dispatcher identity and `plan_sha256`, without writing a
-hook. Pass `install --plan-hash HASH` to reject drift. Review project-required
-hook permission separately. [Guard updates](updates.md) retain backup/recovery.
+hook. Pass `install --plan-hash HASH` to reject drift. `install` and its dry run
+refuse (`protection_error`) when the pinned projection is older than 0.33.0, whose
+`audit --push` the guard calls; the message names the fix, `relkit update`. Review
+project-required hook permission separately. [Guard updates](updates.md) retain backup/recovery.
 
 ### Release planning and execution
 
@@ -262,8 +264,8 @@ are SHA-256 of UTF-8 JSON with sorted keys and compact separators, excluding the
 fingerprint itself.
 
 After review, repeat the same source selection or `--refresh-guard`, passing
-`--yes --plan-hash HASH`. Changed plans refuse before candidate execution or
-backup creation. A fingerprint is equality evidence, not a signature, sandbox
+`--yes`; add `--plan-hash HASH` to bind it to exactly the reviewed plan. With a hash,
+changed plans refuse before candidate execution or backup creation. A fingerprint is equality evidence, not a signature, sandbox
 or human approval.
 
 `update --rollback --dry-run --json` validates backups without restoring them;

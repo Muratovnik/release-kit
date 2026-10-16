@@ -1,8 +1,7 @@
-"""Path facts shared by policy, the release contract and the adapter.
+"""Path facts shared by policy and the release contract.
 
-A leaf module on purpose: the configuration loader, the coordinator settings and the
-MCP bridge all decide the same question, and a second copy of this set is how the
-three answers drift apart.
+A leaf module on purpose: the configuration loader and the coordinator settings both
+decide the same question, and a second copy of this set is how the answers drift apart.
 """
 
 from __future__ import annotations

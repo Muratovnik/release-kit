@@ -10,12 +10,18 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from . import canonical, storage
+from . import canonical, distribution, storage
 from . import config as config_module
 
 MARKER = "# managed by release-kit: owner publication guard v1"
 COMPATIBLE_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: pre-push v1"
 PROJECTION_PATH = ".github/relkit.pyz"
+# The release that added `audit --push`, which the current guard template calls. A guard
+# pinned to an older projection would fail every push with a usage error.
+PUSH_AUDIT_VERSION = "0.33.0"
+# Pinned in place of a digest for an optional input that is not there: the guard then
+# refuses the push if the file appears, exactly as it does when a pinned file changes.
+ABSENT = ""
 
 
 class ProtectionError(Exception):
@@ -28,6 +34,26 @@ def _sha256(path: Path) -> str:
         for block in iter(lambda: handle.read(1024 * 1024), b""):
             digest.update(block)
     return digest.hexdigest()
+
+
+def push_audit_problem(version: str) -> str | None:
+    """Why a projection of this version cannot run the current guard, or None."""
+    if distribution.version_tuple(version) >= distribution.version_tuple(PUSH_AUDIT_VERSION):
+        return None
+    return f"release-kit {version} has no `audit --push` (added in {PUSH_AUDIT_VERSION})"
+
+
+def projection_problem(root: Path) -> str | None:
+    """Whether the pinned projection can run the guard `protect install` would write.
+
+    A file that is not an inspectable release-kit zipapp is not judged here: the guard
+    runs it on every push and fails closed, which names the file as the problem.
+    """
+    try:
+        found = distribution.inspect((root / PROJECTION_PATH).read_bytes())
+    except (OSError, distribution.DistributionError):
+        return None
+    return push_audit_problem(found.version)
 
 
 def guarded_inputs(policy: config_module.Config) -> list[str]:
@@ -45,14 +71,25 @@ def guarded_inputs(policy: config_module.Config) -> list[str]:
     return list(dict.fromkeys(relatives))
 
 
+def optional_inputs(policy: config_module.Config) -> frozenset[str]:
+    """Guarded files that may be absent: without a secret policy the engine default applies."""
+    if policy.exposure.check_secrets:
+        return frozenset({policy.exposure.betterleaks_config})
+    return frozenset()
+
+
 def _guarded_digests(root: Path) -> dict[str, str]:
     try:
         policy = config_module.load(root)
     except config_module.ConfigError as error:
         raise ProtectionError(str(error)) from error
+    optional = optional_inputs(policy)
     answer: dict[str, str] = {}
     for relative in guarded_inputs(policy):
         path = root / relative
+        if relative in optional and not os.path.lexists(path):
+            answer[relative] = ABSENT
+            continue
         if not path.is_file():
             raise ProtectionError(
                 f"guarded publication input is unavailable: {path}; create it or change the "
@@ -248,7 +285,7 @@ def _recorded(text: str) -> tuple[dict[str, str], bool] | None:
     except (ValueError, SyntaxError):
         recorded = None
     if not isinstance(recorded, dict) or not all(
-        isinstance(path, str) and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}", digest)
+        isinstance(path, str) and isinstance(digest, str) and re.fullmatch(r"[0-9a-f]{64}|", digest)
         for path, digest in recorded.items()
     ):
         return None
@@ -283,10 +320,17 @@ def digest_changes(root: Path) -> list[str]:
     recorded = recorded_digests(root)
     current = _guarded_digests(root)
     return [
-        f"{path}: pinned {recorded.get(path, '<not pinned>')} -> current {current.get(path, '<not guarded>')}"
+        f"{path}: pinned {_shown(recorded.get(path), '<not pinned>')} -> "
+        f"current {_shown(current.get(path), '<not guarded>')}"
         for path in sorted(recorded.keys() | current.keys())
         if recorded.get(path) != current.get(path)
     ]
+
+
+def _shown(digest: str | None, missing: str) -> str:
+    if digest is None:
+        return missing
+    return digest or "<absent>"
 
 
 def problem(root: Path) -> str | None:
@@ -342,6 +386,12 @@ def install_plan(root: Path) -> dict:
     effective = effective_hook_path(root)
     if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
         raise ProtectionError(dispatcher_problem)
+    if problem := projection_problem(root):
+        raise ProtectionError(
+            f"the pinned {PROJECTION_PATH} cannot run the guard: {problem}; the guard would "
+            f"refuse every push. Run `relkit update` first to move the projection to "
+            f"{PUSH_AUDIT_VERSION} or newer, then run `relkit protect install` again"
+        )
     inputs = _guarded_digests(root)
     for relative in inputs:
         try:

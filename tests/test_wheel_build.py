@@ -65,10 +65,10 @@ class WheelBuildTests(unittest.TestCase):
         commands = members[f"release_kit-{__version__}.dist-info/entry_points.txt"].decode("utf-8")
         # The installed command hands a repository's invocation to its pinned projection.
         self.assertIn("relkit = releasekit.launcher:main", commands)
-        self.assertIn("relkit-mcp = releasekit_mcp.server:main", commands)
-        # Both importable packages ship, or the MCP entry point resolves to nothing.
+        self.assertNotIn("relkit-mcp", commands)
         self.assertIn("releasekit/cli.py", members)
-        self.assertIn("releasekit_mcp/server.py", members)
+        # The adapter was removed in 0.33.0; its package must not ship again by accident.
+        self.assertFalse([name for name in members if name.startswith("releasekit_mcp/")])
 
     def test_the_sidecar_names_the_wheel_and_its_digest(self):
         sidecar = self.wheel.with_name(self.wheel.name + ".sha256").read_bytes()

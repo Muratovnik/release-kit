@@ -97,8 +97,12 @@ every event except a schedule. A job whose layout the audit cannot read, such as
 flow mapping or a merge key, fails as `hosted-ci` instead of passing. Only the current
 tree is checked.
 
-The defaults enable secret/link checks. A normal `.betterleaks.toml` extends
-maintained defaults:
+The defaults enable secret/link checks. A project needs no `.betterleaks.toml`:
+without one, Betterleaks scans with its maintained default rules, explicitly selected
+so the result does not depend on a configuration found in the environment or in your
+home directory. The same applies when `betterleaks_config` names a file that does not
+exist. The guard pins that absence, so adding the file later is a reviewed change, not
+a silent one. A normal `.betterleaks.toml` extends maintained defaults:
 
 ```toml
 title = "project secret scanning"
@@ -227,8 +231,8 @@ the policy root in this order:
    configuration. A relative value resolves from the public checkout root.
 3. The conventional `../<checkout-name>-private` sibling.
 
-CLI owner and overlay commands, the installed owner guard, coordinator owner audits
-and MCP owner requests all use this same selection order.
+CLI owner and overlay commands, the installed owner guard and coordinator owner audits
+all use this same selection order.
 
 Set the persistent repository choice without creating a tracked project file:
 
@@ -292,8 +296,11 @@ The installed guard lives at `<git-common-dir>/hooks/pre-push` and runs the
 policy. It is not required for the basic CLI
 installation. It pins the tracked projection, `relkit.toml`, the configured secret
 policy and, for a workflow-backed release configuration, the publishing workflow.
-Reviewed changes to pinned inputs require an explicit
-[guard refresh](updates.md#already-updated-files-and-guard-drift).
+A committed edit of a pinned policy input is re-pinned by the next `relkit update`;
+other reviewed changes to pinned inputs require an explicit
+[guard refresh](updates.md#already-updated-files-and-guard-drift). The guard needs a
+projection of 0.33.0 or newer, and `protect install` refuses an older one with the fix
+(`relkit update` first).
 
 If `core.hooksPath` redirects Git elsewhere, that external owner must first provide
 an executable dispatcher with `# git-common-dir-hook-dispatcher: pre-push v1`.
@@ -350,9 +357,7 @@ not permission to ignore a block. Base CLI commands and JSON overlays need no ex
 
 **Compatibility:** upgrading the zipapp alone does not install PyYAML. Review the
 executing interpreter, including a hook's interpreter, before adopting this change.
-The built plugin's existing locked SDK environment does not include PyYAML: use
-JSON in the shared manifest for that path, or the separately installed standalone
-adapter with `[mcp,overlay-yaml]`. Do not edit an installed plugin's lock or use an
+A zipapp has no PyYAML: use JSON in the shared manifest for that path. Do not use an
 unreviewed global install to suppress the error. No manifest is rewritten or renamed
 automatically. An optional in-place YAML-to-JSON migration must preserve the entire
 Dotbot document, not just its links, and remain an explicit owner-reviewed change.

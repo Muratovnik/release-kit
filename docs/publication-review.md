@@ -46,7 +46,6 @@ Review legitimate synthetic fixtures rather than broadly excluding new directori
 | Published releases, old versions and source archives | Paginated inventory, downloaded files, names/sizes/digests, archive inspection | Uploaded files need not be tracked by Git; a current-tree cleanup does not remove them |
 | Actions runs, all retained attempts, logs and artifacts | Inventory and direct review of accessible downloads/logs | Hosted diagnostics are not Git blobs and can contain command output |
 | Issues, PRs/reviews, comments, attachments and enabled Discussions/wiki/Pages | Inventory and review appropriate to each enabled feature | Public source does not imply those materials were inspected |
-| Plugin/native installation | Downloaded package identity, SDK startup, native client/version and first read | A hash check or stdio smoke alone does not prove client discovery |
 
 For GitHub use its native CLI/API to enumerate **all pages** of releases, workflow
 runs and artifacts, then download the specific reviewed items. Store sensitive

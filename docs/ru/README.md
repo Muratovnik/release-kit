@@ -26,8 +26,6 @@
 | Проверить и выгрузить курируемые заметки к релизу | [Release notes](../notes.md) |
 | Собрать локально и доставить в каталог или на GitHub | [Local releases](../local-releases.md) |
 | Поддерживать публикацию через GitHub Actions | [Actions adapter](../release-coordinator.md) |
-| Использовать плагин для агентов | [Plugin](../plugin.md) |
-| Интегрировать другой локальный MCP-клиент | [Standalone MCP](../mcp.md) |
 | Потреблять машиночитаемые результаты | [CLI JSON contract](../cli-json.md) |
 | Разобраться в закреплении платформ, кэшах и границах доверия | [Distribution](../distribution.md) |
 | Проверить поверхности, которые локальный аудит не видит | [Publication review](../publication-review.md) |

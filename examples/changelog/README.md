@@ -1,8 +1,11 @@
 # Changelog generator starter
 
 A `cliff.toml` that makes [git-cliff](https://git-cliff.org) emit the layout the
-`conventional-changelog` profile validates. Copy it to your project root, change
-`[remote.github]` to your own owner and repository, and declare the generator:
+`conventional-changelog` profile validates. You do not need it to start: with that
+profile and no `cliff.toml`, release-kit uses this same template, built in, and links
+entries to the repository named by `origin` (see [examples/minimal](../minimal/relkit.toml)).
+Copy it to your project root only to change the template, set `[remote.github]` to your
+own owner and repository, and declare the generator:
 
 ```toml
 [changelog]

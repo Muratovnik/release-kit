@@ -11,7 +11,6 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tools"))
-import build_plugin
 import build_release
 import build_wheel
 import build_zipapp
@@ -28,14 +27,7 @@ class CommittedInputTests(unittest.TestCase):
         (self.source / "cli.py").write_text("def main():\n    return 0\n", newline="\n")
         (self.source / "optional.py").write_text("VALUE = 1\n", newline="\n")
         self.write_project("README.md")
-        plugin_root = build_plugin.TEMPLATE.relative_to(build_plugin.ROOT)
-        for relative in (
-            *build_plugin.DOCUMENTS,
-            *(plugin_root / name for name in build_plugin.FILES),
-        ):
-            path = self.root / relative
-            path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text("Fixture document\n", newline="\n")
+        (self.root / "README.md").write_text("Fixture readme\n", newline="\n")
         (self.root / "LICENSE").write_text("Fixture license\n", newline="\n")
         (self.root / "CHANGELOG.md").write_text("## [1.2.3] - 2026-01-01\n", newline="\n")
         (self.root / ".gitignore").write_text(".cache/\n*.local.py\n", newline="\n")
@@ -113,7 +105,7 @@ class CommittedInputTests(unittest.TestCase):
         self.assert_build_refuses("pyproject.toml")
 
     def test_an_uninitialized_gitlink_cannot_qualify_as_committed_release_source(self):
-        relative = "src/releasekit_mcp"
+        relative = "src/vendored"
         self.git(
             "update-index",
             "--add",
@@ -199,7 +191,7 @@ class CommittedInputTests(unittest.TestCase):
     def test_alternate_tracked_readme_remains_a_valid_wheel_input(self):
         relative = "docs/packaging/description.md"
         readme = self.root / relative
-        readme.parent.mkdir()
+        readme.parent.mkdir(parents=True)
         readme.write_text("Description from the committed alternate readme\n", newline="\n")
         self.write_project(relative)
         self.git("add", "pyproject.toml", relative)

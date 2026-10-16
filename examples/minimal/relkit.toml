@@ -1,0 +1,17 @@
+# The one file release-kit needs in a project. Copy it to the Git root, then add `.cache/`
+# to the project's `.gitignore` before the first `relkit audit` downloads its scanners.
+#
+# Without `.betterleaks.toml` the secret scan uses Betterleaks' maintained default rules;
+# without `cliff.toml`, `relkit notes --draft` uses the built-in template for the
+# conventional-changelog profile, linking entries to the repository named by `origin`.
+# Add either file only to change what these defaults do.
+
+[exposure]
+required_ignores = [".cache"]
+
+[changelog]
+profile = "conventional-changelog"
+first_version = "0.1.0"
+
+[changelog.generator]
+engine = "git-cliff"

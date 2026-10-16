@@ -22,6 +22,11 @@ from .exposure.audit import _skip_worktree_paths, scannable_paths, worktree_path
 
 MARKDOWN_SUFFIXES = frozenset({".md", ".markdown", ".mdown", ".mkd", ".mdx"})
 BETTERLEAKS_FINDINGS_EXIT = 10
+# What a project without its own policy file is scanned with: the engine's maintained
+# rules and nothing else. Naming them explicitly keeps the scan independent of whichever
+# configuration the engine would otherwise discover through the environment or the
+# user's home directory. This is not a rule list and never a list of forbidden names.
+BETTERLEAKS_DEFAULT_POLICY = "[extend]\nuseDefault = true\n"
 LYCHEE_FINDINGS_EXIT = 2
 LYCHEE_ARGUMENT_BYTES = 16 * 1024
 ENGINE_TIMEOUT_SECONDS = 600
@@ -176,6 +181,16 @@ def shared(root: Path, *, staged: bool, include_candidates: bool) -> Iterator[Sh
         )
 
 
+def _betterleaks_policy(workspace: storage.Workspace, path: Path) -> str:
+    """The project's policy file, or the engine default when the project has none."""
+    if os.path.lexists(path):
+        return str(path)
+    default = workspace.path / "default-policy.toml"
+    default.write_text(BETTERLEAKS_DEFAULT_POLICY, encoding="utf-8", newline="\n")
+    workspace.remember(default)
+    return str(default)
+
+
 def betterleaks(
     root: Path,
     *,
@@ -261,10 +276,16 @@ def _betterleaks_in(
         # The scanner's configuration (including relative extension files)
         # belongs to the same index as the scanned changes.
         snapshot = shared.source()
-        command[command.index("--config") + 1] = str(storage.inside(snapshot, snapshot / config))
+        command[command.index("--config") + 1] = _betterleaks_policy(
+            shared.workspace, storage.inside(snapshot, snapshot / config)
+        )
         command[command.index("git") + 1] = str(root.resolve())
         working_directory = snapshot
-    elif not history:
+    else:
+        command[command.index("--config") + 1] = _betterleaks_policy(
+            shared.workspace, root / config
+        )
+    if not shared.staged and not history:
         # Directory mode does not use Git's publication boundary and would otherwise
         # inspect .git, caches, dependencies, and ignored private mounts. Materialize
         # exactly the tracked plus untracked/unignored candidates that release-kit's

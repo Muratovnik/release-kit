@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "release-kit"
-# One declaration, in src/releasekit/__init__.py. Every builder, the plugin and the
+# One declaration, in src/releasekit/__init__.py. Every builder and the
 # release coordinator already read the version from there, so packaging metadata
 # references it rather than repeating a number that can drift from it.
 dynamic = ["version"]
@@ -18,13 +18,11 @@ authors = [{name = "Nikolai Muratov", email = "el.muratovnik@gmail.com"}]
 dependencies = []
 
 [project.optional-dependencies]
-mcp = ["mcp==2.1.1"]
 # YAML compatibility is optional; JSON Dotbot manifests need only the standard library.
 overlay-yaml = ["PyYAML==6.0.3"]
 
 [project.scripts]
 relkit = "releasekit.launcher:main"
-relkit-mcp = "releasekit_mcp.server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

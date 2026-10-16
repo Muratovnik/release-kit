@@ -249,7 +249,7 @@ def run(args, *, timeout: float, cwd=None, env=None, stdout=None, stderr=None, c
                 _stop(process, job, lifetime)
                 raise
             # A command that exits successfully must not leave background workers
-            # using its fixture or SDK while the caller releases that state.
+            # using its fixture or client while the caller releases that state.
             _stop(process, job, lifetime)
             result = subprocess.CompletedProcess(args, process.returncode, output, errors)
             if check:

@@ -1,4 +1,4 @@
-"""Build one synchronized CLI/plugin release set; never publish it implicitly."""
+"""Build the CLI release set (zipapp, wheel, digests, receipt); never publish it implicitly."""
 
 import argparse
 import hashlib
@@ -6,23 +6,21 @@ import json
 import os
 import subprocess
 import tomllib
-import zipfile
 from pathlib import Path
 
-from build_plugin import DOCUMENTS, FILES, ROOT, TEMPLATE, build_plugin
 from build_wheel import PACKAGES
 from build_wheel import build as build_wheel
+from build_zipapp import ROOT
+from build_zipapp import build as build_zipapp
 
 from releasekit import distribution, storage
 
 # Git's own object header, so a worktree file hashes to the id its blob would have.
 BLOB = b"blob %d\0"
 CONTENT_MODES = frozenset({"100644", "100755"})
-# Share the plugin's maintained inventory; the other builders read these three
-# fixed root inputs and the README selected by the committed package metadata.
-REQUIRED_INPUTS = frozenset({"pyproject.toml", "CHANGELOG.md", "LICENSE", *DOCUMENTS}) | frozenset(
-    (TEMPLATE / name).relative_to(ROOT).as_posix() for name in FILES
-)
+# The builders read these fixed root inputs and the README selected by the committed
+# package metadata, beside the Python modules each package globs.
+REQUIRED_INPUTS = frozenset({"pyproject.toml", "CHANGELOG.md", "LICENSE"})
 
 
 def diverged(root: Path) -> list[str]:
@@ -130,21 +128,9 @@ def build_release(output: Path, *, allow_divergent: bool = False):
     if output.exists() and any(output.iterdir()):
         raise ValueError("release output must be new or empty; preserve existing release bytes")
     output.mkdir(parents=True, exist_ok=True)
-    plugin = output / "release-kit-plugin.zip"
-    build_plugin(plugin)
-    with zipfile.ZipFile(plugin) as archive:
-        inventory = json.loads(archive.read("release-kit/package.json"))
-        payload = archive.read("release-kit/tools/relkit.pyz")
-        artifact = distribution.inspect(payload)
-        if (
-            artifact.version != inventory["version"]
-            or artifact.sha256 != inventory["files"]["tools/relkit.pyz"]
-        ):
-            raise ValueError("plugin and CLI release identity differs")
-        (output / "relkit.pyz").write_bytes(payload)
-        (output / "relkit.pyz.sha256").write_bytes(
-            archive.read("release-kit/tools/relkit.pyz.sha256")
-        )
+    # The recorded repository is what `relkit update` trusts as the source of updates.
+    build_zipapp(output / "relkit.pyz", repository="Muratovnik/release-kit")
+    artifact = distribution.inspect((output / "relkit.pyz").read_bytes())
     build_wheel(output)
     receipt = {
         "schema": 1,
