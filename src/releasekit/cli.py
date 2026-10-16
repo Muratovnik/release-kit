@@ -347,7 +347,8 @@ def build_parser() -> argparse.ArgumentParser:
         "to prepare and publish in one invocation. After interruption, "
         "use status VERSION (saved local facts) and resume VERSION --publish. "
         "Use verify VERSION to download and smoke-test an existing publication without pushing. "
-        "Abandon closes an unpublished attempt with --reason; it never deletes tags.",
+        "Abandon closes an unpublished attempt with --reason; it never deletes tags. "
+        "Unlock removes a stale release lock only after proving its owner and commands are gone.",
     )
     release.add_argument(
         "action",
@@ -363,10 +364,14 @@ def build_parser() -> argparse.ArgumentParser:
             "status",
             "verify",
             "abandon",
+            "unlock",
         ),
     )
     release.add_argument(
-        "version", nargs="?", default="", help="SemVer version or v-prefixed tag; omitted for next"
+        "version",
+        nargs="?",
+        default="",
+        help="SemVer version or v-prefixed tag; omitted for next, optional for unlock",
     )
     release.add_argument("--bump", choices=("patch", "minor", "major"), default="")
     release.add_argument(

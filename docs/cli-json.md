@@ -101,8 +101,9 @@ Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `release_cleanup_unconfirmed` retains the release lock and recovery evidence.
 `data.process_cleanup` and, when available, `data.release.process_cleanup` are
 `unconfirmed`; `next_action` is `null`. Verify the owned commands and descendants
-have stopped before removing the exact retained lock. A stopped parent PID is
-insufficient, and an unknown remote outcome still needs reconciliation.
+have stopped before removing the exact retained lock by hand; `release unlock`
+refuses it. A stopped parent PID is insufficient, and an unknown remote outcome
+still needs reconciliation.
 
 ## Command payloads
 
@@ -185,6 +186,12 @@ fails; retained cleanup is independent of both.
 local receipt; `next_action` is `null`. Missing reason, existing remote tag or
 release/draft, published release or publication flags refuse with exit `2`.
 It changes no ref. A subsequent run reports `data.archived_receipt`.
+
+`release unlock [VERSION]` removes a stale release lock after proving its owner is gone
+(see [removing a stale lock](release-coordinator.md#removing-a-stale-lock)). It returns
+`data.unlock` with `lock`, `removed` and, when removed, `owner` and `proof`; a lock it
+cannot prove stale is a `release_error` with exit `2` that names the unmet condition and
+the lock path, and the lock is left untouched.
 
 ### Release status: read a saved receipt
 

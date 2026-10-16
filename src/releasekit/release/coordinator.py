@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextlib
 import hashlib
 import json
-import os
 import re
 import shutil
 import subprocess
@@ -30,7 +29,7 @@ from .. import (
     storage,
 )
 from ..result import Result
-from . import changelog, failure, settings, stagelog, versions
+from . import changelog, failure, lockfile, settings, stagelog, versions
 from .backend import (
     CommandError,
     GitHub,
@@ -1598,67 +1597,8 @@ def _verify(
     _stage(path, state, "application-smoke", "passed")
 
 
-def _process_alive(pid: int) -> bool | None:
-    """Best-effort liveness that never signals the process (Windows os.kill terminates)."""
-    if pid <= 0:
-        return None
-    if sys.platform == "win32":
-        import ctypes
-
-        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        kernel32.OpenProcess.restype = ctypes.c_void_p
-        kernel32.OpenProcess.argtypes = [ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32]
-        kernel32.GetExitCodeProcess.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
-        kernel32.CloseHandle.argtypes = [ctypes.c_void_p]
-        handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-        if not handle:
-            return {5: True, 87: False}.get(ctypes.get_last_error())
-        try:
-            code = ctypes.c_ulong()
-            if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
-                return None
-            return code.value == 259  # STILL_ACTIVE
-        finally:
-            kernel32.CloseHandle(handle)
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    except OSError:
-        return None
-    return True
-
-
-def _lock_owner(lock: Path) -> str:
-    try:
-        owner_record = json.loads(lock.read_text(encoding="utf-8"))
-        pid, tag, root = owner_record["pid"], owner_record["tag"], owner_record["root"]
-    except (OSError, ValueError, KeyError, TypeError):
-        return "its recorded owner is unreadable"
-    alive = _process_alive(pid) if type(pid) is int else None
-    liveness = {
-        True: "a process with this PID is running",
-        False: "no process with this PID is running",
-        None: "PID liveness could not be checked",
-    }[alive]
-    return f"pid {pid} ({liveness}), tag {tag}, root {root}"
-
-
 def _acquire_lock(root: Path, tag: str) -> Path:
-    lock = storage.service_root(root) / "release.lock"
-    storage.checked(lock).parent.mkdir(parents=True, exist_ok=True)
-    try:
-        with lock.open("x", encoding="utf-8") as stream:
-            stream.write(json.dumps({"pid": os.getpid(), "tag": tag, "root": str(root)}))
-    except FileExistsError as error:
-        raise ReleaseError(
-            f"another release owns {lock}: {_lock_owner(lock)}; after a crash verify all "
-            "owned commands and descendants have stopped before manually removing this exact "
-            "lock; a stopped PID alone is insufficient"
-        ) from error
-    return lock
+    return lockfile.acquire(root, tag)
 
 
 def _abandon(runner: Runner, github: GitHub | None, state: dict, path: Path, reason: str) -> None:
@@ -1849,6 +1789,32 @@ def run(
                 print(
                     "relkit release: the number is unchanged; inspect status/resume for the occupied tag before proceeding"
                 )
+            return 0
+        if action == "unlock":
+            if (
+                publish
+                or bump
+                or prerelease
+                or plan_hash
+                or no_download
+                or accept_ci_attempt
+                or reason
+                or ci_run
+                or assets
+                or prepare_here
+            ):
+                raise ReleaseError("release unlock accepts only an optional VERSION and --root")
+            outcome = lockfile.unlock(root, version_tag(version)[1] if version else "")
+            result.data["unlock"] = outcome
+            if outcome["removed"]:
+                owner_text = outcome["owner"]
+                print(
+                    f"relkit release: removed the release lock {outcome['lock']}: its owner "
+                    f"(pid {owner_text['pid']}, {owner_text['tag']}) is not running and no "
+                    "receipt written under it records unconfirmed cleanup"
+                )
+            else:
+                print(f"relkit release: {outcome['reason']}: {outcome['lock']}")
             return 0
         if bump:
             raise ReleaseError("--bump is accepted only by release next")

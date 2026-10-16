@@ -295,8 +295,10 @@ The saved receipt binds the plan, repository ID, SHA, tag object, CI run/attempt
 release ID, asset IDs/sizes/digests and separate publication/verification/cleanup
 results. A repository-wide exclusive lock prevents concurrent runs; it is never
 stolen automatically. A busy lock reports its recorded PID, tag and root together
-with whether that PID is still running; remove only that exact stale lock after
-proving the process is inactive.
+with whether that PID is still running. After a crash, `relkit release unlock
+[VERSION]` removes that exact lock once it has proven the owner is gone, and
+otherwise refuses with the unmet condition and the lock's path; see
+[removing a stale lock](#removing-a-stale-lock).
 
 `resume` first checks actual remote identity/refs/release, including after a lost
 push response. It never adopts an unrelated tag/release or silently substitutes
@@ -386,6 +388,35 @@ the invocation URL is constructed by the
 GitHub CLI 2.98.0 routes its TUF cache through
 [the CLI-owned cache directory](https://github.com/cli/cli/blob/v2.98.0/pkg/cmd/attestation/verification/tuf.go).
 release-kit sets process-local cache/temp paths, not user-wide GitHub settings.
+
+## Removing a stale lock
+
+`relkit release unlock [VERSION]` is the one sanctioned way to remove
+`.git/relkit/release.lock`. It exists because the lock is kept on purpose, never taken
+over, and a stopped PID alone is not enough to know it is stale: the owner's project
+commands and their descendants may still be writing to the checkout. It removes the lock
+only after proving all of the following, and otherwise refuses, naming the unmet
+condition and the lock path. It never signals or stops a process.
+
+- The owner record is readable and names this root; `VERSION`, if given, is the tag the
+  lock is held for. A lock taken on another host is refused, since this machine cannot
+  see that host's processes. A record written before hosts were recorded is judged on the
+  rest.
+- The recorded PID is not running. A running process with that PID is refused even if it
+  is a different one that reused the number, because release-kit cannot tell.
+- No receipt for that tag written while the lock existed (`state.json`, the candidate
+  attempts) records that owned commands could not be confirmed stopped. That is the case
+  the lock is retained for; verify the commands by hand, then remove the lock by hand.
+  A receipt that cannot be read is refused the same way.
+- No such receipt was left mid-stage by the owner's death, unless the platform ends the
+  owner's commands with it. A Windows job object does. A POSIX process group does not,
+  and its members are not recorded, so there a lock left mid-stage is removed by hand
+  after checking that the commands have stopped.
+- The lock is unchanged between the inspection and the removal.
+
+With no lock it reports that and exits `0`; a refusal exits `2`. `--json` reports
+`data.unlock` with the lock path, `removed` and, on removal, the owner and the proof. The
+MCP adapter has no tool for this; use the CLI.
 
 ## Stage lines in the logs
 
@@ -487,5 +518,6 @@ when it is refused. All commands accept the opt-in [structured CLI contract](cli
 recorded publication, verification and cleanup remain separate fields.
 Status can also inspect a receipt whose process cleanup is unconfirmed. The
 retained release lock continues to block execution until the operator confirms
-that the owned commands and descendants have stopped and removes that exact lock;
-reading the receipt does not authorize another run.
+that the owned commands and descendants have stopped and removes that exact lock by
+hand, because `release unlock` refuses a lock whose receipt records unconfirmed
+cleanup; reading the receipt does not authorize another run.
