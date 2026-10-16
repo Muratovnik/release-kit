@@ -107,8 +107,8 @@ def _hook_v1(expected: str) -> str:
     )
 
 
-def _hook_v2(expected: str) -> str:
-    """Current. `python` is not on every PATH, and a Windows Store alias is not an
+def _hook_with_interpreter_probe(expected: str, audit_arguments: str) -> str:
+    """`python` is not on every PATH, and a Windows Store alias is not an
     interpreter: probe the candidates instead of failing the push with a shell error
     that names neither release-kit nor the missing runtime."""
     return (
@@ -132,17 +132,31 @@ def _hook_v2(expected: str) -> str:
         + expected
         + _HOOK_BODY_TAIL
         + "PY\n"
-        f'exec "$relkit_python" "$root/{PROJECTION_PATH}" audit --history --owner\n'
+        f'exec "$relkit_python" "$root/{PROJECTION_PATH}" audit {audit_arguments}\n'
     )
+
+
+def _hook_v2(expected: str) -> str:
+    """Through 0.32.0: the whole history, which needs a clean tracked worktree and reads
+    every remote-tracking ref, so unrelated work could refuse a clean push. Frozen."""
+    return _hook_with_interpreter_probe(expected, "--history --owner")
+
+
+def _hook_v3(expected: str) -> str:
+    """Current: only what the push publishes. Git writes the refs being updated to the
+    hook's standard input, which this shell leaves untouched for the audit, and names
+    the destination remote as its first argument. The whole history is still judged by
+    an explicit `audit --history` and by the release."""
+    return _hook_with_interpreter_probe(expected, '--push --owner --remote "$1"')
 
 
 # Newest first. An installed guard from any of these is intact; only the newest is
 # ever written, so `protect install` migrates a repository forward.
-HOOK_TEMPLATES = (_hook_v2, _hook_v1)
+HOOK_TEMPLATES = (_hook_v3, _hook_v2, _hook_v1)
 
 
 def hook_content(root: Path, *, digests: dict[str, str] | None = None) -> str:
-    return _hook_v2(repr(_guarded_digests(root) if digests is None else digests))
+    return _hook_v3(repr(_guarded_digests(root) if digests is None else digests))
 
 
 def _git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:

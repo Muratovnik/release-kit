@@ -280,6 +280,25 @@ class EngineCommandTests(unittest.TestCase):
         self.assertIn("safe.directory", environment.values())
         self.assertEqual("1", environment["GIT_NO_REPLACE_OBJECTS"])
 
+    def test_betterleaks_history_can_be_narrowed_to_one_push(self) -> None:
+        with (
+            patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),
+            patch.object(engines, "_run", return_value=0) as invoke,
+        ):
+            engines.betterleaks(
+                Path("repo"),
+                config=".betterleaks.toml",
+                history=True,
+                staged=False,
+                include_candidates=False,
+                allow_download=False,
+                log_opts="1111 --not 2222",
+            )
+
+        command = list(invoke.call_args.args[0])
+        self.assertIn("--log-opts=1111 --not 2222", command)
+        self.assertNotIn(f"--log-opts={engines.HISTORY_LOG_OPTS}", command)
+
     def test_betterleaks_staged_scope_is_explicit(self) -> None:
         with (
             patch.object(engines.toolchain, "resolve", return_value=Path("betterleaks")),

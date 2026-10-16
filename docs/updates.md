@@ -105,7 +105,10 @@ modified hook templates need manual owner review.
 The same mode adopts a guard written by an earlier release-kit. An older template
 pinning current inputs is not drift and keeps enforcing them: `protect check`
 reports it, and refresh rewrites it under backup, validation and rollback. It is
-not an emergency requiring a bypass.
+not an emergency requiring a bypass. A guard from before the
+[push scope](audit.md#scopes) is such a template: it judges the whole history and a
+clean tracked tree at every push until `relkit protect install` adopts the current
+one, and it needs the projection to be at least the release that adds `audit --push`.
 
 ## First update and rollback
 

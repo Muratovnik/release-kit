@@ -88,6 +88,7 @@ def betterleaks(
     staged: bool,
     include_candidates: bool,
     allow_download: bool,
+    log_opts: str = "",
 ) -> int:
     executable = toolchain.resolve("betterleaks", root=root, allow_download=allow_download)
     config_path = root / config
@@ -111,7 +112,8 @@ def betterleaks(
         # independently; Betterleaks' default --all traversal then fails before
         # reaching product history. Limit the scan explicitly without weakening
         # the public ref boundary.
-        command += [f"--log-opts={HISTORY_LOG_OPTS}"]
+        # A push narrows this to the commits it publishes; nothing else is its business.
+        command += [f"--log-opts={log_opts or HISTORY_LOG_OPTS}"]
     # Betterleaks invokes Git as a child process. Desktop/container workspaces can
     # legitimately be owned by the host account rather than the current process
     # account; scope the exception to this exact audited root instead of mutating
