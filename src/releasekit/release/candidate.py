@@ -11,7 +11,7 @@ from datetime import UTC, datetime
 from uuid import uuid4
 
 from .. import canonical, config, processes, semver, storage
-from . import settings
+from . import settings, stagelog
 from .backend import Pending, ReleaseError, clean
 
 MANIFEST = "relkit-candidate.json"
@@ -133,21 +133,22 @@ def download(runner, github, value, release, run_id, directory):
     if directory.exists() and any(directory.iterdir()):
         raise ReleaseError("candidate download directory must be empty")
     directory.mkdir(parents=True, exist_ok=True)
-    runner.call(
-        [
-            "gh",
-            "run",
-            "download",
-            str(run_id),
-            "--repo",
-            release.repository,
-            "--name",
-            release.candidate_artifact,
-            "--dir",
-            str(directory),
-        ],
-        timeout=release.command_timeout,
-    )
+    with stagelog.stage(runner, "candidate-download"):
+        runner.call(
+            [
+                "gh",
+                "run",
+                "download",
+                str(run_id),
+                "--repo",
+                release.repository,
+                "--name",
+                release.candidate_artifact,
+                "--dir",
+                str(directory),
+            ],
+            timeout=release.command_timeout,
+        )
     path = storage.inside(directory, directory / MANIFEST)
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ReleaseError("candidate manifest exceeds the read limit")
@@ -197,20 +198,30 @@ def prepare(runner, github, value, run_id, no_download, result):
             temporary = workspace.path / "project-temp"
             temporary.mkdir()
             workspace.scratch(temporary)
-            ci_identity(github, expected, release, run_id)
+            with stagelog.stage(runner, "preflight"):
+                ci_identity(github, expected, release, run_id)
             coordinator._local_checks(runner, value, workspace, no_download)
             directory = workspace.path / "assets"
             record = download(runner, github, expected, release, run_id, directory)
             workspace.remember(directory)
             snapshot = coordinator._snapshot(runner, value, workspace)
-            coordinator._commands(runner, release.smoke, value, snapshot, directory, temporary)
+            coordinator._commands(
+                runner,
+                release.smoke,
+                value,
+                snapshot,
+                directory,
+                temporary,
+                stage="candidate-smoke",
+            )
             if inventory(expected, directory, manifest=True) != record["files"]:
                 raise ReleaseError("candidate assets changed during smoke")
             clean(runner, value["sha"])
-            if (
-                coordinator.plan(runner, value["version"], github=github, candidate_receipt=False)
-                != value
-            ):
+            with stagelog.stage(runner, "preflight"):
+                replanned = coordinator.plan(
+                    runner, value["version"], github=github, candidate_receipt=False
+                )
+            if replanned != value:
                 raise ReleaseError("release plan changed during candidate preparation")
             workspace.remember(runner.temporary)
             state.update(

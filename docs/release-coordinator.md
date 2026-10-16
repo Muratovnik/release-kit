@@ -358,6 +358,47 @@ GitHub CLI 2.98.0 routes its TUF cache through
 [the CLI-owned cache directory](https://github.com/cli/cli/blob/v2.98.0/pkg/cmd/attestation/verification/tuf.go).
 release-kit sets process-local cache/temp paths, not user-wide GitHub settings.
 
+## Stage lines in the logs
+
+A release spends its minutes in a few long steps whose output goes to the owned log:
+the project's checks, the audits, a download of the candidate, a pre-push hook. Each
+coordinator stage therefore writes timestamped lines into the log it runs under, in the
+same shape as the audit's [stage lines](cli-json.md#summary-line-and-stage-lines):
+
+```text
+[2026-10-16T12:34:56+03:00] stage local-checks: start
+[2026-10-16T12:35:26+03:00] stage local-checks: running (30s)
+[2026-10-16T12:41:02+03:00] stage local-checks: done (366.1s)
+```
+
+The outcome is `done` or `failed`, with the stage's duration; a heartbeat appears every
+30 seconds while a stage runs, so a silent stage can be told from a hung one. A run's
+lines are in `run.log` under its receipt directory; a preparation's are in the
+attempt's log beside its receipt. The audit's own engine stages appear inside
+`worktree-audit` and `history-audit`.
+
+| Stage | What it covers |
+| --- | --- |
+| `preflight` | Reconciling remote refs, release and identity; re-checking plan inputs |
+| `local-checks` | The project's `checks` commands |
+| `worktree-audit`, `history-audit` | The two publication audits |
+| `source-snapshot` | Materializing the committed tree for smoke |
+| `build` | The project's `build` commands (local preparation) |
+| `candidate-download` | Downloading the CI candidate artifact |
+| `candidate-smoke` | Smoke commands before a tag exists |
+| `annotated-tag` | Creating the tag and checking its metadata |
+| `push` | The atomic push, including any pre-push hook |
+| `publish` | Draft, upload and publication by the local GitHub or directory adapter |
+| `ci` | Waiting for the tag workflow to publish |
+| `publication-verification` | Published identity, notes, assets and checksums |
+| `asset-download` | Downloading published assets for verification |
+| `signatures` | Signature and provenance verification |
+| `application-smoke` | Smoke commands against the published files |
+| `cleanup` | Removing the run's inventoried scratch files |
+
+These are labels for a reader, not stable identifiers; `state.json` keeps its own,
+older stage record.
+
 ## Service-file policy and cleanup
 
 All release-kit service files default to locations **inside the owning project**.

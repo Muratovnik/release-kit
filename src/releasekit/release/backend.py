@@ -32,6 +32,9 @@ class Runner:
     def __init__(self, root: Path):
         self.root = root
         self.log: Path | None = None
+        # The invocation's own run.log. While a candidate is prepared in the same
+        # invocation `log` is the attempt's, and stage lines go to both.
+        self.run_log: Path | None = None
         self.temporary: Path | None = None
 
     def call(

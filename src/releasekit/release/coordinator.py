@@ -29,7 +29,7 @@ from .. import (
     storage,
 )
 from ..result import Result
-from . import changelog, failure, settings, versions
+from . import changelog, failure, settings, stagelog, versions
 from .backend import (
     CommandError,
     GitHub,
@@ -927,6 +927,7 @@ def _commands(
     snapshot: Path,
     assets: Path,
     temporary: Path,
+    stage: str | None = None,
 ) -> None:
     substitutions = {
         "python": sys.executable,
@@ -940,21 +941,22 @@ def _commands(
     previous = runner.temporary
     runner.temporary = temporary
     try:
-        for index, command in enumerate(commands, start=1):
-            print(f"relkit release: project command {index}/{len(commands)}", flush=True)
-            with progress.step(f"project command {index}/{len(commands)}"):
-                try:
-                    runner.call(
-                        [arg.format(**substitutions) for arg in command],
-                        cwd=snapshot,
-                        timeout=value["settings"]["command_timeout"],
-                    )
-                except CommandError as error:
-                    # Name the configured command, as written in relkit.toml, and what
-                    # it printed; the log keeps the rest.
-                    raise failure.ProjectCommandError(
-                        f"project command {index}/{len(commands)}", command, error, runner.log
-                    ) from error
+        with stagelog.stage(runner, stage):
+            for index, command in enumerate(commands, start=1):
+                print(f"relkit release: project command {index}/{len(commands)}", flush=True)
+                with progress.step(f"project command {index}/{len(commands)}"):
+                    try:
+                        runner.call(
+                            [arg.format(**substitutions) for arg in command],
+                            cwd=snapshot,
+                            timeout=value["settings"]["command_timeout"],
+                        )
+                    except CommandError as error:
+                        # Name the configured command, as written in relkit.toml, and what
+                        # it printed; the log keeps the rest.
+                        raise failure.ProjectCommandError(
+                            f"project command {index}/{len(commands)}", command, error, runner.log
+                        ) from error
     finally:
         runner.temporary = previous
 
@@ -1015,17 +1017,20 @@ def _local_checks(runner, value, workspace, no_download, path=None, state=None):
         runner.root,
         workspace.path / "assets",
         workspace.path / "project-temp",
+        stage="local-checks",
     )
     clean(runner, value["sha"])
     if release.require_guard and (problem := protection.problem(runner.root)):
         raise ReleaseError(f"protect check failed: {problem}")
     stage("local-checks", "passed")
     stage("worktree-audit")
-    _audit(runner, release, history=False, no_download=no_download)
+    with stagelog.stage(runner, "worktree-audit"):
+        _audit(runner, release, history=False, no_download=no_download)
     clean(runner, value["sha"])
     stage("worktree-audit", "passed")
     stage("history-audit")
-    _audit(runner, release, history=True, no_download=no_download)
+    with stagelog.stage(runner, "history-audit"):
+        _audit(runner, release, history=True, no_download=no_download)
     clean(runner, value["sha"])
     stage("history-audit", "passed")
 
@@ -1051,14 +1056,15 @@ def _prepare(
             )
         expected, _ = candidate.inputs(runner, value["version"])
         _local_checks(runner, value, workspace, no_download, path, state)
-        record = candidate.download(
-            runner,
-            github,
-            expected,
-            release,
-            proof["ci"]["id"],
-            workspace.path / "candidate-assets",
-        )
+        with stagelog.stage(runner, "candidate-download"):
+            record = candidate.download(
+                runner,
+                github,
+                expected,
+                release,
+                proof["ci"]["id"],
+                workspace.path / "candidate-assets",
+            )
         workspace.remember(workspace.path / "candidate-assets")
         if (
             fingerprint(record) != proof["sha256"]
@@ -1087,55 +1093,66 @@ def _prepare(
         github.preflight()
     else:
         _local_checks(runner, value, workspace, no_download, path, state)
-    refs = publication_refs(runner, release)
-    policy = config.load(runner.root)
-    if (
-        asdict(policy.release) != value["settings"]
-        or (
-            versions.predecessor(
-                runner, github, refs, value["version"], value["sha"], policy.changelog.first_version
+    with stagelog.stage(runner, "preflight"):
+        refs = publication_refs(runner, release)
+        policy = config.load(runner.root)
+        if (
+            asdict(policy.release) != value["settings"]
+            or (
+                versions.predecessor(
+                    runner,
+                    github,
+                    refs,
+                    value["version"],
+                    value["sha"],
+                    policy.changelog.first_version,
+                )
+                if value.get("previous_source") == "published-release"
+                else previous_tag(
+                    runner,
+                    refs,
+                    value["version"],
+                    value["sha"],
+                    policy.changelog.first_version,
+                    value["tag"],
+                )
             )
-            if value.get("previous_source") == "published-release"
-            else previous_tag(
-                runner,
-                refs,
-                value["version"],
-                value["sha"],
-                policy.changelog.first_version,
-                value["tag"],
-            )
-        )
-        != value["previous"]
-    ):
-        raise ReleaseError("release inputs or previous tag changed since planning")
+            != value["previous"]
+        ):
+            raise ReleaseError("release inputs or previous tag changed since planning")
     tag_oid = _owned_tag(runner, state)
     _stage(path, state, "annotated-tag")
-    if not tag_oid:
-        state["tag_intent"] = True
-        _save(path, state)
-        runner.git(
-            "tag", "--annotate", value["tag"], value["sha"], "--message", _tag_message(value)
-        )
-        state["tag_oid"] = _owned_tag(runner, state)
-        _save(path, state)
-        # An annotation adds a publication input even though the source SHA is unchanged.
-        # This focused metadata check avoids re-running both complete engine scans.
-        from ..exposure.audit import _reference_metadata_failures
+    with stagelog.stage(runner, "annotated-tag"):
+        if not tag_oid:
+            state["tag_intent"] = True
+            _save(path, state)
+            runner.git(
+                "tag", "--annotate", value["tag"], value["sha"], "--message", _tag_message(value)
+            )
+            state["tag_oid"] = _owned_tag(runner, state)
+            _save(path, state)
+            # An annotation adds a publication input even though the source SHA is unchanged.
+            # This focused metadata check avoids re-running both complete engine scans.
+            from ..exposure.audit import _reference_metadata_failures
 
-        private = owner.discover(runner.root).load() if release.owner_audit else owner.OwnerRules()
-        problems = _reference_metadata_failures(
-            runner.root,
-            names=private.private_values,
-            owner_workflows=private.owner_workflows,
-            private_patterns=private.patterns,
-            allowed_users=policy.exposure.allowed_users,
-            allowed_identities=policy.exposure.allowed_identities,
-            forbid_ai_attribution=policy.exposure.forbid_ai_attribution,
-            forbid_internal_planning=policy.exposure.forbid_internal_planning,
-            forbid_machine_observations=policy.exposure.forbid_machine_observations,
-        )
-        if problems:
-            raise ReleaseError("new tag metadata fails publication policy: " + "; ".join(problems))
+            private = (
+                owner.discover(runner.root).load() if release.owner_audit else owner.OwnerRules()
+            )
+            problems = _reference_metadata_failures(
+                runner.root,
+                names=private.private_values,
+                owner_workflows=private.owner_workflows,
+                private_patterns=private.patterns,
+                allowed_users=policy.exposure.allowed_users,
+                allowed_identities=policy.exposure.allowed_identities,
+                forbid_ai_attribution=policy.exposure.forbid_ai_attribution,
+                forbid_internal_planning=policy.exposure.forbid_internal_planning,
+                forbid_machine_observations=policy.exposure.forbid_machine_observations,
+            )
+            if problems:
+                raise ReleaseError(
+                    "new tag metadata fails publication policy: " + "; ".join(problems)
+                )
     _stage(path, state, "annotated-tag", "passed")
     clean(runner, value["sha"])
     # Refuse a draft/tag created concurrently, before the authorized write.
@@ -1151,17 +1168,19 @@ def _prepare(
     _save(path, state)
     print("relkit release: push planned refs", flush=True)
     _stage(path, state, "push")
-    try:
-        runner.git("push", "--atomic", release.remote, *value["pushes"])
-    except (CommandError, Pending):
-        # A lost response is not proof that the remote write failed.
+    # Existing pre-push hooks run inside this stage, so their time lands in the log here.
+    with stagelog.stage(runner, "push"):
+        try:
+            runner.git("push", "--atomic", release.remote, *value["pushes"])
+        except (CommandError, Pending):
+            # A lost response is not proof that the remote write failed.
+            pushed, _ = _reconcile(runner, github, state)
+            _save(path, state)
+            if not pushed:
+                raise
         pushed, _ = _reconcile(runner, github, state)
-        _save(path, state)
         if not pushed:
-            raise
-    pushed, _ = _reconcile(runner, github, state)
-    if not pushed:
-        raise Pending("push was not observed on the server")
+            raise Pending("push was not observed on the server")
     _stage(path, state, "push", "passed")
 
 
@@ -1420,13 +1439,14 @@ def _snapshot(runner: Runner, value: dict, workspace: storage.Workspace) -> Path
     # Bypass archive attributes and checkout filters: smoke reads exact blobs. One
     # process per file is minutes of spawn overhead on a repository of any size, so
     # read them in batches bounded by bytes rather than by file count.
-    for batch in _history_batches([(oid, sizes.get(oid, 0)) for oid in targets]):
-        for oid, payload in _batch_objects(runner.root, batch, expected_type="blob"):
-            for target, mode in targets[oid]:
-                target.write_bytes(payload)
-                target.chmod(0o755 if mode == "100755" else 0o644)
-                # Identity is recorded once the file is final; cleanup compares it.
-                workspace.remember(target)
+    with stagelog.stage(runner, "source-snapshot"):
+        for batch in _history_batches([(oid, sizes.get(oid, 0)) for oid in targets]):
+            for oid, payload in _batch_objects(runner.root, batch, expected_type="blob"):
+                for target, mode in targets[oid]:
+                    target.write_bytes(payload)
+                    target.chmod(0o755 if mode == "100755" else 0o644)
+                    # Identity is recorded once the file is final; cleanup compares it.
+                    workspace.remember(target)
     return snapshot
 
 
@@ -1447,42 +1467,46 @@ def _verify(
     )
     state["verification"] = "running"
     _stage(path, state, "publication-verification")
-    identity = _published_identity(github, value, release, state["tag_oid"])
-    if state.get("artifacts") and state["artifacts"] != identity:
-        raise ReleaseError("published artifact identity changed across resume")
-    state["artifacts"] = identity
-    _save(path, state)
-    directory = workspace.path / "assets"
-    directory.mkdir()
-    # Inventoried now: with no files to download nothing below would record it,
-    # and cleanup would then report this run's own empty directory as retained.
-    workspace.remember(directory)
-    for asset in identity["assets"]:
-        destination = directory / asset["name"]
-        github.download(asset, destination)
-        workspace.remember(destination)
-        if (
-            destination.stat().st_size != asset["size"]
-            or storage.digest(destination) != asset["digest"][7:]
-        ):
-            raise ReleaseError(f"downloaded checksum/size mismatch: {asset['name']}")
-    _checksums(value, directory, identity["assets"])
-    if proof := value.get("candidate"):
-        files = [
-            {key: asset[key] for key in ("name", "size", "digest")} for asset in identity["assets"]
-        ]
-        if sorted(files, key=lambda item: item["name"]) != proof["files"]:
-            raise ReleaseError("published files differ from the prepared candidate")
-    if value["settings"].get("publisher") != "directory":
-        github.signatures(
-            value["tag"],
-            value["sha"],
-            value["settings"]["workflow"],
-            [directory / asset["name"] for asset in identity["assets"]],
-            ci=state.get("ci", {}),
-            repository_id=value["repository_id"],
-            provenance=required_provenance(value),
-        )
+    with stagelog.stage(runner, "publication-verification"):
+        identity = _published_identity(github, value, release, state["tag_oid"])
+        if state.get("artifacts") and state["artifacts"] != identity:
+            raise ReleaseError("published artifact identity changed across resume")
+        state["artifacts"] = identity
+        _save(path, state)
+        directory = workspace.path / "assets"
+        directory.mkdir()
+        # Inventoried now: with no files to download nothing below would record it,
+        # and cleanup would then report this run's own empty directory as retained.
+        workspace.remember(directory)
+        with stagelog.stage(runner, "asset-download"):
+            for asset in identity["assets"]:
+                destination = directory / asset["name"]
+                github.download(asset, destination)
+                workspace.remember(destination)
+                if (
+                    destination.stat().st_size != asset["size"]
+                    or storage.digest(destination) != asset["digest"][7:]
+                ):
+                    raise ReleaseError(f"downloaded checksum/size mismatch: {asset['name']}")
+        _checksums(value, directory, identity["assets"])
+        if proof := value.get("candidate"):
+            files = [
+                {key: asset[key] for key in ("name", "size", "digest")}
+                for asset in identity["assets"]
+            ]
+            if sorted(files, key=lambda item: item["name"]) != proof["files"]:
+                raise ReleaseError("published files differ from the prepared candidate")
+        if value["settings"].get("publisher") != "directory":
+            with stagelog.stage(runner, "signatures"):
+                github.signatures(
+                    value["tag"],
+                    value["sha"],
+                    value["settings"]["workflow"],
+                    [directory / asset["name"] for asset in identity["assets"]],
+                    ci=state.get("ci", {}),
+                    repository_id=value["repository_id"],
+                    provenance=required_provenance(value),
+                )
     _stage(path, state, "publication-verification", "passed")
     snapshot = _snapshot(runner, value, workspace)
     print(
@@ -1499,6 +1523,7 @@ def _verify(
         snapshot,
         directory,
         workspace.path / "project-temp",
+        stage="application-smoke",
     )
     # Smoke must not silently replace the bytes we just verified.
     for asset in identity["assets"]:
@@ -1910,7 +1935,8 @@ def run(
         state["verification"] = "not-run"
         state.pop("process_cleanup", None)
         # Reconciliation precedes project commands, downloads, retries and cleanup.
-        pushed, existing = _reconcile(runner, github, state)
+        with stagelog.stage(runner, "preflight"):
+            pushed, existing = _reconcile(runner, github, state)
         _save(state_path, state)
         if action == "verify" and (not pushed or not existing or existing["draft"]):
             raise ReleaseError("verify requires an existing published release for the saved plan")
@@ -1937,19 +1963,21 @@ def run(
         if settings.local(value["settings"]):
             from . import local
 
-            published = local.publish(
-                runner, github, state, state_path, workspace, verify_only=action == "verify"
-            )
+            with stagelog.stage(runner, "publish"):
+                published = local.publish(
+                    runner, github, state, state_path, workspace, verify_only=action == "verify"
+                )
         else:
-            published = _ci(
-                runner,
-                github,
-                state,
-                state_path,
-                deadline,
-                accept_ci_attempt,
-                verify_only=action == "verify",
-            )
+            with stagelog.stage(runner, "ci"):
+                published = _ci(
+                    runner,
+                    github,
+                    state,
+                    state_path,
+                    deadline,
+                    accept_ci_attempt,
+                    verify_only=action == "verify",
+                )
         state["verifier_version"] = __version__
         _verify(runner, github, state, state_path, published, workspace)
         if state.get("ci_verdict") not in {"passed", "not-required"}:
@@ -1957,7 +1985,8 @@ def run(
                 "artifacts verified; release acceptance incomplete: "
                 + "; ".join(state["ci_problems"])
             )
-        cleaned = workspace.cleanup(discard_scratch=True)
+        with stagelog.stage(runner, "cleanup"):
+            cleaned = workspace.cleanup(discard_scratch=True)
         workspace = None
         state["cleanup"] = "passed" if cleaned else "retained-unowned-or-changed-files"
         state.pop("error", None)
