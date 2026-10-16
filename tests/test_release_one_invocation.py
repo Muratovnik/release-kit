@@ -101,6 +101,9 @@ class OneInvocationCandidateTests(CandidateFixture):
             b"changed on disk", self.held_file(result).read_bytes(), "a changed file is not swept"
         )
         self.assertIn("retained unowned or changed temporary files", output)
+        receipt = self.receipt()
+        self.assertEqual("retained-unowned-or-changed-files", receipt["cleanup"])
+        self.assertIn(result.data["candidate"]["temporary"], receipt["retained_temporaries"])
 
     def test_a_corrupt_download_after_a_changed_candidate_file_still_fails_verification(self):
         result = Result()

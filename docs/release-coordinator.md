@@ -234,7 +234,10 @@ coordinator, so a check result is not carried across invocations; a later `resum
 tag, the candidate is revalidated from the bytes already on disk: the CI run, its jobs and
 attempt are read again, every file is hashed again and compared with the manifest.
 
-The candidate is downloaded once. After publication, verification takes each published
+The candidate is downloaded once. Any `run` that downloaded the candidate in its own
+invocation verifies from those bytes, so this also holds for `run` after a separate
+`prepare`; `resume` and `verify` downloaded nothing and download the published files.
+After publication, verification takes each published
 asset from those bytes when its size and SHA-256 equal the published identity, which
 `relkit` has already matched to GitHub's signed release attestation; the signature,
 provenance and smoke checks then run on the copies. A candidate file that changed on disk

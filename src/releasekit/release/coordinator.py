@@ -2063,7 +2063,16 @@ def run(
         with stagelog.stage(runner, "cleanup"):
             cleaned = workspace.cleanup(discard_scratch=True)
         workspace = None
-        state["cleanup"] = "passed" if cleaned else "retained-unowned-or-changed-files"
+        # The candidate workspace held for this run was closed after verification; what it
+        # kept is this run's retained scratch too, and the receipt must say so.
+        held_kept = hold.path is not None and Path(hold.path).exists()
+        if held_kept:
+            kept_paths = state.setdefault("retained_temporaries", [])
+            if str(hold.path) not in kept_paths:
+                kept_paths.append(str(hold.path))
+        state["cleanup"] = (
+            "passed" if cleaned and not held_kept else "retained-unowned-or-changed-files"
+        )
         state.pop("error", None)
         state["local_changes"] = bool(
             runner.git("status", "--porcelain=v1", "--untracked-files=all")
@@ -2080,6 +2089,8 @@ def run(
             )
         if not cleaned:
             print(f"relkit release: cleanup retained changed/unowned files: {state['temporary']}")
+        if held_kept:
+            print(f"relkit release: cleanup retained changed/unowned files: {hold.path}")
         return 0
     except (
         processes.CleanupError,
