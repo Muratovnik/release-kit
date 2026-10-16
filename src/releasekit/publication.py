@@ -6,7 +6,7 @@ import sys
 from pathlib import Path
 
 from . import config as config_module
-from . import engines, owner, processes, protection, toolchain
+from . import engines, owner, processes, protection, stages, toolchain
 from .exposure import audit
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
@@ -44,6 +44,7 @@ def run(
     result: Result | None = None,
 ) -> int:
     result = result or Result()
+    log = stages.StageLog()
     result.data.update(scope="history" if history else "staged" if staged else "worktree")
     result.data["engines"] = {"betterleaks": None, "lychee": None}
     if history:
@@ -101,7 +102,9 @@ def run(
         print(f"relkit audit: {notice}")
 
     try:
-        report = audit.scan(
+        report = log.call(
+            "policy-rules",
+            audit.scan,
             root,
             names=names,
             owner_workflows=owner_rules.owner_workflows,
@@ -139,7 +142,9 @@ def run(
     if history:
         try:
             failures.extend(
-                audit.history_failures(
+                log.call(
+                    "history",
+                    audit.history_failures,
                     root,
                     names=names,
                     owner_workflows=owner_rules.owner_workflows,
@@ -171,8 +176,12 @@ def run(
         if policy.root.is_dir():
             try:
                 mounts = manifest_module.read(policy.manifest_path)
-                problems, skipped = verify_module.check(
-                    mounts, public_root=root, private_root=policy.root
+                problems, skipped = log.call(
+                    "overlay",
+                    verify_module.check,
+                    mounts,
+                    public_root=root,
+                    private_root=policy.root,
                 )
             except (manifest_module.ManifestError, RuntimeError) as error:
                 result.error("check_error", error)
@@ -204,16 +213,21 @@ def run(
     ]
     try:
         if wanted:
-            toolchain.prepare(wanted, root=root, allow_download=allow_download)
-        if settings.exposure.check_secrets:
-            engine_results["betterleaks"] = engines.betterleaks(
-                root,
-                config=settings.exposure.betterleaks_config,
-                history=history,
-                staged=staged,
-                include_candidates=settings.exposure.include_candidates and not staged,
-                allow_download=allow_download,
+            log.call(
+                "provision", toolchain.prepare, wanted, root=root, allow_download=allow_download
             )
+        if settings.exposure.check_secrets:
+            with log.stage("betterleaks") as stage:
+                engine_results["betterleaks"] = engines.betterleaks(
+                    root,
+                    config=settings.exposure.betterleaks_config,
+                    history=history,
+                    staged=staged,
+                    include_candidates=settings.exposure.include_candidates and not staged,
+                    allow_download=allow_download,
+                )
+                if engine_results["betterleaks"] not in (0, engines.BETTERLEAKS_FINDINGS_EXIT):
+                    stage.fail()
             if engine_results["betterleaks"] == engines.BETTERLEAKS_FINDINGS_EXIT:
                 engine_failures.append("Betterleaks failed")
             elif engine_results["betterleaks"]:
@@ -221,12 +235,15 @@ def run(
                     f"Betterleaks could not complete (exit {engine_results['betterleaks']})"
                 )
         if settings.exposure.check_links:
-            engine_results["lychee"] = engines.lychee(
-                root,
-                staged=staged,
-                include_candidates=settings.exposure.include_candidates,
-                allow_download=allow_download,
-            )
+            with log.stage("lychee") as stage:
+                engine_results["lychee"] = engines.lychee(
+                    root,
+                    staged=staged,
+                    include_candidates=settings.exposure.include_candidates,
+                    allow_download=allow_download,
+                )
+                if engine_results["lychee"] not in (0, engines.LYCHEE_FINDINGS_EXIT):
+                    stage.fail()
             if engine_results["lychee"] == engines.LYCHEE_FINDINGS_EXIT:
                 engine_failures.append("Lychee failed")
             elif engine_results["lychee"]:
