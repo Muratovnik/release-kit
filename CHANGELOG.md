@@ -2,6 +2,77 @@
 
 ## [Unreleased]
 
+## [0.33.0](https://github.com/Muratovnik/release-kit/compare/v0.32.0...v0.33.0) (2026-10-16)
+
+### Highlights
+
+An audit of a repository of about a thousand tracked files went from about 18 s to
+about 4 s, its `--staged` form from about 45 s to about 4 s, and a history audit
+roughly fourfold faster: the time went to copying, hashing and spawning per file,
+not to the rules, and every finding is unchanged.
+
+The owner pre-push guard now judges the commits a push publishes, read from the
+hook's standard input, instead of the whole history and a clean worktree. A dirty
+checkout or another branch's finding no longer blocks pushing a clean commit; the
+release coordinator and `relkit audit --history` still judge the whole history. A
+guard installed by an earlier version keeps working and `relkit protect check`
+reports it as outdated. Update the pinned projection first (`relkit update`), which
+installs the new guard with it; `relkit protect install` refuses to install it over
+an older projection.
+
+Every command ends with `relkit <command>: <status> (exit N, X.Xs)`, stages carry
+timestamps and durations, `--json` keeps standard output to exactly one object, and
+a failed project command is named with its exit code and first error lines. An
+Actions-adapter release can run its local checks once with
+`relkit release run --publish --prepare --ci-run ID`, and `relkit release unlock`
+removes a lock whose owner is proven gone. A new project needs only `relkit.toml`.
+
+### BREAKING CHANGES
+
+- remove the MCP plugin; agents use the relkit CLI ([c875b11](https://github.com/Muratovnik/release-kit/commit/c875b11e648666a8e01b1d727154c5960d808868))
+
+  the MCP server (`relkit-mcp`, the `release-kit[mcp]` extra),
+the `release-kit` plugin and `release-kit-plugin.zip` are no longer provided.
+Remove the plugin and any MCP client registration of it, delete a pinned
+plugin asset from release automation, and call the CLI directly:
+`python .github/relkit.pyz <command>` (or `relkit <command>`) with `--json`
+where a structured result is needed, for example `relkit update --dry-run
+--json` instead of `relkit_sync`.
+
+
+### Features
+
+- **audit:** timestamp each audit stage on stderr ([a52a0e9](https://github.com/Muratovnik/release-kit/commit/a52a0e9ddb8549a57fac278686d636114428992e))
+- **cli:** end every command with one summary line ([3da615a](https://github.com/Muratovnik/release-kit/commit/3da615a6ad9cbf5c12847657920cac2f6362974d))
+- **release:** name the failed project command and its output in the refusal ([2695273](https://github.com/Muratovnik/release-kit/commit/2695273a58897bafe46377d03a4a4e7f69d7f4ad))
+- **audit:** inspect only the commits a push publishes ([dea43cb](https://github.com/Muratovnik/release-kit/commit/dea43cb9fbf2668ff9cdc5fa017391fceeebe225))
+- **protect:** check only the pushed commits in the pre-push guard ([4bc50f5](https://github.com/Muratovnik/release-kit/commit/4bc50f53d8671cb8007c55fa50159f997ee78eb2))
+- **update:** update in one command and re-pin a reviewed policy edit ([28e5a43](https://github.com/Muratovnik/release-kit/commit/28e5a4321e1a36ff09f58615d80d505a62663e7a))
+- start a project with one relkit.toml ([d726c66](https://github.com/Muratovnik/release-kit/commit/d726c66387eed02d21dce7072816e55e0d63ab00))
+- **release:** log a timestamped start, heartbeat and duration for every coordinator stage ([747fe03](https://github.com/Muratovnik/release-kit/commit/747fe038433b5f98f6fbb3a7f844f5712b92b5f8))
+- **release:** let the Actions adapter prepare and publish a CI candidate in one invocation ([2614941](https://github.com/Muratovnik/release-kit/commit/261494142943ee41341b309447ed724b176a22ba))
+- **release:** add `release unlock` to remove a stale release lock once its owner is proven gone ([2cb6149](https://github.com/Muratovnik/release-kit/commit/2cb6149e92e74121c8cd5acd01caab8738e231c8))
+
+### Bug Fixes
+
+- **cli:** keep child-process output off stdout under --json ([b748fa6](https://github.com/Muratovnik/release-kit/commit/b748fa6650e7e980bca1b2337241ea6ea82511d0))
+- **cli:** name the exact cause and one fitting fix in refusals ([29cb1a1](https://github.com/Muratovnik/release-kit/commit/29cb1a1601be86bde31bc953c14c7f6ca22d4afe))
+- **release:** name the untracked files and the .gitignore fix when preparation refuses a dirty tree ([fa626c3](https://github.com/Muratovnik/release-kit/commit/fa626c31c0189eb1f25d3ebdbf7a8fad8248c265))
+- **release:** leave no candidate workspace behind a failed preparation except files it does not own ([b77b330](https://github.com/Muratovnik/release-kit/commit/b77b33055f10628d02ce11720b6317a47415ce83))
+- **release:** record in the receipt when a held candidate workspace keeps files after a run ([c2e92cf](https://github.com/Muratovnik/release-kit/commit/c2e92cf6c34bda056f1f765d1f9b44122041af5f))
+
+### Performance Improvements
+
+- **storage:** recognise files a run wrote without reading them back ([f6ff995](https://github.com/Muratovnik/release-kit/commit/f6ff995f57304ec1ebbd89b7f35bbe38db98533e))
+- **audit:** read staged files in batches instead of one Git process each ([59e2b08](https://github.com/Muratovnik/release-kit/commit/59e2b085d29491692cb4dbe2f31fe9444dd894c9))
+- **audit:** decode file text without a per-character Python pass ([d378e31](https://github.com/Muratovnik/release-kit/commit/d378e316e2cd3273ba21c50019f85d77a3a326a0))
+- **rules:** prepare each text once and check format characters per distinct character ([c3d550f](https://github.com/Muratovnik/release-kit/commit/c3d550fcb1a4436bdf985babb41e9321773a72ce))
+- **audit:** stop repeating per-blob work in the history scan ([859266a](https://github.com/Muratovnik/release-kit/commit/859266acc3d1b69db0f7b36fee84dc5202e9ee70))
+- **engines:** build one publication snapshot per run and share it between engines ([05ce648](https://github.com/Muratovnik/release-kit/commit/05ce648343e59c383c92d5d4bf8dd044d8563799))
+- **audit:** run the policy checks while the engines run ([2bb24da](https://github.com/Muratovnik/release-kit/commit/2bb24dab36ab0e1756dc29281a1a6680598925e1))
+- **audit:** skip content rules that cannot match a file's text ([d486dce](https://github.com/Muratovnik/release-kit/commit/d486dce15a76f426266f96e8c4d69cd5c911e90a))
+- **audit:** judge historical blobs while Git answers the other history stages ([00614b5](https://github.com/Muratovnik/release-kit/commit/00614b55675a1c00cb300fd63b078822bd846389))
+
 ## [0.32.0](https://github.com/Muratovnik/release-kit/compare/v0.31.0...v0.32.0) (2026-10-10)
 
 ### Features
