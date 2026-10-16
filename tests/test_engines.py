@@ -574,6 +574,8 @@ class EngineCommandTests(unittest.TestCase):
         for outcome in (0, engines.LYCHEE_FINDINGS_EXIT, 1):
             with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
+                # Service storage belongs to a repository; a bare directory has none.
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
                 observed, runtimes, sizes = [], [], []
 
                 def inspect(
@@ -626,6 +628,8 @@ class EngineCommandTests(unittest.TestCase):
         for failure in ("deadline", "unconfirmed"):
             with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
+                # Service storage belongs to a repository; a bare directory has none.
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
                 clock, runtimes, timeouts = [100.0], [], []
 
                 def materialize(root, destination, **kwargs):
