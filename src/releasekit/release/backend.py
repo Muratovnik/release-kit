@@ -21,9 +21,11 @@ class Pending(ReleaseError):
 
 
 class CommandError(ReleaseError):
-    def __init__(self, program: str, result: subprocess.CompletedProcess):
+    def __init__(
+        self, program: str, result: subprocess.CompletedProcess, message: str | None = None
+    ):
         self.result = result
-        super().__init__(f"{program} exited {result.returncode}; see the release log")
+        super().__init__(message or f"{program} exited {result.returncode}; see the release log")
 
 
 class Runner:
