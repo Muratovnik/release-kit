@@ -2,13 +2,15 @@ from __future__ import annotations
 
 import subprocess
 import tempfile
+import threading
 import unittest
-from contextlib import redirect_stderr, redirect_stdout
+from contextlib import ExitStack, redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
 from unittest.mock import patch
 
 from releasekit import cli, config, owner, processes, publication
+from releasekit.exposure import audit as audit_module
 from releasekit.exposure.audit import Report
 from releasekit.result import Result
 
@@ -55,6 +57,7 @@ class EngineResultTests(unittest.TestCase):
             ),
             patch.object(publication.audit, "scan", return_value=Report()),
             patch.object(publication.toolchain, "prepare"),
+            patch.object(publication.engines.Shared, "materialize"),
             patch.object(
                 publication.engines,
                 "betterleaks",
@@ -89,6 +92,7 @@ class EngineResultTests(unittest.TestCase):
                         patch.object(publication.config_module, "load", return_value=settings),
                         patch.object(publication.audit, "scan", return_value=Report()),
                         patch.object(publication.toolchain, "prepare"),
+                        patch.object(publication.engines.Shared, "materialize"),
                         patch.object(
                             publication.engines,
                             "betterleaks",
@@ -118,6 +122,144 @@ class EngineResultTests(unittest.TestCase):
                         expected == 2,
                         any(error["code"] == "engine_error" for error in result.errors),
                     )
+
+
+class OverlapTests(unittest.TestCase):
+    def _run(self, result: Result, *, patches, history: bool = False) -> int:
+        with ExitStack() as stack:
+            stack.enter_context(
+                patch.object(
+                    publication.config_module, "load", return_value=config.Config(root=Path.cwd())
+                )
+            )
+            stack.enter_context(patch.object(publication.toolchain, "prepare"))
+            stack.enter_context(patch.object(publication.engines.Shared, "materialize"))
+            for target, name, options in patches:
+                stack.enter_context(patch.object(target, name, **options))
+            stack.enter_context(redirect_stdout(StringIO()))
+            stack.enter_context(redirect_stderr(StringIO()))
+            return publication.run(
+                Path.cwd(),
+                history=history,
+                staged=False,
+                strict=False,
+                owner_mode=False,
+                require_overlay=False,
+                allow_download=False,
+                result=result,
+            )
+
+    def test_the_policy_scan_runs_while_the_engines_run(self):
+        engines_started = threading.Event()
+
+        def scan(*args, **kwargs):
+            # Sequential execution would reach this before any engine started.
+            self.assertTrue(engines_started.wait(10), "the scan waited for the engines")
+            return Report()
+
+        def betterleaks(*args, **kwargs):
+            engines_started.set()
+            return 0
+
+        result = Result()
+        code = self._run(
+            result,
+            patches=[
+                (publication.audit, "scan", {"side_effect": scan}),
+                (publication.engines, "betterleaks", {"side_effect": betterleaks}),
+                (publication.engines, "lychee", {"return_value": 0}),
+            ],
+        )
+        self.assertEqual(0, code)
+        self.assertEqual([], result.errors)
+
+    def test_a_policy_error_still_ends_the_run_before_engine_outcomes(self):
+        for step in ("scan", "history_failures"):
+            with self.subTest(step=step):
+                result = Result()
+                patches = [
+                    (publication.engines, "betterleaks", {"return_value": 10}),
+                    (publication.engines, "lychee", {"return_value": 2}),
+                    (publication.audit, "worktree_changes", {"return_value": ()}),
+                    (publication.audit, step, {"side_effect": RuntimeError("inventory failed")}),
+                ]
+                other = "history_failures" if step == "scan" else "scan"
+                patches.append(
+                    (publication.audit, other, {"return_value": [] if step == "scan" else Report()})
+                )
+                code = self._run(result, patches=patches, history=True)
+                self.assertEqual(2, code)
+                self.assertEqual(["check_error"], [error["code"] for error in result.errors])
+                self.assertEqual({"betterleaks": None, "lychee": None}, result.data["engines"])
+
+    def test_an_engine_failure_keeps_the_shared_workspace_evidence(self):
+        # A run that cannot confirm its child stopped must leave every file the child
+        # might still use; a failed engine leaves its scratch as the diagnostic.
+        for failure in ("unconfirmed", "timed out"):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                subprocess.run(["git", "init", "-q", str(root)], check=True)
+                (root / "relkit.toml").write_text("[exposure]\ncheck_links = false\n")
+                (root / ".betterleaks.toml").write_text("[extend]\nuseDefault = true\n")
+                (root / "example.txt").write_text("public content\n")
+                subprocess.run(["git", "add", "."], cwd=root, check=True)
+                owned: list[Path] = []
+
+                def incomplete(*args, failure=failure, owned=owned, **kwargs):
+                    runtime = Path(kwargs["env"]["TMPDIR"])
+                    owned.append(runtime)
+                    (runtime / "native.log").write_text("child diagnostics")
+                    if failure == "unconfirmed":
+                        raise processes.CleanupError("owned cleanup is unconfirmed")
+                    raise RuntimeError("publication engine timed out")
+
+                result = Result()
+                with (
+                    patch.object(publication.toolchain, "prepare"),
+                    patch.object(
+                        publication.engines.toolchain, "resolve", return_value=Path("scanner")
+                    ),
+                    patch.object(publication.engines.processes, "run", side_effect=incomplete),
+                    redirect_stdout(StringIO()),
+                    redirect_stderr(StringIO()),
+                ):
+                    code = publication.run(
+                        root,
+                        history=False,
+                        staged=False,
+                        strict=False,
+                        owner_mode=False,
+                        require_overlay=False,
+                        allow_download=False,
+                        result=result,
+                    )
+                self.assertEqual(2, code)
+                expected = (
+                    "engine_cleanup_unconfirmed" if failure == "unconfirmed" else "engine_error"
+                )
+                self.assertIn(expected, [error["code"] for error in result.errors])
+                self.assertEqual("child diagnostics", (owned[0] / "native.log").read_text())
+                snapshot = owned[0].parent / "source/example.txt"
+                self.assertEqual(failure == "unconfirmed", snapshot.exists())
+
+    def test_an_engine_error_is_reported_with_the_policy_findings(self):
+        report = Report(new=[audit_module.Finding("leak.txt", "home-directory")])
+        result = Result()
+        code = self._run(
+            result,
+            patches=[
+                (publication.audit, "scan", {"return_value": report}),
+                (
+                    publication.engines,
+                    "betterleaks",
+                    {"side_effect": RuntimeError("publication engine timed out")},
+                ),
+            ],
+        )
+        self.assertEqual(2, code)
+        codes = [error["code"] for error in result.errors]
+        self.assertIn("engine_error", codes)
+        self.assertIn("check_failed", codes)
 
 
 class HistoryScopeTests(unittest.TestCase):
@@ -213,6 +355,7 @@ class HistoryScopeTests(unittest.TestCase):
                 patch.object(publication.audit, "worktree_changes", return_value=("?? notes.md",)),
                 patch.object(publication.audit, "history_failures", return_value=[]) as history,
                 patch.object(publication.toolchain, "prepare"),
+                patch.object(publication.engines.Shared, "materialize"),
                 patch.object(publication.engines, "betterleaks", return_value=0),
                 patch.object(publication.engines, "lychee", return_value=0),
                 redirect_stdout(StringIO()),
@@ -280,6 +423,7 @@ class SemanticWiringTests(unittest.TestCase):
                 # the verdict depend on whether a cache outside the project happened to
                 # be populated: the suite passed here and failed inside the release check.
                 patch.object(publication.toolchain, "prepare"),
+                patch.object(publication.engines.Shared, "materialize"),
                 patch.object(publication.engines, "betterleaks", return_value=0),
                 patch.object(publication.engines, "lychee", return_value=0),
             ):

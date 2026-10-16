@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import sys
+import threading
+from collections.abc import Callable
 from pathlib import Path
+from typing import cast
 
 from . import config as config_module
 from . import engines, owner, processes, protection, toolchain
@@ -30,6 +33,112 @@ def _mounted_private_paths(
             continue
         private_paths.append(derived.as_posix())
     return private_paths
+
+
+class _Background:
+    """Run the policy checks beside the engines and hand back each outcome in turn.
+
+    The checks are Python reading files and short Git commands; the engines are
+    native processes this thread only waits on. Overlapping them takes the shorter
+    of the two off the wall clock. The engines stay on the calling thread, which owns
+    the termination relay and their process cleanup. An outcome is delivered exactly
+    as the call ended, value or exception, so callers handle it as if it ran inline.
+    """
+
+    def __init__(self, *calls: Callable[[], object]):
+        self._outcomes: list[tuple[bool, object]] = []
+        self._thread = threading.Thread(target=self._run, args=(calls,), daemon=True)
+
+    def start(self) -> None:
+        if self._thread.ident is None:
+            self._thread.start()
+
+    def join(self) -> None:
+        self.start()
+        self._thread.join()
+
+    def _run(self, calls) -> None:
+        for call in calls:
+            try:
+                self._outcomes.append((True, call()))
+            except BaseException as error:  # noqa: BLE001 -- re-raised by result()
+                self._outcomes.append((False, error))
+
+    def result(self, index: int) -> object:
+        self.join()
+        succeeded, value = self._outcomes[index]
+        if not succeeded:
+            assert isinstance(value, BaseException)
+            raise value
+        return value
+
+
+def _run_engines(
+    root: Path,
+    settings: config_module.Config,
+    shared: engines.Shared,
+    *,
+    history: bool,
+    staged: bool,
+    allow_download: bool,
+    started: Callable[[], None],
+    engine_results: dict[str, int | None],
+    engine_failures: list[str],
+    engine_errors: list[str],
+) -> None:
+    """Run the enabled engines over one shared snapshot, recording outcomes as they come.
+
+    An exception is raised, not returned: it has to pass through the shared workspace,
+    which keeps everything when a child's termination is unconfirmed and keeps the
+    child's scratch as the diagnostic when an engine failed.
+    """
+    # Provision the engines before either scan starts. Each verifies its own archive
+    # and executable, and doing that one after the other put the whole of the second
+    # verification on the clock for no reason: they share nothing.
+    wanted = [
+        name
+        for name, enabled in (
+            ("betterleaks", settings.exposure.check_secrets),
+            ("lychee", settings.exposure.check_links),
+        )
+        if enabled
+    ]
+    if wanted:
+        toolchain.prepare(wanted, root=root, allow_download=allow_download)
+    shared.materialize(
+        secrets=settings.exposure.check_secrets,
+        links=settings.exposure.check_links,
+        history=history,
+    )
+    started()
+    if settings.exposure.check_secrets:
+        engine_results["betterleaks"] = engines.betterleaks(
+            root,
+            config=settings.exposure.betterleaks_config,
+            history=history,
+            staged=staged,
+            include_candidates=settings.exposure.include_candidates and not staged,
+            allow_download=allow_download,
+            shared=shared,
+        )
+        if engine_results["betterleaks"] == engines.BETTERLEAKS_FINDINGS_EXIT:
+            engine_failures.append("Betterleaks failed")
+        elif engine_results["betterleaks"]:
+            engine_errors.append(
+                f"Betterleaks could not complete (exit {engine_results['betterleaks']})"
+            )
+    if settings.exposure.check_links:
+        engine_results["lychee"] = engines.lychee(
+            root,
+            staged=staged,
+            include_candidates=settings.exposure.include_candidates,
+            allow_download=allow_download,
+            shared=shared,
+        )
+        if engine_results["lychee"] == engines.LYCHEE_FINDINGS_EXIT:
+            engine_failures.append("Lychee failed")
+        elif engine_results["lychee"]:
+            engine_errors.append(f"Lychee could not complete (exit {engine_results['lychee']})")
 
 
 def run(
@@ -100,8 +209,8 @@ def run(
         result.warnings.append({"code": "deprecated_changelog_profile", "message": notice})
         print(f"relkit audit: {notice}")
 
-    try:
-        report = audit.scan(
+    def policy_scan() -> audit.Report:
+        return audit.scan(
             root,
             names=names,
             owner_workflows=owner_rules.owner_workflows,
@@ -126,6 +235,69 @@ def run(
             staged=staged,
             hosted_ci_mode=settings.exposure.hosted_ci,
         )
+
+    def history_scan() -> list[str]:
+        return audit.history_failures(
+            root,
+            names=names,
+            owner_workflows=owner_rules.owner_workflows,
+            private_patterns=owner_rules.patterns,
+            private_paths=private_paths,
+            private_files=settings.exposure.private_files,
+            private_suffixes=settings.exposure.private_suffixes,
+            forbidden_suffixes=settings.exposure.forbidden_suffixes,
+            allowed_users=settings.exposure.allowed_users,
+            allowed_identities=settings.exposure.allowed_identities,
+            owner_identities=settings.exposure.owner_identities,
+            exclude=settings.exposure.exclude,
+            forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
+            forbid_internal_planning=settings.exposure.forbid_internal_planning,
+            forbid_machine_observations=settings.exposure.forbid_machine_observations,
+            providers=providers,
+            provenance_required=settings.exposure.provenance_required,
+            provenance=settings.exposure.provenance,
+            inspect_archives=settings.exposure.inspect_archives,
+            forbid_png_metadata=settings.exposure.forbid_png_metadata,
+        )
+
+    # The policy checks run beside the engines; their outcomes are read below in
+    # the original order, so a policy error still ends the run before any engine
+    # outcome is reported.
+    background = _Background(policy_scan, *((history_scan,) if history else ()))
+    engine_results: dict[str, int | None] = {"betterleaks": None, "lychee": None}
+    engine_failures: list[str] = []
+    engine_errors: list[str] = []
+    raised: BaseException | None = None
+    try:
+        with engines.shared(
+            root,
+            staged=staged,
+            include_candidates=settings.exposure.include_candidates and not staged,
+        ) as shared:
+            try:
+                _run_engines(
+                    root,
+                    settings,
+                    shared,
+                    history=history,
+                    staged=staged,
+                    allow_download=allow_download,
+                    started=background.start,
+                    engine_results=engine_results,
+                    engine_failures=engine_failures,
+                    engine_errors=engine_errors,
+                )
+            except Exception:
+                background.join()
+                raise
+            # The snapshot is removed once the checks beside it are done: removing a
+            # thousand files competes for the interpreter just as writing them does.
+            # An interruption does not wait for them.
+            background.join()
+    except (OSError, RuntimeError) as error:
+        raised = error
+    try:
+        report = cast(audit.Report, background.result(0))
     except RuntimeError as error:
         result.error("check_error", error)
         print(f"relkit audit: {error}", file=sys.stderr)
@@ -138,30 +310,7 @@ def run(
         failures.extend(str(finding) for finding in report.baselined)
     if history:
         try:
-            failures.extend(
-                audit.history_failures(
-                    root,
-                    names=names,
-                    owner_workflows=owner_rules.owner_workflows,
-                    private_patterns=owner_rules.patterns,
-                    private_paths=private_paths,
-                    private_files=settings.exposure.private_files,
-                    private_suffixes=settings.exposure.private_suffixes,
-                    forbidden_suffixes=settings.exposure.forbidden_suffixes,
-                    allowed_users=settings.exposure.allowed_users,
-                    allowed_identities=settings.exposure.allowed_identities,
-                    owner_identities=settings.exposure.owner_identities,
-                    exclude=settings.exposure.exclude,
-                    forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
-                    forbid_internal_planning=settings.exposure.forbid_internal_planning,
-                    forbid_machine_observations=settings.exposure.forbid_machine_observations,
-                    providers=providers,
-                    provenance_required=settings.exposure.provenance_required,
-                    provenance=settings.exposure.provenance,
-                    inspect_archives=settings.exposure.inspect_archives,
-                    forbid_png_metadata=settings.exposure.forbid_png_metadata,
-                )
-            )
+            failures.extend(cast(list[str], background.result(1)))
         except RuntimeError as error:
             result.error("check_error", error)
             print(f"relkit audit: {error}", file=sys.stderr)
@@ -188,50 +337,9 @@ def run(
     if report.baselined:
         print(f"relkit audit: {len(report.baselined)} baselined finding(s) remain")
 
-    engine_failures: list[str] = []
-    engine_errors: list[str] = []
-    engine_results = result.data["engines"] = {"betterleaks": None, "lychee": None}
-    # Provision the engines before either scan starts. Each verifies its own archive
-    # and executable, and doing that one after the other put the whole of the second
-    # verification on the clock for no reason: they share nothing.
-    wanted = [
-        name
-        for name, enabled in (
-            ("betterleaks", settings.exposure.check_secrets),
-            ("lychee", settings.exposure.check_links),
-        )
-        if enabled
-    ]
-    try:
-        if wanted:
-            toolchain.prepare(wanted, root=root, allow_download=allow_download)
-        if settings.exposure.check_secrets:
-            engine_results["betterleaks"] = engines.betterleaks(
-                root,
-                config=settings.exposure.betterleaks_config,
-                history=history,
-                staged=staged,
-                include_candidates=settings.exposure.include_candidates and not staged,
-                allow_download=allow_download,
-            )
-            if engine_results["betterleaks"] == engines.BETTERLEAKS_FINDINGS_EXIT:
-                engine_failures.append("Betterleaks failed")
-            elif engine_results["betterleaks"]:
-                engine_errors.append(
-                    f"Betterleaks could not complete (exit {engine_results['betterleaks']})"
-                )
-        if settings.exposure.check_links:
-            engine_results["lychee"] = engines.lychee(
-                root,
-                staged=staged,
-                include_candidates=settings.exposure.include_candidates,
-                allow_download=allow_download,
-            )
-            if engine_results["lychee"] == engines.LYCHEE_FINDINGS_EXIT:
-                engine_failures.append("Lychee failed")
-            elif engine_results["lychee"]:
-                engine_errors.append(f"Lychee could not complete (exit {engine_results['lychee']})")
-    except (OSError, RuntimeError) as error:
+    result.data["engines"] = engine_results
+    if raised is not None:
+        error = raised
         for engine_error in engine_errors:
             result.error("engine_error", engine_error)
         code = (
