@@ -121,7 +121,45 @@ def _exposure(arguments: argparse.Namespace) -> int:
     return 0
 
 
+def _audit_push(arguments: argparse.Namespace) -> int:
+    refused = (
+        "--push needs --remote, the name Git gives a pre-push hook as its first argument"
+        if not arguments.remote
+        else "--push judges the pushed commits only; it does not take --strict or --require-overlay"
+        if arguments.strict or arguments.require_overlay
+        else "--push reads the lines Git writes to a pre-push hook; pipe them in"
+        if sys.stdin.isatty()
+        else ""
+    )
+    if not refused:
+        stream = getattr(sys.stdin, "buffer", None)
+        text = sys.stdin.read() if stream is None else stream.read().decode("utf-8", "replace")
+        try:
+            updates = audit.parse_push_updates(text)
+        except ValueError as error:
+            refused = str(error)
+    if refused:
+        arguments.result.error("invalid_arguments", refused)
+        print(f"relkit audit: {refused}", file=sys.stderr)
+        return 2
+    return publication.run_push(
+        Path(arguments.root).resolve(),
+        remote=arguments.remote,
+        updates=updates,
+        owner_mode=arguments.owner,
+        allow_download=not arguments.no_download,
+        result=arguments.result,
+    )
+
+
 def _audit(arguments: argparse.Namespace) -> int:
+    if arguments.push or arguments.remote:
+        if not arguments.push:
+            message = "--remote is only valid with --push"
+            arguments.result.error("invalid_arguments", message)
+            print(f"relkit audit: {message}", file=sys.stderr)
+            return 2
+        return _audit_push(arguments)
     return publication.run(
         Path(arguments.root).resolve(),
         history=arguments.history,
@@ -496,6 +534,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     scope.add_argument(
         "--staged", action="store_true", help="Read tracked content from the Git index"
+    )
+    scope.add_argument(
+        "--push",
+        action="store_true",
+        help="Inspect only the commits a push publishes, from pre-push hook input on "
+        "standard input; needs --remote, not a clean worktree",
+    )
+    publication_audit.add_argument(
+        "--remote", default="", help="With --push: the destination remote Git passes the hook"
     )
     publication_audit.add_argument(
         "--strict", action="store_true", help="Fail on every baselined policy finding"

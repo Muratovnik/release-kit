@@ -32,6 +32,143 @@ def _mounted_private_paths(
     return private_paths
 
 
+def _load_policy(root: Path, *, staged: bool, with_owner: bool):
+    """The adopter's configuration and, when asked for, the private owner policy."""
+    settings = config_module.load(root, staged=staged)
+    policy = owner.discover(root) if with_owner else None
+    owner_rules = policy.load() if policy is not None else owner.OwnerRules()
+    names = owner_rules.private_values
+    providers = {
+        name: provider.allowed_surfaces for name, provider in settings.exposure.providers.items()
+    }
+    workflow_names = {name.casefold() for name in owner_rules.owner_workflows}
+    overlap = sorted(name for name in providers if name.casefold() in workflow_names)
+    if overlap:
+        raise owner.OwnerPolicyError(
+            "product provider is also declared as owner workflow: " + ", ".join(overlap)
+        )
+    private_paths = _mounted_private_paths(settings, root, policy)
+    return settings, policy, owner_rules, names, providers, private_paths
+
+
+def _history_arguments(settings, owner_rules, names, providers, private_paths) -> dict:
+    return {
+        "names": names,
+        "owner_workflows": owner_rules.owner_workflows,
+        "private_patterns": owner_rules.patterns,
+        "private_paths": private_paths,
+        "private_files": settings.exposure.private_files,
+        "private_suffixes": settings.exposure.private_suffixes,
+        "forbidden_suffixes": settings.exposure.forbidden_suffixes,
+        "allowed_users": settings.exposure.allowed_users,
+        "allowed_identities": settings.exposure.allowed_identities,
+        "owner_identities": settings.exposure.owner_identities,
+        "exclude": settings.exposure.exclude,
+        "forbid_ai_attribution": settings.exposure.forbid_ai_attribution,
+        "forbid_internal_planning": settings.exposure.forbid_internal_planning,
+        "forbid_machine_observations": settings.exposure.forbid_machine_observations,
+        "providers": providers,
+        "provenance_required": settings.exposure.provenance_required,
+        "provenance": settings.exposure.provenance,
+        "inspect_archives": settings.exposure.inspect_archives,
+        "forbid_png_metadata": settings.exposure.forbid_png_metadata,
+    }
+
+
+def run_push(
+    root: Path,
+    *,
+    remote: str,
+    updates: list[audit.PushedRef],
+    owner_mode: bool,
+    allow_download: bool,
+    result: Result | None = None,
+) -> int:
+    """Judge what one push publishes: its commits, ref names and tag objects.
+
+    Nothing else is read. Not the worktree, so a dirty checkout cannot block a clean
+    push, and not the refs this push does not publish, so another branch's finding
+    cannot either. The whole history is judged by `audit --history`, which is how a
+    release is checked.
+    """
+    result = result or Result()
+    result.data.update(scope="push", remote=remote, pushed_commits=0)
+    result.data["engines"] = {"betterleaks": None, "lychee": None}
+    if all(update.deletes for update in updates):
+        print("relkit audit: nothing is being pushed; passed")
+        return 0
+    try:
+        settings, policy, owner_rules, names, providers, private_paths = _load_policy(
+            root, staged=False, with_owner=owner_mode
+        )
+    except (
+        config_module.ConfigError,
+        manifest_module.ManifestError,
+        owner.OwnerPolicyError,
+    ) as error:
+        result.error("configuration_error", error)
+        print(f"relkit audit: {error}", file=sys.stderr)
+        return 2
+    try:
+        scope = audit.push_scope(root, remote, updates)
+        failures = audit.history_failures(
+            root,
+            **_history_arguments(settings, owner_rules, names, providers, private_paths),
+            scope=scope,
+        )
+    except RuntimeError as error:
+        result.error("check_error", error)
+        print(f"relkit audit: {error}", file=sys.stderr)
+        return 2
+    result.data["pushed_commits"] = scope.commits
+    if policy is not None and (guard_problem := protection.problem(root)):
+        failures.append(guard_problem)
+    if settings.exposure.check_secrets and scope.commits:
+        try:
+            toolchain.prepare(["betterleaks"], root=root, allow_download=allow_download)
+            code = engines.betterleaks(
+                root,
+                config=settings.exposure.betterleaks_config,
+                history=True,
+                staged=False,
+                include_candidates=False,
+                allow_download=allow_download,
+                log_opts=scope.log_opts,
+            )
+        except (OSError, RuntimeError) as error:
+            result.error(
+                "engine_cleanup_unconfirmed"
+                if isinstance(error, processes.CleanupError)
+                else "engine_error",
+                error,
+            )
+            print(f"relkit audit: {error}", file=sys.stderr)
+            return 2
+        result.data["engines"]["betterleaks"] = code
+        if code == engines.BETTERLEAKS_FINDINGS_EXIT:
+            failures.append("Betterleaks failed")
+        elif code:
+            message = f"Betterleaks could not complete (exit {code})"
+            result.error("engine_error", message)
+            print(f"relkit audit: {message}", file=sys.stderr)
+            return 2
+    if failures:
+        print("relkit audit: failed", file=sys.stderr)
+        for failure in sorted(dict.fromkeys(failures)):
+            result.error("check_failed", failure)
+            print(f"  {failure}", file=sys.stderr)
+        print(
+            "relkit audit: only the commits being pushed were checked; remove the finding "
+            "from them (for example with `git commit --amend` or an interactive rebase), "
+            "then push again",
+            file=sys.stderr,
+        )
+        return 1
+    suffix = " (owner policy enforced)" if policy is not None else ""
+    print(f"relkit audit: passed ({scope.commits} pushed commit(s) checked){suffix}")
+    return 0
+
+
 def run(
     root: Path,
     *,
@@ -69,21 +206,9 @@ def run(
             print(f"relkit audit: {message}", file=sys.stderr)
             return 1
     try:
-        settings = config_module.load(root, staged=staged)
-        policy = owner.discover(root) if owner_mode or require_overlay else None
-        owner_rules = policy.load() if policy is not None else owner.OwnerRules()
-        names = owner_rules.private_values
-        providers = {
-            name: provider.allowed_surfaces
-            for name, provider in settings.exposure.providers.items()
-        }
-        workflow_names = {name.casefold() for name in owner_rules.owner_workflows}
-        overlap = sorted(name for name in providers if name.casefold() in workflow_names)
-        if overlap:
-            raise owner.OwnerPolicyError(
-                "product provider is also declared as owner workflow: " + ", ".join(overlap)
-            )
-        private_paths = _mounted_private_paths(settings, root, policy)
+        settings, policy, owner_rules, names, providers, private_paths = _load_policy(
+            root, staged=staged, with_owner=owner_mode or require_overlay
+        )
     except (
         config_module.ConfigError,
         manifest_module.ManifestError,
@@ -141,25 +266,7 @@ def run(
             failures.extend(
                 audit.history_failures(
                     root,
-                    names=names,
-                    owner_workflows=owner_rules.owner_workflows,
-                    private_patterns=owner_rules.patterns,
-                    private_paths=private_paths,
-                    private_files=settings.exposure.private_files,
-                    private_suffixes=settings.exposure.private_suffixes,
-                    forbidden_suffixes=settings.exposure.forbidden_suffixes,
-                    allowed_users=settings.exposure.allowed_users,
-                    allowed_identities=settings.exposure.allowed_identities,
-                    owner_identities=settings.exposure.owner_identities,
-                    exclude=settings.exposure.exclude,
-                    forbid_ai_attribution=settings.exposure.forbid_ai_attribution,
-                    forbid_internal_planning=settings.exposure.forbid_internal_planning,
-                    forbid_machine_observations=settings.exposure.forbid_machine_observations,
-                    providers=providers,
-                    provenance_required=settings.exposure.provenance_required,
-                    provenance=settings.exposure.provenance,
-                    inspect_archives=settings.exposure.inspect_archives,
-                    forbid_png_metadata=settings.exposure.forbid_png_metadata,
+                    **_history_arguments(settings, owner_rules, names, providers, private_paths),
                 )
             )
         except RuntimeError as error:

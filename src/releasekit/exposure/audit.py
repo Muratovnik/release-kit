@@ -261,13 +261,14 @@ def _changed_blob_paths(
     *,
     symlinks: set[tuple[str, str]] | None = None,
     gitlinks: set[tuple[str, str]] | None = None,
+    scope: PushScope | None = None,
 ) -> dict[str, set[str]]:
     """Map blobs to every committed or directly referenced tree path where they appear."""
     result = _git_bytes(
         root,
         [
             "log",
-            *HISTORY_REFS,
+            *(HISTORY_REFS if scope is None else scope.revisions),
             "-m",
             "--root",
             "--raw",
@@ -305,7 +306,7 @@ def _changed_blob_paths(
     # A public ref can expose a tree that no commit contains, including a second path
     # for a blob already seen in commit history. ls-tree preserves names and modes;
     # rev-list --objects only offers one unframed display name per object.
-    for mode, object_id, relative in _public_tree_entries(root):
+    for mode, object_id, relative in _public_tree_entries(root, scope):
         if any(fnmatch(relative, pattern) for pattern in exclude):
             continue
         paths.setdefault(object_id, set()).add(relative)
@@ -316,11 +317,16 @@ def _changed_blob_paths(
     return paths
 
 
-def _public_tree_entries(root: Path) -> Iterator[tuple[str, str, str]]:
-    references = _git(root, ["for-each-ref", "--format=%(objectname)", *PUBLIC_REF_PREFIXES])
-    if references.returncode:
-        raise RuntimeError(references.stderr.strip() or "Git public object inventory failed")
-    object_ids = sorted(set(references.stdout.splitlines()))
+def _public_tree_entries(
+    root: Path, scope: PushScope | None = None
+) -> Iterator[tuple[str, str, str]]:
+    if scope is None:
+        references = _git(root, ["for-each-ref", "--format=%(objectname)", *PUBLIC_REF_PREFIXES])
+        if references.returncode:
+            raise RuntimeError(references.stderr.strip() or "Git public object inventory failed")
+        object_ids = sorted(set(references.stdout.splitlines()))
+    else:
+        object_ids = sorted(scope.tips)
     if not object_ids:
         return
     peeled = _git(
@@ -373,6 +379,7 @@ def _blob_history_failures(
     inspect_archives: bool,
     exclude: Sequence[str],
     forbid_png_metadata: bool = False,
+    scope: PushScope | None = None,
 ) -> list[str]:
     wrapped_names = tuple(name for name in names if len(name.split()) > 1)
     wrapped_workflows = tuple(name for name in owner_workflows if len(name.split()) > 1)
@@ -384,6 +391,7 @@ def _blob_history_failures(
             (),
             symlinks=symlink_blobs,
             gitlinks=gitlinks,
+            scope=scope,
         )
     except (RuntimeError, UnicodeError) as error:
         return [str(error)]
@@ -619,21 +627,29 @@ def _reference_metadata_failures(
     forbid_ai_attribution: bool,
     forbid_internal_planning: bool,
     forbid_machine_observations: bool,
+    scope: PushScope | None = None,
 ) -> list[str]:
     """Inspect public ref names and annotated tag objects outside commit history."""
-    refs = _git(
-        root,
-        [
-            "for-each-ref",
-            "--format=%(refname)%00%(objecttype)%00%(objectname)",
-            *PUBLIC_REF_PREFIXES,
-        ],
-    )
-    if refs.returncode != 0:
-        return [refs.stderr.strip() or "Git reference metadata inventory failed"]
+    if scope is None:
+        refs = _git(
+            root,
+            [
+                "for-each-ref",
+                "--format=%(refname)%00%(objecttype)%00%(objectname)",
+                *PUBLIC_REF_PREFIXES,
+            ],
+        )
+        if refs.returncode != 0:
+            return [refs.stderr.strip() or "Git reference metadata inventory failed"]
+        inventory = refs.stdout.splitlines()
+    else:
+        inventory = [
+            f"{reference}\0{object_type}\0{object_id}"
+            for reference, object_type, object_id in scope.references
+        ]
     failures: list[str] = []
     tag_objects: list[str] = []
-    for record in refs.stdout.splitlines():
+    for record in inventory:
         fields = record.split("\0")
         if len(fields) != 3:
             failures.append("Git reference metadata inventory returned malformed output")
@@ -1464,12 +1480,146 @@ def scan(
     return report
 
 
-def _history_precondition_failures(root: Path) -> list[str]:
+PUSH_NO_COMMITS = ("--all", "--not", "--all")
+PUSH_OBJECT = re.compile(r"(?:[0-9a-f]{40}|[0-9a-f]{64})")
+# A remote name is also what Git passes when the destination is a bare URL, which has no
+# remote-tracking refs. Only a plain name may become a ref glob.
+PUSH_REMOTE_NAME = re.compile(r"[A-Za-z0-9._+@-]+(?:/[A-Za-z0-9._+@-]+)*")
+
+
+@dataclass(frozen=True)
+class PushedRef:
+    """One line Git writes to a pre-push hook: what the push would do to one ref."""
+
+    local_ref: str
+    local_sha: str
+    remote_ref: str
+    remote_sha: str
+
+    @property
+    def deletes(self) -> bool:
+        return not self.local_sha.strip("0")
+
+    @property
+    def creates(self) -> bool:
+        return not self.remote_sha.strip("0")
+
+
+@dataclass(frozen=True)
+class PushScope:
+    """The part of history one push publishes, and nothing else.
+
+    ``revisions`` selects exactly the commits the remote does not have, as arguments
+    for ``git log`` and ``git rev-list``; it selects nothing when only a non-commit
+    object is pushed. ``references`` are the remote ref names and their objects, and
+    ``tips`` every pushed object, so a ref aimed at a tree or blob is still read.
+    """
+
+    revisions: tuple[str, ...]
+    references: tuple[tuple[str, str, str], ...]
+    tips: tuple[str, ...]
+    commits: int = 0
+
+    @property
+    def log_opts(self) -> str:
+        return " ".join(self.revisions)
+
+
+def parse_push_updates(text: str) -> list[PushedRef]:
+    """Read the lines of a pre-push hook's standard input."""
+    updates: list[PushedRef] = []
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not line.strip():
+            continue
+        fields = line.split(" ")
+        if len(fields) != 4 or not all(PUSH_OBJECT.fullmatch(fields[index]) for index in (1, 3)):
+            raise ValueError(
+                f"pre-push input line {number} is not "
+                "'<local ref> <local sha> <remote ref> <remote sha>'"
+            )
+        updates.append(PushedRef(*fields))
+    return updates
+
+
+def _object_types(root: Path, names: Sequence[str]) -> list[str]:
+    """The type Git reports for each name, or ``missing``, in order."""
+    result = _git(
+        root,
+        ["cat-file", "--batch-check=%(objecttype)"],
+        stdin="".join(f"{name}\n" for name in names),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Git pushed object inventory failed")
+    kinds = [
+        "missing" if line.endswith(" missing") else line.strip()
+        for line in result.stdout.splitlines()
+    ]
+    if len(kinds) != len(names):
+        raise RuntimeError("Git pushed object inventory returned an unexpected record count")
+    return kinds
+
+
+def push_scope(root: Path, remote: str, updates: Sequence[PushedRef]) -> PushScope:
+    """Select what a push publishes: the commits new to ``remote``, from the pushed objects.
+
+    An update names the remote's current tip, so the new commits are those it does not
+    contain. A new ref, or a tip this checkout never fetched, falls back to everything
+    the remote-tracking refs of that remote already hold; a destination with none
+    (an empty remote, or a bare URL) is entirely new. Other remotes and local-only
+    branches are not part of what is published, so they are not part of the verdict.
+    """
+    live = [update for update in updates if not update.deletes]
+    if not live:
+        return PushScope(PUSH_NO_COMMITS, (), ())
+    local_ids = sorted({update.local_sha for update in live})
+    direct = dict(zip(local_ids, _object_types(root, local_ids), strict=True))
+    peeled = dict(
+        zip(local_ids, _object_types(root, [f"{name}^{{}}" for name in local_ids]), strict=True)
+    )
+    if "missing" in (*direct.values(), *peeled.values()):
+        raise RuntimeError("a pushed object is not available in this repository")
+    commits = [name for name in local_ids if peeled[name] == "commit"]
+    remote_ids = sorted({update.remote_sha for update in live if not update.creates})
+    remote_kinds = dict(
+        zip(
+            remote_ids,
+            _object_types(root, [f"{name}^{{commit}}" for name in remote_ids]),
+            strict=True,
+        )
+    )
+    negatives = [name for name in remote_ids if remote_kinds[name] == "commit"]
+    unknown = any(update.creates for update in live) or len(negatives) != len(remote_ids)
+    if unknown and PUSH_REMOTE_NAME.fullmatch(remote):
+        negatives.append(f"--remotes={remote}")
+    revisions = PUSH_NO_COMMITS
+    count = 0
+    if commits:
+        revisions = (*commits, *(("--not", *negatives) if negatives else ()))
+        counted = _git(root, ["rev-list", "--count", *revisions])
+        if counted.returncode:
+            raise RuntimeError(counted.stderr.strip() or "Git pushed revision inventory failed")
+        count = int(counted.stdout.strip() or 0)
+    return PushScope(
+        revisions,
+        tuple((update.remote_ref, direct[update.local_sha], update.local_sha) for update in live),
+        tuple(local_ids),
+        count,
+    )
+
+
+def _head_has_owner_author(root: Path, owners: Collection[str]) -> bool:
+    people = _git(root, ["log", "HEAD", "--format=%an <%ae>"])
+    return people.returncode == 0 and bool(owners & set(people.stdout.splitlines()))
+
+
+def _history_precondition_failures(root: Path, *, shallow_matters: bool = True) -> list[str]:
     failures: list[str] = []
     shallow = _git(root, ["rev-parse", "--is-shallow-repository"])
     if shallow.returncode != 0:
         failures.append(shallow.stderr.strip() or "Git shallow-state lookup failed")
-    elif shallow.stdout.strip() == "true":
+    elif shallow.stdout.strip() == "true" and shallow_matters:
+        # A pushed range ends where Git says the remote has the history, so a shallow
+        # boundary only makes its commit look new: that reads more, never less.
         failures.append("Git history audit requires a complete non-shallow repository")
 
     replacements = _git(root, ["for-each-ref", "--format=%(refname)", "refs/replace"])
@@ -1519,8 +1669,12 @@ def history_failures(
     provenance: Mapping[str, str] | None = None,
     inspect_archives: bool = True,
     forbid_png_metadata: bool = False,
+    scope: PushScope | None = None,
 ) -> list[str]:
     """Rules that must hold for every reachable commit before publication.
+
+    ``scope`` narrows every inventory below to one push, so the same rules judge only
+    the commits, ref names and tag objects that push publishes.
 
     ``owner_identities`` narrows the commit-level attribution rule to the owners' own
     commits. Attribution is a statement its author makes: an owner's commit must not
@@ -1529,10 +1683,14 @@ def history_failures(
     """
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
-    failures = _history_precondition_failures(root)
+    revisions = HISTORY_REFS if scope is None else scope.revisions
+    failures = _history_precondition_failures(root, shallow_matters=scope is None)
     try:
         history_paths = {
-            path for paths in _changed_blob_paths(root, ()).values() for path in paths if path
+            path
+            for paths in _changed_blob_paths(root, (), scope=scope).values()
+            for path in paths
+            if path
         }
     except (RuntimeError, UnicodeError) as error:
         return [str(error)]
@@ -1584,6 +1742,7 @@ def history_failures(
             forbid_ai_attribution=forbid_ai_attribution,
             forbid_internal_planning=forbid_internal_planning,
             forbid_machine_observations=forbid_machine_observations,
+            scope=scope,
         )
     )
 
@@ -1592,7 +1751,7 @@ def history_failures(
     if allowed_identities or owner_identities:
         allowed = set(allowed_identities)
         owners = set(owner_identities)
-        identities = _git(root, ["log", *HISTORY_REFS, "--format=%H%x1f%an <%ae>%x1f%cn <%ce>"])
+        identities = _git(root, ["log", *revisions, "--format=%H%x1f%an <%ae>%x1f%cn <%ce>"])
         if identities.returncode != 0:
             failures.append(identities.stderr.strip() or "Git history identity inventory failed")
         else:
@@ -1620,6 +1779,10 @@ def history_failures(
                     failures.append(
                         f"history {commit[:12]}: commit-identity: {rules.AI_ATTRIBUTION}"
                     )
+            if scope is not None and owners and not owner_authored:
+                # A push of other people's commits holds no owner commit by design; the
+                # misspelling this guards against shows in the history the owner is on.
+                owner_authored = _head_has_owner_author(root, owners)
             if owners and not owner_authored:
                 # A misspelt identity would silently exempt every commit.
                 failures.append(
@@ -1632,7 +1795,7 @@ def history_failures(
     try:
         messages = _git(
             root,
-            ["log", "--encoding=UTF-8", *HISTORY_REFS, "--format=%H%x1f%B%x1e"],
+            ["log", "--encoding=UTF-8", *revisions, "--format=%H%x1f%B%x1e"],
             strict_utf8=True,
         )
     except UnicodeError:
@@ -1668,11 +1831,11 @@ def history_failures(
             for kind in sorted(message_kinds):
                 failures.append(f"history {commit[:12]}: commit-message: {kind}")
 
-    revisions = _git(root, ["rev-list", *HISTORY_REFS])
-    if revisions.returncode != 0:
-        failures.append(revisions.stderr.strip() or "Git revision inventory failed")
+    reachable = _git(root, ["rev-list", *revisions])
+    if reachable.returncode != 0:
+        failures.append(reachable.stderr.strip() or "Git revision inventory failed")
         return failures
-    commits = [commit for commit in revisions.stdout.splitlines() if commit]
+    commits = [commit for commit in reachable.stdout.splitlines() if commit]
     failures.extend(
         _commit_metadata_failures(
             root,
@@ -1704,6 +1867,10 @@ def history_failures(
             if len(fields) != 4:
                 continue
             commit, relative, line_number, content = fields
+            if scope is not None and relative not in history_paths:
+                # The tree of a pushed commit also holds files the remote already has,
+                # which this push neither adds nor changes.
+                continue
             if any(fnmatch(relative, pattern) for pattern in exclude):
                 kinds = set(
                     _owner_text_details(
@@ -1746,6 +1913,7 @@ def history_failures(
             inspect_archives=inspect_archives,
             exclude=exclude,
             forbid_png_metadata=forbid_png_metadata,
+            scope=scope,
         )
     )
     return failures
