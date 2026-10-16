@@ -373,7 +373,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--prerelease", default="", help="Next only: preview label such as rc; advances rc.N"
     )
     release.add_argument(
-        "--ci-run", type=int, default=0, help="Prepare: exact completed tagless workflow run ID"
+        "--ci-run",
+        type=int,
+        default=0,
+        help="Actions adapter, prepare or run --prepare: exact completed tagless workflow run ID",
     )
     release.add_argument(
         "--assets", default="", help="CI bundle/promote/draft: repository-local asset directory"
@@ -396,7 +399,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--prepare",
         action="store_true",
         help="Run only: prepare the candidate in this same invocation and publish it, "
-        "so the local gate runs once",
+        "so the local gate runs once (the Actions adapter also needs --ci-run ID)",
     )
     release.set_defaults(
         handler=lambda arguments: coordinator.run(

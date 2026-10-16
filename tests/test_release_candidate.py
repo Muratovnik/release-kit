@@ -11,7 +11,7 @@ from releasekit.release import candidate, coordinator
 from releasekit.release.backend import ReleaseError
 
 
-class CandidateTests(ReleaseFixture):
+class CandidateFixture(ReleaseFixture):
     def setUp(self):
         super().setUp()
         path = self.root / "relkit.toml"
@@ -63,6 +63,8 @@ class CandidateTests(ReleaseFixture):
         with patch.object(coordinator, "_audit"):
             return self.invoke("prepare", publish=False, ci_run=35)
 
+
+class CandidateTests(CandidateFixture):
     def test_prepare_promote_and_draft_keep_exact_bytes_without_preparation_tag(self):
         code, output = self.prepare()
         self.assertEqual(0, code, output)

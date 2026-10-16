@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import time
@@ -628,12 +629,13 @@ def show_plan(value: dict, *, human: bool = False) -> None:
                 + ("" if settings.local(value["settings"]) else " --ci-run ID")
                 + ", then plan again"
             )
-            if settings.local(value["settings"]):
-                print(
-                    f"relkit release: or in one invocation: relkit release run {value['tag']} "
-                    f"--publish --prepare --plan-hash {described['plan_sha256']} "
-                    f'--root "{value["root"]}"'
-                )
+            print(
+                f"relkit release: or in one invocation: relkit release run {value['tag']} "
+                f"--publish --prepare"
+                + ("" if settings.local(value["settings"]) else " --ci-run ID")
+                + f" --plan-hash {described['plan_sha256']} "
+                f'--root "{value["root"]}"'
+            )
         else:
             print(
                 f"relkit release: next: relkit release run {value['tag']} --publish "
@@ -1043,7 +1045,15 @@ def _prepare(
     workspace: storage.Workspace,
     no_download: bool,
     checked: bool = False,
-) -> None:
+    held: Path | None = None,
+) -> Path | None:
+    """Run the gate, revalidate the candidate and create and push the tag.
+
+    Returns the directory of the verified candidate bytes when this call downloaded
+    them or was handed them in `held`, so verification can reuse them instead of
+    downloading the published assets again. `held` only ever comes from the same
+    invocation's preparation, never from a saved receipt.
+    """
     value = state["plan"]
     release = settings.parse(value["settings"])
     if release.candidate_jobs:
@@ -1055,17 +1065,28 @@ def _prepare(
                 "no matching prepared candidate; run release prepare VERSION --ci-run ID, then review plan again"
             )
         expected, _ = candidate.inputs(runner, value["version"])
-        _local_checks(runner, value, workspace, no_download, path, state)
-        with stagelog.stage(runner, "candidate-download"):
-            record = candidate.download(
-                runner,
-                github,
-                expected,
-                release,
-                proof["ci"]["id"],
-                workspace.path / "candidate-assets",
-            )
-        workspace.remember(workspace.path / "candidate-assets")
+        if held is not None:
+            # The gate ran in this same invocation, inside the preparation that
+            # produced these bytes, and nothing else has run since. Only the cheap
+            # drift checks it ends with are repeated, and the candidate is revalidated
+            # from disk; the CI run is read again, so a new attempt is still caught.
+            clean(runner, value["sha"])
+            if release.require_guard and (problem := protection.problem(runner.root)):
+                raise ReleaseError(f"protect check failed: {problem}")
+            for name in ("local-checks", "worktree-audit", "history-audit"):
+                _stage(path, state, name, "passed")
+            record = candidate.revalidate(github, expected, release, proof["ci"]["id"], held)
+        else:
+            _local_checks(runner, value, workspace, no_download, path, state)
+            held = workspace.path / "candidate-assets"
+            try:
+                record = candidate.download(
+                    runner, github, expected, release, proof["ci"]["id"], held
+                )
+            finally:
+                with contextlib.suppress(OSError, storage.StorageError):
+                    workspace.remember(held)
+            workspace.remember(held)
         if (
             fingerprint(record) != proof["sha256"]
             or record["ci"] != proof["ci"]
@@ -1164,7 +1185,7 @@ def _prepare(
         state["export_started"] = True
         state["pushed"] = True
         _save(path, state)
-        return
+        return held
     _save(path, state)
     print("relkit release: push planned refs", flush=True)
     _stage(path, state, "push")
@@ -1182,6 +1203,7 @@ def _prepare(
         if not pushed:
             raise Pending("push was not observed on the server")
     _stage(path, state, "push", "passed")
+    return held
 
 
 def _ci(
@@ -1450,6 +1472,35 @@ def _snapshot(runner: Runner, value: dict, workspace: storage.Workspace) -> Path
     return snapshot
 
 
+def _from_candidate(candidate_assets: Path | None, destination: Path, asset: dict) -> bool:
+    """Copy one published file from the candidate verified in this invocation.
+
+    The published identity names the size and SHA-256 GitHub reports for the asset,
+    which `_published_identity` has already matched to the signed release attestation.
+    The candidate file is hashed afresh and used only if it is exactly that file; the
+    caller then checks the copy again, so what verification and smoke see is hashed
+    twice and equal to what is published. A missing, changed or linked candidate file is
+    not an error here: the asset is downloaded as it always was.
+    """
+    if candidate_assets is None:
+        return False
+    try:
+        source = storage.inside(candidate_assets, candidate_assets / asset["name"])
+        if (
+            not source.is_file()
+            or source.stat().st_size != asset["size"]
+            or storage.digest(source) != asset["digest"][7:]
+        ):
+            return False
+        shutil.copyfile(source, destination)
+    except (OSError, storage.StorageError):
+        # `gh` creates its output exclusively; a half-written copy would block the download.
+        with contextlib.suppress(OSError):
+            destination.unlink(missing_ok=True)
+        return False
+    return True
+
+
 def _verify(
     runner: Runner,
     github: GitHub,
@@ -1457,6 +1508,7 @@ def _verify(
     path: Path,
     release: dict,
     workspace: storage.Workspace,
+    candidate_assets: Path | None = None,
 ) -> None:
     value = state["plan"]
     print(
@@ -1481,7 +1533,8 @@ def _verify(
         with stagelog.stage(runner, "asset-download"):
             for asset in identity["assets"]:
                 destination = directory / asset["name"]
-                github.download(asset, destination)
+                if not _from_candidate(candidate_assets, destination, asset):
+                    github.download(asset, destination)
                 workspace.remember(destination)
                 if (
                     destination.stat().st_size != asset["size"]
@@ -1672,7 +1725,9 @@ def _archive_abandoned(runner: Runner, path: Path, tag: str) -> Path | None:
     return target
 
 
-def _prepare_and_bind(runner, github, version, plan_hash, no_download, result):
+def _prepare_and_bind(
+    runner, github, version, plan_hash, no_download, result, *, ci_run=0, hold=None, run_log=None
+):
     """Prepare the candidate inside the invocation that publishes it.
 
     A check result is never reused across invocations: a commit does not identify
@@ -1680,23 +1735,49 @@ def _prepare_and_bind(runner, github, version, plan_hash, no_download, result):
     Inside one process nothing runs between the gate and the tag but this code, so
     the rule holds without a second pass. The reviewed hash is the one `plan` prints
     before a candidate exists; the candidate is bound to that plan afterwards.
+
+    A local candidate is built here. An Actions candidate is built by CI and named by
+    `ci_run`; it is downloaded, verified and smoked here, and `hold` keeps those bytes
+    for the publication step of this same invocation. Returns the bound plan and the
+    held candidate directory, or None for a local candidate.
     """
-    from . import local
+    from . import candidate, local
 
     base = plan(runner, version, github=github, candidate_receipt=False)
-    if not settings.local(base["settings"]):
+    release = settings.parse(base["settings"])
+    if settings.local(release):
+        if ci_run:
+            raise ReleaseError("local preparation needs no --ci-run")
+    elif not release.candidate_jobs:
         raise ReleaseError(
-            "--prepare runs the local gate once and publishes; the Actions adapter "
-            "prepares from CI with release prepare --ci-run ID"
+            "--prepare runs the local gate once and publishes; the Actions adapter needs "
+            "release.candidate_jobs for that and prepares from a CI candidate, not from a "
+            "tag-first workflow"
+        )
+    elif ci_run < 1:
+        raise ReleaseError(
+            "the Actions adapter prepares from a CI candidate: pass --ci-run ID, the completed "
+            "tagless workflow run, together with --prepare"
         )
     if plan_hash and fingerprint(base) != plan_hash:
         raise ReleaseError("reviewed plan is stale; plan again before publishing")
-    store = publisher(runner, settings.parse(base["settings"]), github)
-    local.prepare(runner, store, base, no_download, result)
+    if run_log is not None:
+        # Opened before the candidate is prepared, so its stage lines reach run.log too
+        # and a preparation that fails still leaves them. Nothing above created a file.
+        storage.checked(run_log).parent.mkdir(parents=True, exist_ok=True)
+        run_log.touch(exist_ok=True)
+        run_log.chmod(0o600)
+        runner.run_log = run_log
+    store = publisher(runner, release, github)
+    held = None
+    if settings.local(release):
+        local.prepare(runner, store, base, no_download, result)
+    else:
+        held = candidate.prepare(runner, store, base, ci_run, no_download, result, hold=hold)
     value = plan(runner, version, github=github)
     if local._base(value) != base or not value.get("candidate"):
         raise ReleaseError("release plan changed during preparation")
-    return value
+    return value, held
 
 
 def run(
@@ -1729,6 +1810,9 @@ def run(
     lock_identity = None
     cleanup_unconfirmed = False
     workspace = None
+    # Holds the candidate workspace of a same-invocation preparation until this run ends.
+    hold = contextlib.ExitStack()
+    held = None
     try:
         root = storage.checked(root)
         runner = runner or Runner(root)
@@ -1810,8 +1894,10 @@ def run(
             result.data[action] = data
             print(f"relkit release: {action} {tag} passed")
             return 0
-        if assets or (ci_run and action != "prepare"):
-            raise ReleaseError("--assets is only for CI helpers; --ci-run is only for prepare")
+        if assets or (ci_run and not (action == "prepare" or (action == "run" and prepare_here))):
+            raise ReleaseError(
+                "--assets is only for CI helpers; --ci-run is only for prepare and run --prepare"
+            )
         if action == "prepare":
             from . import candidate
 
@@ -1895,7 +1981,17 @@ def run(
                 result.data["archived_receipt"] = str(archived)
                 print(f"relkit release: archived the abandoned attempt receipt: {archived}")
             if prepare_here:
-                value = _prepare_and_bind(runner, github, version, plan_hash, no_download, result)
+                value, held = _prepare_and_bind(
+                    runner,
+                    github,
+                    version,
+                    plan_hash,
+                    no_download,
+                    result,
+                    ci_run=ci_run,
+                    hold=hold,
+                    run_log=state_path.parent / "run.log",
+                )
             else:
                 value = plan(runner, version, github=github)
                 if (
@@ -1919,7 +2015,10 @@ def run(
             if prepare_here:
                 state["preparation"] = {
                     "invocation": "same",
-                    "attempt": value["candidate"]["attempt"],
+                    # A local candidate names its attempt in the plan; an Actions one in
+                    # the preparation result, because the plan's proof is fingerprinted.
+                    "attempt": value["candidate"].get("attempt")
+                    or result.data["candidate"]["attempt"],
                 }
             _save(state_path, state)
         if action in {"resume", "verify"} and plan_hash and plan_hash != fingerprint(value):
@@ -1956,9 +2055,17 @@ def run(
         state["temporary"] = str(workspace.path)
         _save(state_path, state)
         if not pushed and action != "verify":
-            _prepare(
-                runner, github, state, state_path, workspace, no_download, checked=prepare_here
+            held = _prepare(
+                runner,
+                github,
+                state,
+                state_path,
+                workspace,
+                no_download,
+                checked=prepare_here,
+                **({"held": held} if held is not None else {}),
             )
+            held = held if isinstance(held, Path) else None
         deadline = time.monotonic() + value["settings"]["timeout"]
         if settings.local(value["settings"]):
             from . import local
@@ -1979,7 +2086,8 @@ def run(
                     verify_only=action == "verify",
                 )
         state["verifier_version"] = __version__
-        _verify(runner, github, state, state_path, published, workspace)
+        _verify(runner, github, state, state_path, published, workspace, candidate_assets=held)
+        hold.close()
         if state.get("ci_verdict") not in {"passed", "not-required"}:
             raise ReleaseError(
                 "artifacts verified; release acceptance incomplete: "
@@ -2021,6 +2129,11 @@ def run(
         cleanup_unconfirmed = isinstance(error, processes.CleanupError)
         if isinstance(error, KeyboardInterrupt):
             error = Pending("interrupted; resume to reconcile the actual remote state")
+        # The error decides the held candidate workspace's fate: an unconfirmed
+        # termination retains it, a completed failure keeps only what is not ours.
+        # Reporting the original error matters more than a cleanup that failed too.
+        with contextlib.suppress(Exception):
+            hold.__exit__(type(error), error, error.__traceback__)
         result.error(
             "release_cleanup_unconfirmed"
             if cleanup_unconfirmed
@@ -2081,6 +2194,9 @@ def run(
             print(f"relkit release: {error}", file=sys.stderr)
         return 3 if isinstance(error, Pending) else 2 if state is None else 1
     finally:
+        hold.close()
+        if runner is not None:
+            runner.run_log = None
         if action == "status" and runner is not None:
             runner.log = original_log
         if lock is not None:

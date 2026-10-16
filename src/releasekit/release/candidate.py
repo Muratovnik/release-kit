@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
 import os
@@ -149,6 +150,22 @@ def download(runner, github, value, release, run_id, directory):
             ],
             timeout=release.command_timeout,
         )
+    return _confirm(github, value, release, run_id, directory, ci)
+
+
+def revalidate(github, value, release, run_id, directory):
+    """Confirm a candidate already downloaded in this invocation, without downloading again.
+
+    It makes every check `download` makes after the transfer: the CI run and its jobs
+    are read again, the bytes on disk are hashed afresh and compared with the manifest
+    the run published, and the run is read once more to catch a new attempt. Only the
+    transfer is skipped, so a file changed since it was verified is refused here.
+    """
+    ci = ci_identity(github, value, release, run_id)
+    return _confirm(github, value, release, run_id, storage.checked(directory), ci)
+
+
+def _confirm(github, value, release, run_id, directory, ci):
     path = storage.inside(directory, directory / MANIFEST)
     if path.stat().st_size > 2 * 1024 * 1024:
         raise ReleaseError("candidate manifest exceeds the read limit")
@@ -167,7 +184,16 @@ def receipt_path(root, tag):
     return storage.service_root(root) / "candidates" / tag / "ready.json"
 
 
-def prepare(runner, github, value, run_id, no_download, result):
+def prepare(runner, github, value, run_id, no_download, result, hold=None):
+    """Prepare the candidate from a completed CI run and record the attempt.
+
+    With `hold`, an `ExitStack` owned by the caller, the candidate workspace outlives
+    this call and the verified assets directory is returned. That is how one invocation
+    prepares and publishes: the bytes downloaded and checked here are the bytes the
+    publication step revalidates and verifies against, so nothing is downloaded twice.
+    The caller closes `hold`, passing any exception through, which is what decides
+    whether a failed workspace is cleaned.
+    """
     from . import coordinator
 
     expected, release = inputs(runner, value["version"])
@@ -190,52 +216,74 @@ def prepare(runner, github, value, run_id, no_download, result):
     storage.atomic_json(path, state)
     previous_log, previous_temp = runner.log, runner.temporary
     runner.log = path.with_suffix(".log")
+    kept = None
     try:
-        with storage.temporary(runner.root, "candidate-") as workspace:
+        with contextlib.ExitStack() as own:
+            workspace = (own if hold is None else hold).enter_context(
+                storage.temporary(runner.root, "candidate-")
+            )
             state["temporary"] = str(workspace.path)
             runner.temporary = workspace.path / "runtime"
             runner.temporary.mkdir()
             temporary = workspace.path / "project-temp"
             temporary.mkdir()
+            # Inventoried before anything runs in it, as the local preparation does:
+            # an untouched scratch directory must not keep a failed workspace alive.
+            workspace.remember(temporary)
             workspace.scratch(temporary)
-            with stagelog.stage(runner, "preflight"):
-                ci_identity(github, expected, release, run_id)
-            coordinator._local_checks(runner, value, workspace, no_download)
-            directory = workspace.path / "assets"
-            record = download(runner, github, expected, release, run_id, directory)
-            workspace.remember(directory)
-            snapshot = coordinator._snapshot(runner, value, workspace)
-            coordinator._commands(
-                runner,
-                release.smoke,
-                value,
-                snapshot,
-                directory,
-                temporary,
-                stage="candidate-smoke",
-            )
-            if inventory(expected, directory, manifest=True) != record["files"]:
-                raise ReleaseError("candidate assets changed during smoke")
-            clean(runner, value["sha"])
-            with stagelog.stage(runner, "preflight"):
-                replanned = coordinator.plan(
-                    runner, value["version"], github=github, candidate_receipt=False
+            try:
+                with stagelog.stage(runner, "preflight"):
+                    ci_identity(github, expected, release, run_id)
+                coordinator._local_checks(runner, value, workspace, no_download)
+                directory = workspace.path / "assets"
+                try:
+                    record = download(runner, github, expected, release, run_id, directory)
+                finally:
+                    # A download this tool started into a directory it created empty is
+                    # its own, including the part a refused manifest left behind.
+                    with contextlib.suppress(OSError, storage.StorageError):
+                        workspace.remember(directory)
+                workspace.remember(directory)
+                snapshot = coordinator._snapshot(runner, value, workspace)
+                coordinator._commands(
+                    runner,
+                    release.smoke,
+                    value,
+                    snapshot,
+                    directory,
+                    temporary,
+                    stage="candidate-smoke",
                 )
-            if replanned != value:
-                raise ReleaseError("release plan changed during candidate preparation")
-            workspace.remember(runner.temporary)
-            state.update(
-                status="passed",
-                candidate=record,
-                candidate_sha256=canonical.fingerprint(record),
-                host=sys.platform,
-            )
+                if inventory(expected, directory, manifest=True) != record["files"]:
+                    raise ReleaseError("candidate assets changed during smoke")
+                clean(runner, value["sha"])
+                with stagelog.stage(runner, "preflight"):
+                    replanned = coordinator.plan(
+                        runner, value["version"], github=github, candidate_receipt=False
+                    )
+                if replanned != value:
+                    raise ReleaseError("release plan changed during candidate preparation")
+                state.update(
+                    status="passed",
+                    candidate=record,
+                    candidate_sha256=canonical.fingerprint(record),
+                    host=sys.platform,
+                )
+                if hold is not None:
+                    kept = directory
+            except processes.CleanupError:
+                state["process_cleanup"] = "unconfirmed"
+                raise
+            finally:
+                if state.get("process_cleanup") != "unconfirmed":
+                    workspace.remember(runner.temporary)
         storage.atomic_json(path, state)
         storage.atomic_json(receipt_path(runner.root, value["tag"]), state)
         result.data["candidate"] = {**state, "receipt": str(path)}
         print(
             f"relkit release: candidate {value['tag']} prepared at {value['sha']}; no tag created; receipt: {path}"
         )
+        return kept
     except BaseException as error:
         unconfirmed = isinstance(error, processes.CleanupError)
         state.update(

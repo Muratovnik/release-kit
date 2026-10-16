@@ -200,9 +200,9 @@ preparation is reused only by an identical plan; changed source, policy, predece
 or host requires preparation again. Each attempt remains under the project's
 service directory `candidates/TAG/`; `ready.json` selects the latest successful one.
 
-At publication, local checks run again and the candidate is downloaded/revalidated
-before creating the release annotation. The annotation records run, attempt and
-manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
+At publication in a separate invocation, local checks run again and the candidate is
+downloaded/revalidated before creating the release annotation. The annotation records
+run, attempt and manifest fingerprint. The tag job runs `relkit release promote VERSION --assets
 DIRECTORY` to retrieve exactly those bytes into an empty directory, then creates
 the draft. `relkit release draft VERSION --assets DIRECTORY` checks the promoted
 files, committed notes and full remote inventory before CI lifts the draft. These
@@ -212,6 +212,34 @@ promotion attestation must not claim the original build ran under a tag.
 For a prerelease tag, CI must create a draft marked as a prerelease; the draft
 and published verifiers reject a channel mismatch. The local GitHub adapter sets
 that flag itself.
+
+### One invocation
+
+```bash
+relkit release plan v1.0.0
+relkit release run v1.0.0 --publish --prepare --ci-run RUN_ID --plan-hash REVIEWED_SHA256
+```
+
+`prepare` followed by a separate `run` runs the local gate twice, once in each process.
+`run --prepare --ci-run RUN_ID` does what `prepare` does and then publishes inside the
+same process, so the checks, both audits and the candidate smoke run once. The hash to
+review is the one `plan` prints before a candidate exists, as for a
+[local candidate](local-releases.md#one-invocation); the candidate is bound to that plan
+after preparation and its receipt is written as usual. The run receipt records
+`preparation.invocation = "same"`, the attempt and the CI run.
+
+The no-reuse rule below is unchanged. Nothing runs between that gate and the tag but the
+coordinator, so a check result is not carried across invocations; a later `resume`, or a
+`run` after a separate `prepare`, is a new invocation and runs the gate again. Before the
+tag, the candidate is revalidated from the bytes already on disk: the CI run, its jobs and
+attempt are read again, every file is hashed again and compared with the manifest.
+
+The candidate is downloaded once. After publication, verification takes each published
+asset from those bytes when its size and SHA-256 equal the published identity, which
+`relkit` has already matched to GitHub's signed release attestation; the signature,
+provenance and smoke checks then run on the copies. A candidate file that changed on disk
+is not trusted: that asset is downloaded and verified as in `resume`, which always
+downloads. Published files that differ from the prepared candidate still fail verification.
 
 This uses native [workflow dispatch](https://docs.github.com/en/actions/how-tos/manage-workflow-runs/manually-run-a-workflow)
 and [run artifact downloads](https://cli.github.com/manual/gh_run_download), with
@@ -313,7 +341,8 @@ older receipt can be abandoned by a newer release-kit. The MCP adapter has no to
 for this; use the CLI.
 
 Local checks are not cached across invocations: a commit SHA does not identify
-ignored dependencies, environment, tool binaries or hooks. After a verified push,
+ignored dependencies, environment, tool binaries or hooks. `run --prepare` is one
+invocation, so it runs them once; `prepare` and a later `run` are two and run them twice. After a verified push,
 new local edits are left alone and reported separately; they do not become release
 inputs. A repeated resume re-verifies publication without pushing or publishing
 again. It can therefore detect later edits to notes, which GitHub still allows on
@@ -374,8 +403,11 @@ same shape as the audit's [stage lines](cli-json.md#summary-line-and-stage-lines
 The outcome is `done` or `failed`, with the stage's duration; a heartbeat appears every
 30 seconds while a stage runs, so a silent stage can be told from a hung one. A run's
 lines are in `run.log` under its receipt directory; a preparation's are in the
-attempt's log beside its receipt. The audit's own engine stages appear inside
-`worktree-audit` and `history-audit`.
+attempt's log beside its receipt. `run --prepare` prepares in the same invocation and
+writes the preparation's stage lines to both, so `run.log` has no unexplained gap; it is
+opened before the candidate is prepared, so a preparation that fails still leaves its
+lines there. The audit's own engine stages appear inside `worktree-audit` and
+`history-audit`.
 
 | Stage | What it covers |
 | --- | --- |
