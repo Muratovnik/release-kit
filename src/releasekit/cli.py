@@ -213,9 +213,10 @@ def _protect(arguments: argparse.Namespace) -> int:
         print("relkit protect: owner pre-push guard is installed")
         if protection.outdated_template(root):
             message = (
-                "the installed guard is an older release-kit template pinning the current "
-                "inputs; adopt the current one with `relkit update --refresh-guard` "
-                "(or `relkit protect install`)"
+                "the installed guard is an older release-kit template: it pins the current "
+                "inputs, but judges every push against the whole history and a clean "
+                "worktree instead of the pushed commits; adopt the current one with "
+                "`relkit protect install` (or `relkit update --refresh-guard`)"
             )
             arguments.result.warnings.append(
                 {"code": "guard_template_outdated", "message": message}
