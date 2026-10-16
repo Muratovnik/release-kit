@@ -55,6 +55,7 @@ class FakeGitHub:
 
     def __init__(self, fixture):
         self.fixture = fixture
+        self.repository = "example/project"
         self.published = []
         self.draft = False
         self.immutable = True

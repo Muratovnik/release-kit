@@ -56,7 +56,8 @@ class JsonCliTests(unittest.TestCase):
             (root / "CHANGELOG.md").write_text(VALID, encoding="utf-8")
             args = ["notes", "v1.2.0", "--root", str(root)]
             code, value, stderr = invoke(["--json", *args])
-            self.assertEqual((0, ""), (code, stderr))
+            self.assertEqual(0, code)
+            self.assertRegex(stderr, r"\Arelkit notes: pass \(exit 0, \d+\.\ds\)\n\Z")
             self.assertIn("café", value["data"]["notes"])
             self.assertTrue(value["data"]["notes"].endswith("\n"))
             code, exported, _ = invoke([*args, "--json", "--output", "export.md"])

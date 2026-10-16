@@ -85,6 +85,9 @@ relkit release verify 1.0.0
 Prepare runs checks, publication audits, build and smoke before creating a release
 tag. Its receipt binds source SHA, settings, version and all file sizes/digests.
 Each failed preparation retains its attempt and can retry the same version.
+A failed check is reported with the command as written in `relkit.toml`, its exit code
+and the few lines of its output that name the failure, then the path of the full log;
+there is no need to search the log first.
 Review the resulting plan before run. Run rechecks current local gates and the
 prepared bytes, creates the annotated local tag and publishes those exact bytes.
 It does not rebuild at publication time. Use `resume VERSION --publish` after an

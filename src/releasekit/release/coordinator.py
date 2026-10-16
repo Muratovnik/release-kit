@@ -29,7 +29,7 @@ from .. import (
     storage,
 )
 from ..result import Result
-from . import changelog, settings, versions
+from . import changelog, failure, settings, versions
 from .backend import (
     CommandError,
     GitHub,
@@ -943,11 +943,18 @@ def _commands(
         for index, command in enumerate(commands, start=1):
             print(f"relkit release: project command {index}/{len(commands)}", flush=True)
             with progress.step(f"project command {index}/{len(commands)}"):
-                runner.call(
-                    [arg.format(**substitutions) for arg in command],
-                    cwd=snapshot,
-                    timeout=value["settings"]["command_timeout"],
-                )
+                try:
+                    runner.call(
+                        [arg.format(**substitutions) for arg in command],
+                        cwd=snapshot,
+                        timeout=value["settings"]["command_timeout"],
+                    )
+                except CommandError as error:
+                    # Name the configured command, as written in relkit.toml, and what
+                    # it printed; the log keeps the rest.
+                    raise failure.ProjectCommandError(
+                        f"project command {index}/{len(commands)}", command, error, runner.log
+                    ) from error
     finally:
         runner.temporary = previous
 
@@ -977,8 +984,14 @@ def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_down
         if error["code"] == "engine_cleanup_unconfirmed":
             raise processes.CleanupError(error["message"])
     if status:
+        scope = "history" if history else "worktree"
+        found = [item["message"].splitlines()[0] for item in audit_result.errors][:5]
+        more = len(audit_result.errors) - len(found)
         raise ReleaseError(
-            f"{'history' if history else 'worktree'} publication audit failed; see the release log"
+            f"{scope} publication audit failed (exit {status})"
+            + "".join(f"\n  {line}" for line in found)
+            + (f"\n  ... and {more} more" if more > 0 else "")
+            + f"\nfull output: {runner.log}"
         )
 
 

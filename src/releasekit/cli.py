@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sys
 import tempfile
+import time
 import traceback
 from collections.abc import Sequence
 from pathlib import Path
@@ -163,7 +165,9 @@ def _protect(arguments: argparse.Namespace) -> int:
     if arguments.action == "check":
         if arguments.dry_run or arguments.plan_hash:
             arguments.result.error(
-                "invalid_arguments", "check does not accept installation options"
+                "invalid_arguments",
+                "protect check does not accept --dry-run or --plan-hash; "
+                "preview a hook change with `relkit protect install --dry-run`",
             )
             return 2
         if problem := protection.problem(root):
@@ -188,7 +192,9 @@ def _protect(arguments: argparse.Namespace) -> int:
         plan = protection.install_plan(root)
         arguments.result.data["plan"] = plan
         if arguments.plan_hash and arguments.plan_hash != plan["plan_sha256"]:
-            raise protection.ProtectionError("reviewed hook plan is stale; review a new dry run")
+            raise protection.ProtectionError(
+                protection.stale_plan_message(arguments.plan_hash, plan)
+            )
         if arguments.dry_run:
             print("relkit protect: dry run; no hook written")
             return 0
@@ -207,7 +213,10 @@ def _notes(arguments: argparse.Namespace) -> int:
     source_changelog = root / arguments.changelog
     path = source_changelog
     if arguments.from_tag and not arguments.draft:
-        message = "--from-tag is only valid with --draft"
+        message = (
+            "--from-tag is only valid with --draft; "
+            f"use `relkit notes {arguments.version} --draft --from-tag {arguments.from_tag}`"
+        )
         arguments.result.error("generation_error", message)
         print(f"relkit notes: {message}", file=sys.stderr)
         return 2
@@ -579,15 +588,87 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    argv = list(sys.argv[1:] if argv is None else argv)
+# The closed set of words the final summary line uses. The first four follow the
+# process exit contract (`docs/cli-json.md`); `error` is a usage error or a bug, where
+# no command-specific verdict exists.
+STATUS_WORDS = {0: "pass", 1: "fail", 2: "refused", 3: "pending"}
+
+
+def summary_line(command: str, status: str, code: int, seconds: float) -> str:
+    """`relkit audit: pass (exit 0, 12.3s)`: the same line for every command and outcome."""
+    return f"relkit {command}: {status} (exit {code}, {seconds:.1f}s)"
+
+
+def _spelled_command(argv: Sequence[str], parser: argparse.ArgumentParser) -> str:
+    """The subcommand path named in an invocation the parser rejected."""
     options = argv[: argv.index("--")] if "--" in argv else argv
-    json_mode = "--json" in options
+    choices = next(
+        action.choices
+        for action in parser._actions
+        if isinstance(action, argparse._SubParsersAction)
+    )
+    for index, token in enumerate(options):
+        if token in choices:
+            actions = next(
+                (
+                    action.choices
+                    for action in choices[token]._actions
+                    if action.dest == "action" and action.choices
+                ),
+                (),
+            )
+            following = options[index + 1 :]
+            return " ".join([token, *(item for item in following if item in actions)][:2])
+    return "usage"
+
+
+@contextlib.contextmanager
+def _stdout_is_the_envelope():
+    """Keep everything but the one JSON object off stdout, including child processes.
+
+    Redirecting `sys.stdout` covers Python's own writes. A child that inherits the
+    standard handle, or a native extension writing to descriptor 1, bypasses it, so the
+    descriptor itself is pointed at stderr for the duration and restored afterwards.
+    Only the process's real stdout is touched: a caller that already replaced
+    `sys.stdout` has captured it and owns what that stream is.
+    """
+    descriptor = None
+    if sys.stdout is sys.__stdout__ and sys.__stdout__ is not None:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            descriptor = os.dup(1)
+            os.dup2(2, 1)
+        except (OSError, ValueError):
+            descriptor = None
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        if descriptor is not None:
+            try:
+                sys.stderr.flush()
+                os.dup2(descriptor, 1)
+            finally:
+                os.close(descriptor)
+
+
+class _Invocation:
+    """What `main` learns while running, for the one summary line it ends with."""
+
+    def __init__(self) -> None:
+        self.command = "usage"
+        self.status: str | None = None
+        self.stdout_is_data = False
+
+
+def _execute(argv: list[str], json_mode: bool, invocation: _Invocation) -> int:
     result = Result()
     parser = build_parser()
     try:
         arguments = parser.parse_args(argv)
         if arguments.show_version:
+            invocation.command = "version"
             if json_mode:
                 result.data["engines"] = {
                     name: tool.version for name, tool in toolchain.TOOLS.items()
@@ -599,6 +680,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         if arguments.command is None:
             parser.error("a command is required")
     except ArgumentError as error:
+        invocation.command = _spelled_command(argv, parser)
+        invocation.status = "error"
         if json_mode:
             result.error("invalid_arguments", error)
             print(json.dumps(result.envelope([], None, 2)))
@@ -607,17 +690,29 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(f"relkit: error: {error}", file=sys.stderr)
         return 2
     arguments.result = result
-    if not json_mode:
-        return int(arguments.handler(arguments))
     command = [arguments.command]
     if hasattr(arguments, "action"):
         command.append(arguments.action)
-    # Engines explicitly inherit these streams; their OS-level output must not
-    # share stdout with the JSON envelope. Project commands are captured in logs.
-    with contextlib.redirect_stdout(sys.stderr):
+    invocation.command = " ".join(command)
+    # Without --output, `notes` writes the entry itself to stdout, and on failure leaves
+    # that stream empty. A summary there would end up in the file someone redirected to.
+    invocation.stdout_is_data = arguments.command == "notes" and not arguments.output
+    if not json_mode:
+        try:
+            code = int(arguments.handler(arguments))
+        except Exception:  # noqa: BLE001 -- a bug still ends with the summary line
+            traceback.print_exc(file=sys.stderr)
+            invocation.status = "error"
+            return 1
+        return code
+    with _stdout_is_the_envelope():
         try:
             if arguments.command == "update" and not arguments.dry_run and not arguments.yes:
-                result.error("confirmation_required", "JSON updates require explicit --yes")
+                result.error(
+                    "confirmation_required",
+                    "JSON updates require explicit --yes; review `relkit update --dry-run --json`, "
+                    "then repeat with --yes --plan-hash HASH",
+                )
                 code = 2
             else:
                 code = int(arguments.handler(arguments))
@@ -627,8 +722,35 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception as error:  # noqa: BLE001 -- preserve the JSON process boundary on bugs
             result.error("internal_error", error)
             traceback.print_exc(file=sys.stderr)
+            invocation.status = "error"
             code = 2
     print(json.dumps(result.envelope(command, str(Path(arguments.root).absolute()), code)))
+    return code
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    argv = list(sys.argv[1:] if argv is None else argv)
+    options = argv[: argv.index("--")] if "--" in argv else argv
+    json_mode = "--json" in options
+    started = time.monotonic()
+    invocation = _Invocation()
+    code = _execute(argv, json_mode, invocation)
+    line = summary_line(
+        invocation.command,
+        invocation.status or STATUS_WORDS.get(code, "error"),
+        code,
+        time.monotonic() - started,
+    )
+    # With --json stdout is exactly the envelope, so the line goes to stderr. Otherwise
+    # it is the last line of stdout and survives `| tail -n 1`: stderr is flushed first
+    # so nothing the command wrote can land after it. A command whose stdout is its
+    # result (notes) keeps that stream byte-exact and reports on stderr instead.
+    stream = sys.stderr if json_mode or invocation.stdout_is_data else sys.stdout
+    sys.stderr.flush()
+    try:
+        print(line, file=stream, flush=True)
+    except (OSError, ValueError):
+        pass
     return code
 
 

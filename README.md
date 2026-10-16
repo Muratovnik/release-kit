@@ -17,6 +17,7 @@ what was published.
 ```text
 $ relkit audit
 relkit audit: passed
+relkit audit: pass (exit 0, 4.1s)
 ```
 
 ```text
@@ -28,12 +29,21 @@ $ relkit audit
 
 relkit audit: failed
   Lychee failed
+relkit audit: fail (exit 1, 5.8s)
 ```
 
 Exit `0` means the configured checks passed for that scope. Exit `1` means findings:
 read the paths and fix or review them. Exit `2` means configuration or execution
 failed, which is not a clean security result. For automation use `audit --json` and
 the [result contract](docs/cli-json.md).
+
+Every command ends with one line, `relkit <command>: <status> (exit N, X.Xs)`, where
+the status is `pass`, `fail`, `refused`, `pending` or `error` and `N` is the exit code
+the process returns. Without `--json` it is the last line of standard output, so
+`relkit audit | tail -n 1` still shows the verdict and its exit code; with `--json` it
+goes to standard error and standard output stays exactly one JSON object. Long steps
+write timestamped `[time] stage NAME: start` and `done (X.Xs)` lines, with a heartbeat
+while they run, to standard error.
 
 ## Install
 

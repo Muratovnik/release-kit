@@ -3,6 +3,7 @@ from __future__ import annotations
 import contextlib
 import io
 import os
+import re
 import subprocess
 import sys
 import tempfile
@@ -14,12 +15,20 @@ from releasekit import cli
 from releasekit.release.changelog import entry_for
 
 ROOT = Path(__file__).resolve().parents[1]
+SUMMARY = re.compile(r"relkit notes: (?:pass|fail|refused|pending|error) \(exit \d, \d+\.\ds\)")
 VALID = (
     "# Changelog\n\n## [Unreleased]\n\n"
     "## [1.2.0](https://example.invalid/compare/v1.1.0...v1.2.0) (2026-01-05)\n\n"
     "### Highlights\n\nEdited by hand: café.\n\n### Features\n\n"
     "- a change ([abc1234](https://example.invalid/commit/abc1234567))\n"
 )
+
+
+def without_summary(text: str) -> str:
+    lines = text.splitlines(keepends=True)
+    if lines and SUMMARY.fullmatch(lines[-1].rstrip("\r\n")):
+        lines.pop()
+    return "".join(lines)
 
 
 class NotesTests(unittest.TestCase):
@@ -35,10 +44,15 @@ class NotesTests(unittest.TestCase):
         )
 
     def run_notes(self, *args: str) -> tuple[int, str, str]:
+        """The streams without the closing summary line, which tests/test_cli_contract.py owns.
+
+        These tests are about what `notes` writes where; the summary is additive and
+        its placement is asserted there, against a real process.
+        """
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             code = cli.main(["notes", "v1.2.0", "--root", str(self.root), *args])
-        return code, stdout.getvalue(), stderr.getvalue()
+        return code, without_summary(stdout.getvalue()), without_summary(stderr.getvalue())
 
     def test_stdout_and_file_export_are_the_validated_entry_not_a_regeneration(self) -> None:
         expected = entry_for(VALID, "v1.2.0", profile="conventional-changelog") + "\n"

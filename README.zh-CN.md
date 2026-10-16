@@ -16,6 +16,7 @@
 ```text
 $ relkit audit
 relkit audit: passed
+relkit audit: pass (exit 0, 4.1s)
 ```
 
 ```text
@@ -27,11 +28,18 @@ $ relkit audit
 
 relkit audit: failed
   Lychee failed
+relkit audit: fail (exit 1, 5.8s)
 ```
 
 退出码 `0` 表示该范围内配置的检查全部通过。退出码 `1` 表示存在问题：请阅读给出的路径，
 修复或复核它们。退出码 `2` 表示配置或执行失败，这并不是一个干净的安全结论。用于自动化
 时请使用 `audit --json` 和[结果契约](docs/cli-json.md)（英文）。
+
+每条命令都以一行 `relkit <command>: <status> (exit N, X.Xs)` 结束，状态为 `pass`、`fail`、
+`refused`、`pending` 或 `error`，`N` 是进程实际返回的退出码。不带 `--json` 时它是标准输出的
+最后一行，因此 `relkit audit | tail -n 1` 仍能看到结论与退出码；带 `--json` 时它写入标准错误，
+标准输出始终恰好是一个 JSON 对象。耗时较长的步骤会向标准错误写入带时间戳的
+`[time] stage NAME: start` 与 `done (X.Xs)` 行，并在运行期间输出心跳。
 
 ## 安装
 

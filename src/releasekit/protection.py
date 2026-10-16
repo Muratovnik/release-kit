@@ -54,7 +54,10 @@ def _guarded_digests(root: Path) -> dict[str, str]:
     for relative in guarded_inputs(policy):
         path = root / relative
         if not path.is_file():
-            raise ProtectionError(f"guarded publication input is unavailable: {path}")
+            raise ProtectionError(
+                f"guarded publication input is unavailable: {path}; create it or change the "
+                f"relkit.toml setting that names {relative}"
+            )
         try:
             answer[relative] = _sha256(path)
         except OSError as error:
@@ -154,7 +157,7 @@ def _git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
             timeout=30,
         )
     except subprocess.TimeoutExpired as error:
-        raise ProtectionError("Git hook lookup timed out") from error
+        raise ProtectionError(f"git {' '.join(arguments)} timed out after 30s in {root}") from error
     except OSError as error:
         raise ProtectionError(f"Git hook lookup could not run: {error}") from error
 
@@ -183,7 +186,10 @@ def _write_managed(path: Path, content: str, marker: str, description: str) -> N
     if path.exists():
         existing = path.read_text(encoding="utf-8", errors="replace")
         if marker not in existing and existing.replace("\r\n", "\n") != content:
-            raise ProtectionError(f"refusing to replace an unmanaged {description}: {path}")
+            raise ProtectionError(
+                f"refusing to replace an unmanaged {description}: {path}; "
+                "move it aside or fold its checks into a compatible dispatcher, then retry"
+            )
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=".relkit-hook-", dir=path.parent)
     temporary = Path(name)
@@ -243,7 +249,10 @@ def recorded_digests(root: Path) -> dict[str, str]:
     """Read only a complete known guard template, never evaluate its embedded code."""
     text = hook_path(root).read_text(encoding="utf-8").replace("\r\n", "\n")
     if (found := _recorded(text)) is None:
-        raise ProtectionError("pre-push hook is not an intact supported release-kit guard template")
+        raise ProtectionError(
+            f"pre-push hook {hook_path(root)} is not an intact supported release-kit guard "
+            "template; review it, then run `relkit protect install`"
+        )
     return found[0]
 
 
@@ -274,7 +283,7 @@ def problem(root: Path) -> str | None:
     except ProtectionError as error:
         return f"owner pre-push guard cannot be verified: {error}"
     except OSError:
-        return "owner pre-push guard is not installed; run `relkit protect install`"
+        return f"owner pre-push guard is not installed at {path}; run `relkit protect install`"
     if text.replace("\r\n", "\n") != expected_hook:
         try:
             changes = digest_changes(root)
@@ -290,7 +299,7 @@ def problem(root: Path) -> str | None:
         # An intact older template may keep its pins, but Git must still be able
         # to execute it through the currently configured dispatcher.
     if not os.access(path, os.X_OK):
-        return f"owner pre-push guard is not executable: {path}"
+        return f"owner pre-push guard is not executable: {path}; run `relkit protect install`"
     try:
         effective = effective_hook_path(root)
     except ProtectionError as error:
@@ -298,6 +307,14 @@ def problem(root: Path) -> str | None:
     if effective != path and (dispatcher_problem := _dispatcher_problem(effective)):
         return dispatcher_problem
     return None
+
+
+def stale_plan_message(reviewed: str, plan: dict) -> str:
+    return (
+        f"reviewed hook plan {reviewed[:12]} no longer matches the current plan "
+        f"{plan['plan_sha256'][:12]} for {plan['path']}; run `relkit protect install "
+        "--dry-run`, review it, and pass its plan_sha256 as --plan-hash"
+    )
 
 
 def install_plan(root: Path) -> dict:
@@ -322,7 +339,8 @@ def install_plan(root: Path) -> dict:
         existing = path.read_text(encoding="utf-8", errors="replace")
         if MARKER not in existing and existing.replace("\r\n", "\n") != content:
             raise ProtectionError(
-                f"refusing to replace an unmanaged repository pre-push hook: {path}"
+                f"refusing to replace an unmanaged repository pre-push hook: {path}; "
+                "move it aside or fold its checks into a compatible dispatcher, then retry"
             )
     plan = {
         "root": str(root),
@@ -339,7 +357,7 @@ def install_plan(root: Path) -> dict:
 def install(root: Path, *, plan_hash: str = "") -> Path:
     plan = install_plan(root)
     if plan_hash and plan_hash != plan["plan_sha256"]:
-        raise ProtectionError("reviewed hook plan is stale; review a new dry run")
+        raise ProtectionError(stale_plan_message(plan_hash, plan))
     path = Path(plan["path"])
     _write_managed(
         path, hook_content(root, digests=plan["inputs"]), MARKER, "repository pre-push hook"

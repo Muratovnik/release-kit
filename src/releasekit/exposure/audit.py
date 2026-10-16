@@ -819,7 +819,9 @@ def _git(
             env=environment,
         )
     except subprocess.TimeoutExpired as error:
-        raise RuntimeError("Git command timed out") from error
+        raise RuntimeError(
+            f"git {' '.join(arguments[:2])} timed out after 120s in {root}"
+        ) from error
     except OSError as error:
         raise RuntimeError(f"Git command could not run: {error}") from error
 
@@ -837,7 +839,9 @@ def _git_bytes(root: Path, arguments: Sequence[str]) -> subprocess.CompletedProc
             env=environment,
         )
     except subprocess.TimeoutExpired as error:
-        raise RuntimeError("Git byte command timed out") from error
+        raise RuntimeError(
+            f"git {' '.join(arguments[:2])} timed out after 120s in {root}"
+        ) from error
     except OSError as error:
         raise RuntimeError(f"Git byte command could not run: {error}") from error
 
@@ -893,7 +897,10 @@ def _has_symlink_parent(root: Path, relative: str) -> bool:
         if stat.S_ISLNK(info.st_mode):
             return True
         if getattr(info, "st_file_attributes", 0) & 0x400:
-            raise RuntimeError("publication paths traverse a junction or directory reparse point")
+            raise RuntimeError(
+                f"publication path {relative} traverses a junction or directory reparse point "
+                f"at {parent}; remove the junction or replace it with a real directory"
+            )
     return False
 
 
@@ -1470,14 +1477,18 @@ def _history_precondition_failures(root: Path) -> list[str]:
     if shallow.returncode != 0:
         failures.append(shallow.stderr.strip() or "Git shallow-state lookup failed")
     elif shallow.stdout.strip() == "true":
-        failures.append("Git history audit requires a complete non-shallow repository")
+        failures.append(
+            f"Git history audit requires a complete non-shallow repository; "
+            f"run `git fetch --unshallow` in {root}"
+        )
 
     replacements = _git(root, ["for-each-ref", "--format=%(refname)", "refs/replace"])
     if replacements.returncode != 0:
         failures.append(replacements.stderr.strip() or "Git replace-ref lookup failed")
     else:
         failures.extend(
-            f"Git replace ref can alter the local history view: {reference}"
+            f"Git replace ref can alter the local history view: {reference}; "
+            f"delete it with `git replace -d {reference.rsplit('/', 1)[-1]}`"
             for reference in replacements.stdout.splitlines()
             if reference
         )
@@ -1491,7 +1502,9 @@ def _history_precondition_failures(root: Path) -> list[str]:
             graft_path = root / graft_path
         try:
             if graft_path.is_file() and graft_path.read_bytes().strip():
-                failures.append("Git info/grafts can alter the local history view")
+                failures.append(
+                    f"Git info/grafts can alter the local history view: remove {graft_path}"
+                )
         except OSError:
             failures.append("Git info/grafts could not be inspected")
     return failures
