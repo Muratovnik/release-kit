@@ -88,6 +88,8 @@ UNINSPECTED_ARCHIVE_SIGNATURES = (
     b"MSCF",  # Microsoft Cabinet
 )
 ASCII_TEXT_RUN = re.compile(rb"[\t\n\r\x20-\x7e]{4,}")
+# Every C0 control except tab, line feed and carriage return.
+SUSPICIOUS_CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f]")
 MAX_ARCHIVE_ENTRIES = 10_000
 MAX_ARCHIVE_ENTRY_SIZE = 16 * 1024 * 1024
 MAX_ARCHIVE_TOTAL_SIZE = 256 * 1024 * 1024
@@ -141,14 +143,12 @@ def _decode_text(payload: bytes) -> str:
             utf8 = payload.decode("utf-8")
         except UnicodeDecodeError:
             utf8 = ""
+        suspicious_controls = SUSPICIOUS_CONTROL.search(utf8) is not None
+        if utf8 and not suspicious_controls:
+            return utf8
         ascii_text = "\n".join(
             match.group().decode("ascii") for match in ASCII_TEXT_RUN.finditer(payload)
         )
-        suspicious_controls = any(
-            ord(character) < 32 and character not in "\t\n\r" for character in utf8
-        )
-        if utf8 and not suspicious_controls:
-            return utf8
         if len(payload) < 4 or len(payload) % 2:
             return utf8 or ascii_text
         lanes = (payload[0::2], payload[1::2])
