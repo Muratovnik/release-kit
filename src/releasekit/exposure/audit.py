@@ -21,9 +21,10 @@ import re
 import stat
 import struct
 import subprocess
+import threading
 import zipfile
 from collections import Counter
-from collections.abc import Collection, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
@@ -363,6 +364,22 @@ def _public_tree_entries(
                 yield mode, blob, raw_path.decode("utf-8", errors="surrogateescape")
 
 
+@dataclass(frozen=True)
+class _BlobInventory:
+    """Every blob a history exposes, with the paths and the modes it appears under."""
+
+    paths: dict[str, set[str]]
+    symlinks: set[tuple[str, str]]
+    gitlinks: set[tuple[str, str]]
+
+
+def _blob_inventory(root: Path, scope: PushScope | None = None) -> _BlobInventory:
+    symlinks: set[tuple[str, str]] = set()
+    gitlinks: set[tuple[str, str]] = set()
+    paths = _changed_blob_paths(root, (), symlinks=symlinks, gitlinks=gitlinks, scope=scope)
+    return _BlobInventory(paths, symlinks, gitlinks)
+
+
 def _blob_history_failures(
     root: Path,
     *,
@@ -382,21 +399,25 @@ def _blob_history_failures(
     exclude: Sequence[str],
     forbid_png_metadata: bool = False,
     scope: PushScope | None = None,
+    inventory: _BlobInventory | None = None,
+    cancelled: threading.Event | None = None,
 ) -> list[str]:
+    """Judge the content of every historical blob.
+
+    ``inventory`` is the caller's own listing of the same history, so it is read once;
+    ``cancelled`` lets a caller that no longer needs the answer stop the scan between
+    batches, in which case what is returned is not a verdict.
+    """
     wrapped_names = tuple(name for name in names if len(name.split()) > 1)
     wrapped_workflows = tuple(name for name in owner_workflows if len(name.split()) > 1)
-    try:
-        symlink_blobs: set[tuple[str, str]] = set()
-        gitlinks: set[tuple[str, str]] = set()
-        paths = _changed_blob_paths(
-            root,
-            (),
-            symlinks=symlink_blobs,
-            gitlinks=gitlinks,
-            scope=scope,
-        )
-    except (RuntimeError, UnicodeError) as error:
-        return [str(error)]
+    if inventory is None:
+        try:
+            inventory = _blob_inventory(root, scope)
+        except (RuntimeError, UnicodeError) as error:
+            return [str(error)]
+    paths = inventory.paths
+    symlink_blobs = inventory.symlinks
+    gitlinks = inventory.gitlinks
     if not paths:
         return []
     normal_ids = {
@@ -460,6 +481,8 @@ def _blob_history_failures(
     }
     expected_sizes = dict(sized_blobs)
     for batch in _history_batches(sized_blobs):
+        if cancelled is not None and cancelled.is_set():
+            return failures
         try:
             blobs = _batch_blobs(root, batch)
         except (RuntimeError, ValueError) as error:
@@ -1741,6 +1764,41 @@ def _history_precondition_failures(root: Path, *, shallow_matters: bool = True) 
     return failures
 
 
+class _ThreadedScan:
+    """Run one scan on its own thread, then hand back what it returned or raised.
+
+    The thread is a daemon so that a caller that stops waiting, whether through
+    ``cancel`` or because it failed itself, never keeps the process alive for a result
+    nobody will read.
+    """
+
+    def __init__(self, run: Callable[[threading.Event], list[str]]) -> None:
+        self._cancelled = threading.Event()
+        self._outcome: tuple[list[str], BaseException | None] = ([], None)
+        self._thread = threading.Thread(
+            target=self._work, args=(run,), name="relkit-history-blobs", daemon=True
+        )
+        self._thread.start()
+
+    def _work(self, run: Callable[[threading.Event], list[str]]) -> None:
+        try:
+            self._outcome = (run(self._cancelled), None)
+        except BaseException as error:  # noqa: BLE001 -- re-raised by result(), on the caller's thread
+            self._outcome = ([], error)
+
+    def result(self) -> list[str]:
+        self._thread.join()
+        value, error = self._outcome
+        if error is not None:
+            raise error
+        return value
+
+    def cancel(self) -> None:
+        """Stop between batches and wait for the batch in hand; the result is discarded."""
+        self._cancelled.set()
+        self._thread.join()
+
+
 def history_failures(
     root: Path,
     *,
@@ -1780,14 +1838,36 @@ def history_failures(
     revisions = HISTORY_REFS if scope is None else scope.revisions
     failures = _history_precondition_failures(root, shallow_matters=scope is None)
     try:
-        history_paths = {
-            path
-            for paths in _changed_blob_paths(root, (), scope=scope).values()
-            for path in paths
-            if path
-        }
+        inventory = _blob_inventory(root, scope)
     except (RuntimeError, UnicodeError) as error:
         return [str(error)]
+    history_paths = {path for paths in inventory.paths.values() for path in paths if path}
+    # Reading and judging every historical blob is the longest stage and needs nothing
+    # the others produce, while they mostly wait on Git. It starts now and is collected
+    # last, so the findings keep the order they always had.
+    blob_scan = _ThreadedScan(
+        lambda cancelled: _blob_history_failures(
+            root,
+            names=names,
+            owner_workflows=owner_workflows,
+            private_patterns=private_patterns,
+            forbidden_suffixes=forbidden_suffixes,
+            private_paths=private_paths,
+            private_files=private_files,
+            private_suffixes=private_suffixes,
+            allowed_users=allowed_users,
+            forbid_ai_attribution=forbid_ai_attribution,
+            forbid_internal_planning=forbid_internal_planning,
+            forbid_machine_observations=forbid_machine_observations,
+            providers=provider_surfaces,
+            inspect_archives=inspect_archives,
+            exclude=exclude,
+            forbid_png_metadata=forbid_png_metadata,
+            scope=scope,
+            inventory=inventory,
+            cancelled=cancelled,
+        )
+    )
     for relative in sorted(history_paths):
         excluded = any(fnmatch(relative, pattern) for pattern in exclude)
         if excluded:
@@ -1928,6 +2008,7 @@ def history_failures(
     reachable = _git(root, ["rev-list", *revisions])
     if reachable.returncode != 0:
         failures.append(reachable.stderr.strip() or "Git revision inventory failed")
+        blob_scan.cancel()
         return failures
     commits = [commit for commit in reachable.stdout.splitlines() if commit]
     failures.extend(
@@ -1999,25 +2080,5 @@ def history_failures(
                 if finding not in seen:
                     seen.add(finding)
                     failures.append(finding)
-    failures.extend(
-        _blob_history_failures(
-            root,
-            names=names,
-            owner_workflows=owner_workflows,
-            private_patterns=private_patterns,
-            forbidden_suffixes=forbidden_suffixes,
-            private_paths=private_paths,
-            private_files=private_files,
-            private_suffixes=private_suffixes,
-            allowed_users=allowed_users,
-            forbid_ai_attribution=forbid_ai_attribution,
-            forbid_internal_planning=forbid_internal_planning,
-            forbid_machine_observations=forbid_machine_observations,
-            providers=provider_surfaces,
-            inspect_archives=inspect_archives,
-            exclude=exclude,
-            forbid_png_metadata=forbid_png_metadata,
-            scope=scope,
-        )
-    )
+    failures.extend(blob_scan.result())
     return failures

@@ -6,6 +6,7 @@ import os
 import stat
 import subprocess
 import tempfile
+import threading
 import unittest
 import zipfile
 from collections.abc import Sequence
@@ -1975,6 +1976,117 @@ class HistoryTests(unittest.TestCase):
             ),
             failures,
         )
+
+
+BLOB_STAGE = {
+    "names": (),
+    "owner_workflows": (),
+    "private_patterns": (),
+    "forbidden_suffixes": (),
+    "private_paths": (),
+    "private_files": (),
+    "private_suffixes": (),
+    "allowed_users": (),
+    "forbid_ai_attribution": False,
+    "forbid_internal_planning": False,
+    "forbid_machine_observations": False,
+    "providers": {},
+    "inspect_archives": True,
+    "exclude": (),
+}
+
+
+def _many_blobs() -> dict[str, str]:
+    """More blobs than one read batch, with a leak every few dozen of them."""
+    return {
+        f"docs/{index:03}.md": (f"{LEAK}# {index}\n" if index % 37 == 0 else f"# page {index}\n")
+        for index in range(300)
+    }
+
+
+def _blob_scan_threads() -> list[threading.Thread]:
+    return [t for t in threading.enumerate() if t.name == "relkit-history-blobs"]
+
+
+class HistoryBlobStageTests(unittest.TestCase):
+    """The blob stage runs beside the other history stages and is collected last."""
+
+    def test_findings_keep_their_order_and_the_blob_stage_runs_on_its_own_thread(self) -> None:
+        files = _many_blobs()
+        self.assertGreater(len(files), audit.HISTORY_BATCH_OBJECTS)
+        threads: list[str] = []
+        blob_stage = audit._blob_history_failures
+
+        def record(*args, **kwargs):
+            threads.append(threading.current_thread().name)
+            return blob_stage(*args, **kwargs)
+
+        with _repository(files) as name:
+            root = Path(name)
+            _commit(root, "test: C:\\Users\\someone\\x")
+            serial = blob_stage(root, **BLOB_STAGE)
+            with patch.object(audit, "_blob_history_failures", side_effect=record):
+                failures = audit.history_failures(root)
+
+        blobs = [item for item in failures if item.startswith("history blob ")]
+        self.assertEqual(["relkit-history-blobs"], threads)
+        self.assertEqual(len(range(0, 300, 37)), len(blobs))
+        self.assertEqual(serial, blobs)
+        self.assertEqual(blobs, failures[-len(blobs) :])
+        self.assertGreater(len(failures), len(blobs))
+        self.assertEqual([], _blob_scan_threads())
+
+    def test_an_exception_in_the_blob_stage_reaches_the_caller(self) -> None:
+        with _repository(_many_blobs()) as name:
+            root = Path(name)
+            _commit(root)
+            with (
+                patch.object(audit, "_history_batches", side_effect=ZeroDivisionError("stage")),
+                self.assertRaisesRegex(ZeroDivisionError, "stage"),
+            ):
+                audit.history_failures(root)
+
+        self.assertEqual([], _blob_scan_threads())
+
+    def test_a_failed_blob_read_is_still_reported_as_a_finding(self) -> None:
+        with _repository(_many_blobs()) as name:
+            root = Path(name)
+            _commit(root)
+            with patch.object(audit, "_batch_blobs", side_effect=RuntimeError("reader failed")):
+                failures = audit.history_failures(root)
+
+        self.assertEqual("reader failed", failures[-1])
+
+    def test_a_history_that_cannot_be_listed_stops_the_blob_stage_and_drops_its_findings(
+        self,
+    ) -> None:
+        original = audit._git
+
+        def git(repository, arguments, **options):
+            if arguments[0] == "rev-list":
+                return subprocess.CompletedProcess(arguments, 128, stdout="", stderr="fatal: boom")
+            return original(repository, arguments, **options)
+
+        with _repository(_many_blobs()) as name:
+            root = Path(name)
+            _commit(root)
+            with patch.object(audit, "_git", side_effect=git):
+                failures = audit.history_failures(root)
+
+        self.assertIn("fatal: boom", failures)
+        self.assertEqual([], [item for item in failures if item.startswith("history blob ")])
+        self.assertEqual([], _blob_scan_threads())
+
+    def test_the_history_is_listed_once_for_both_stages(self) -> None:
+        with _repository(_many_blobs()) as name:
+            root = Path(name)
+            _commit(root)
+            with patch.object(
+                audit, "_changed_blob_paths", wraps=audit._changed_blob_paths
+            ) as listed:
+                audit.history_failures(root)
+
+        self.assertEqual(1, listed.call_count)
 
 
 if __name__ == "__main__":
