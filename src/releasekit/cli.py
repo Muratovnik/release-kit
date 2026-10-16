@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import contextlib
 import json
+import os
 import sys
 import tempfile
 import time
@@ -614,6 +615,37 @@ def _spelled_command(argv: Sequence[str], parser: argparse.ArgumentParser) -> st
     return "usage"
 
 
+@contextlib.contextmanager
+def _stdout_is_the_envelope():
+    """Keep everything but the one JSON object off stdout, including child processes.
+
+    Redirecting `sys.stdout` covers Python's own writes. A child that inherits the
+    standard handle, or a native extension writing to descriptor 1, bypasses it, so the
+    descriptor itself is pointed at stderr for the duration and restored afterwards.
+    Only the process's real stdout is touched: a caller that already replaced
+    `sys.stdout` has captured it and owns what that stream is.
+    """
+    descriptor = None
+    if sys.stdout is sys.__stdout__ and sys.__stdout__ is not None:
+        try:
+            sys.stdout.flush()
+            sys.stderr.flush()
+            descriptor = os.dup(1)
+            os.dup2(2, 1)
+        except (OSError, ValueError):
+            descriptor = None
+    try:
+        with contextlib.redirect_stdout(sys.stderr):
+            yield
+    finally:
+        if descriptor is not None:
+            try:
+                sys.stderr.flush()
+                os.dup2(descriptor, 1)
+            finally:
+                os.close(descriptor)
+
+
 class _Invocation:
     """What `main` learns while running, for the one summary line it ends with."""
 
@@ -666,7 +698,7 @@ def _execute(argv: list[str], json_mode: bool, invocation: _Invocation) -> int:
             invocation.status = "error"
             return 1
         return code
-    with contextlib.redirect_stdout(sys.stderr):
+    with _stdout_is_the_envelope():
         try:
             if arguments.command == "update" and not arguments.dry_run and not arguments.yes:
                 result.error("confirmation_required", "JSON updates require explicit --yes")
