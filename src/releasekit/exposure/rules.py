@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import posixpath
 import re
+import threading
 import unicodedata
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
@@ -157,27 +158,96 @@ def _normalized(text: str) -> str:
     return "".join(character for character in normalized if unicodedata.category(character) != "Cf")
 
 
-class _Prepared(NamedTuple):
-    """One file's text in the three forms the rules compare against.
+class _Prepared:
+    """One file's text in the forms the rules compare against.
 
     Building these costs a pass over the whole file, and every declared name, owner
     workflow and provider used to trigger another one. They do not depend on what is
-    being searched for, so they are built once per text and handed around.
+    being searched for, so they are built once per text and handed around. The two
+    forms most texts never need are built on first use.
     """
 
-    normalized: str
-    folded: str
-    collapsed: str
+    __slots__ = ("_collapsed", "_scan", "folded", "normalized")
+
+    def __init__(self, normalized: str, folded: str) -> None:
+        self.normalized = normalized
+        self.folded = folded
+        self._collapsed: str | None = None
+        self._scan: str | None = None
+
+    @property
+    def collapsed(self) -> str:
+        """The folded text with every whitespace run reduced to one space."""
+        if self._collapsed is None:
+            self._collapsed = WHITESPACE.sub(" ", self.folded)
+        return self._collapsed
+
+    @property
+    def scan(self) -> str:
+        """The text a literal prefilter looks in; see `_Gate`."""
+        if self._scan is None:
+            self._scan = _gate_text(self.folded)
+        return self._scan
+
+
+# Spelled by code point: the formatter rewrites an escape into the bare character, and
+# a combining mark in source is invisible to a reader.
+DOTLESS_I = chr(0x131)
+LOWERCASE_I_WITH_DOT = "i" + chr(0x307)  # what casefolding makes of U+0130
+
+
+def _gate_text(folded: str) -> str:
+    """Fold the two letters whose case-insensitive match casefolding misses.
+
+    An ignore-case expression treats the dotless U+0131 and the dotted capital U+0130
+    as an `i`, but casefolding leaves the first alone and turns the second into an `i`
+    plus a combining dot. A literal containing `i` would then be absent from the folded
+    text while the expression still matches it. Every other ASCII letter folds to
+    itself from each character an ignore-case expression equates with it; the test
+    suite sweeps all of Unicode to keep that true on each supported Python.
+    """
+    return folded.replace(DOTLESS_I, "i").replace(LOWERCASE_I_WITH_DOT, "i")
+
+
+class _Gate(NamedTuple):
+    """Literals every match of an expression must contain, checked before it runs.
+
+    Each group is a set of alternatives of which at least one must occur in the text,
+    and every group must be satisfied. A gate only rules out; it names what a match
+    cannot do without, so an expression it rejects would have found nothing and one it
+    admits still decides for itself. Needles are lowercase and are looked for in
+    `_Prepared.scan`, a plain substring search several times faster than running the
+    expression itself over a large text. Expressions that never match a given text
+    are the common case, which is why the gate pays for itself.
+    """
+
+    groups: tuple[tuple[str, ...], ...]
+
+    def admits(self, haystack: str) -> bool:
+        return all(any(needle in haystack for needle in group) for group in self.groups)
 
 
 # The same text is prepared for several rules in a row - wrapped values, workflows,
 # then every structural rule - and each preparation is a full pass. The forms depend on
-# the text alone, so the latest few are kept for this process.
-@lru_cache(maxsize=4)
+# the text alone, so the latest few are kept. They are kept per thread: a history scan
+# judges files on one thread while another reads commit messages, and one shared cache
+# lets the small texts evict the large file in the middle of its own rules.
+_RECENT_TEXTS = 4
+_recent = threading.local()
+
+
 def _prepare(text: str) -> _Prepared:
-    normalized = _normalized(text)
-    folded = normalized.casefold()
-    return _Prepared(normalized, folded, WHITESPACE.sub(" ", folded))
+    cache: dict[str, _Prepared] | None = getattr(_recent, "cache", None)
+    if cache is None:
+        cache = _recent.cache = {}
+    prepared = cache.get(text)
+    if prepared is None:
+        normalized = _normalized(text)
+        prepared = _Prepared(normalized, normalized.casefold())
+        if len(cache) >= _RECENT_TEXTS:
+            del cache[next(iter(cache))]
+        cache[text] = prepared
+    return prepared
 
 
 @lru_cache(maxsize=4096)
@@ -239,9 +309,82 @@ MACHINE_OBSERVATION_PATTERNS = (
 )
 
 
+# Prefilters for the expressions above, each naming what a match cannot do without
+# (see `_Gate`). A history scan runs every expression over every historical file, and
+# almost none of them match, so the time goes to expressions that find nothing.
+#
+# The home-directory expressions run on a text whose escaped slashes are plain, so
+# their needles are looked for in that form. Each separator is part of a needle because
+# the expressions require one next to the directory name.
+_WINDOWS_PROFILE_DIRECTORIES = (
+    "users/",
+    "users\\",
+    "documents and settings/",
+    "documents and settings\\",
+)
+_POSIX_HOME_DIRECTORIES = ("/users/", "/home/")
+USER_ROOT_GATES: tuple[tuple[re.Pattern[str], _Gate], ...] = (
+    (WINDOWS_USER_ROOT, _Gate((_WINDOWS_PROFILE_DIRECTORIES,))),
+    (UNC_USER_ROOT, _Gate((_WINDOWS_PROFILE_DIRECTORIES,))),
+    (WINDOWS_COMPAT_USER_ROOT, _Gate((_WINDOWS_PROFILE_DIRECTORIES,))),
+    (POSIX_USER_ROOT, _Gate((_POSIX_HOME_DIRECTORIES,))),
+    (FILE_URI_USER_ROOT, _Gate((("file:",), _POSIX_HOME_DIRECTORIES))),
+)
+# Joined from two pieces because a quoted `/root` in this source would itself read as
+# a root home directory to the audit that guards the packaged copy of this file.
+_ROOT_DIRECTORY = "/" + "root"
+ROOT_HOME_GATES: tuple[tuple[re.Pattern[str], _Gate], ...] = (
+    (ROOT_HOME, _Gate(((_ROOT_DIRECTORY,),))),
+    (FILE_URI_ROOT_HOME, _Gate((("file:",), (_ROOT_DIRECTORY,)))),
+)
+# Both expressions read a relative path that climbs out, and neither can without `../`.
+# They run on the text as written, which no folding changes for a needle of punctuation.
+CLIMBING_PATH_NEEDLE = "../"
+# One needle per alternative of AI_VENDOR; the `agent` of "ai agent" and "coding agent"
+# is the only part of those two names that every spelling shares.
+AI_VENDOR_NEEDLES = (
+    "claude",
+    "codex",
+    "chatgpt",
+    "copilot",
+    "gemini",
+    "cursor",
+    "windsurf",
+    "devin",
+    "agent",
+)
+AI_ATTRIBUTION_GATES: tuple[_Gate, ...] = (
+    _Gate(
+        (
+            ("co-authored-by:", "generated-by:", "reviewed-by:", "tested-by:"),
+            AI_VENDOR_NEEDLES,
+        )
+    ),
+    _Gate(
+        (
+            ("generated", "written", "reviewed", "tested", "created", "assisted"),
+            AI_VENDOR_NEEDLES,
+        )
+    ),
+)
+INTERNAL_PLANNING_GATES: tuple[_Gate, ...] = (
+    _Gate((("card",), (":",))),
+    _Gate((("card",), ("#",))),
+    _Gate((("<!--",), ("kb:",))),
+)
+MACHINE_OBSERVATION_GATES: tuple[_Gate, ...] = (
+    _Gate((("workstation",),)),
+    _Gate((("workstation", "installation"),)),
+)
+
+
 def _wrapped_declared_name(prepared: _Prepared, names: Sequence[str]) -> bool:
+    # Wrapping only reflows whitespace, so a value hidden by it still has every one of
+    # its words in the text; the collapsed copy is built only for a text that has them.
     return any(
-        _folded_value(name) not in prepared.folded and _collapsed_value(name) in prepared.collapsed
+        _folded_value(name) not in prepared.folded
+        and all(word in prepared.folded for word in _folded_value(name).split())
+        and _collapsed_value(name) in prepared.collapsed
         for name in names
         if len(name.split()) > 1
     )
@@ -319,26 +462,24 @@ def text_findings(
     prepared = _prepare(text)
     searchable = prepared.normalized
     path_text = searchable.replace("\\/", "/")
-    for pattern in (
-        WINDOWS_USER_ROOT,
-        UNC_USER_ROOT,
-        WINDOWS_COMPAT_USER_ROOT,
-        POSIX_USER_ROOT,
-        FILE_URI_USER_ROOT,
-    ):
-        if any(
+    scan = prepared.scan
+    path_scan = scan.replace("\\/", "/")
+    for pattern, gate in USER_ROOT_GATES:
+        if gate.admits(path_scan) and any(
             not _is_placeholder(match.group(1), allowed) for match in pattern.finditer(path_text)
         ):
             found[HOME_DIRECTORY] = ""
             break
-    if ROOT_HOME.search(path_text) or FILE_URI_ROOT_HOME.search(path_text):
+    if any(
+        gate.admits(path_scan) and pattern.search(path_text) for pattern, gate in ROOT_HOME_GATES
+    ):
         found[HOME_DIRECTORY] = ""
 
     checks_relative_paths = (
         posixpath.splitext(relative_path)[1].lower() not in PROSE_SUFFIXES
         and relative_path != "relkit.toml"
     )
-    if checks_relative_paths:
+    if checks_relative_paths and CLIMBING_PATH_NEEDLE in searchable:
         directory = posixpath.dirname(relative_path)
         if any(
             _escapes(match.group(1), "") for match in VARIABLE_ANCHORED_PATH.finditer(searchable)
@@ -355,15 +496,20 @@ def text_findings(
         if re.search(pattern.expression, searchable):
             found.setdefault(pattern.kind, "matched a private owner rule")
     if forbid_internal_planning and any(
-        pattern.search(searchable) for pattern in INTERNAL_PLANNING_PATTERNS
+        gate.admits(scan) and pattern.search(searchable)
+        for pattern, gate in zip(INTERNAL_PLANNING_PATTERNS, INTERNAL_PLANNING_GATES, strict=True)
     ):
         found[INTERNAL_PLANNING] = "internal card or knowledge-base reference"
     if forbid_ai_attribution and any(
-        pattern.search(searchable) for pattern in AI_ATTRIBUTION_PATTERNS
+        gate.admits(scan) and pattern.search(searchable)
+        for pattern, gate in zip(AI_ATTRIBUTION_PATTERNS, AI_ATTRIBUTION_GATES, strict=True)
     ):
         found[AI_ATTRIBUTION] = "machine authorship or review attribution"
     if forbid_machine_observations and any(
-        pattern.search(searchable) for pattern in MACHINE_OBSERVATION_PATTERNS
+        gate.admits(scan) and pattern.search(searchable)
+        for pattern, gate in zip(
+            MACHINE_OBSERVATION_PATTERNS, MACHINE_OBSERVATION_GATES, strict=True
+        )
     ):
         found[MACHINE_OBSERVATION] = "observation about the owner's workstation"
 
