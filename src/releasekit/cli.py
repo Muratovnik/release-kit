@@ -260,17 +260,22 @@ def _notes(arguments: argparse.Namespace) -> int:
         print(f"relkit notes: {message}", file=sys.stderr)
         return 2
     try:
-        policy = config_module.load(root, required=False).changelog
+        settings = config_module.load(root, required=False)
     except config_module.ConfigError as error:
         arguments.result.error("configuration_error", error)
         print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
+    policy = settings.changelog
     if arguments.draft:
         # A draft is held to the profile the published entry must satisfy, so a
         # generator that emits the wrong layout fails here rather than at release.
         try:
             text = generation.draft(
-                policy, arguments.version, root=root, from_tag=arguments.from_tag
+                policy,
+                arguments.version,
+                root=root,
+                from_tag=arguments.from_tag,
+                repository=settings.release.repository if settings.release else "",
             )
         except processes.CleanupError as error:
             arguments.result.error("generation_cleanup_unconfirmed", error)

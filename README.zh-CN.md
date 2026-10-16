@@ -114,11 +114,12 @@ python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-down
 
 ```toml
 [exposure]
-betterleaks_config = ".betterleaks.toml"
 required_ignores = [".cache"]
 ```
 
-创建 `.betterleaks.toml`：
+这就是全部策略。没有 `.betterleaks.toml` 时，密钥扫描使用 Betterleaks 所维护的默认规则，
+因此起步不需要任何扫描器配置。只有在要改变扫描行为时才添加该文件，例如固定
+`betterleaksMinVersion` 或加入范围很窄的允许项：
 
 ```toml
 title = "project secret scanning"
@@ -128,6 +129,8 @@ betterleaksMinVersion = "1.8.1"
 useDefault = true
 ```
 
+可用 `betterleaks_config` 指定其他路径；所配置的文件不存在时，同样使用默认规则。
+
 在**运行审计之前**把 `.cache/` 加入项目的 `.gitignore`，保留已有规则，并创建该目录，
 这样第一次审计就会在任何扫描器向其写入之前先验证「仅目录」的忽略规则：
 
@@ -135,8 +138,9 @@ useDefault = true
 python -c "from pathlib import Path; Path('.cache').mkdir(exist_ok=True)"
 ```
 
-这些起始文件原样存放在 [examples/audit](examples/audit/README.md)（英文）中。本示例没有
-关闭任何扫描器。然后：
+起始文件在 [examples/minimal](examples/minimal/relkit.toml)：只有一个文件，同时声明了
+`relkit notes --draft` 使用的更新日志生成器。上面的扫描器策略在
+[examples/audit](examples/audit/README.md)（英文）中。两个示例都没有关闭任何扫描器。然后：
 
 ```text
 relkit audit

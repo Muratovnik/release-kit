@@ -125,11 +125,13 @@ python -c "import hashlib,pathlib,shutil,sys; s=pathlib.Path('.cache/relkit-down
 
 ```toml
 [exposure]
-betterleaks_config = ".betterleaks.toml"
 required_ignores = [".cache"]
 ```
 
-Создайте `.betterleaks.toml`:
+Это вся политика. Без `.betterleaks.toml` проверка секретов использует поддерживаемые
+правила Betterleaks по умолчанию, так что для начала настройка сканера не нужна. Добавляйте
+файл только чтобы изменить проверку, например закрепить `betterleaksMinVersion` или добавить
+узкий список исключений:
 
 ```toml
 title = "project secret scanning"
@@ -139,6 +141,9 @@ betterleaksMinVersion = "1.8.1"
 useDefault = true
 ```
 
+Другой путь задаётся в `betterleaks_config`; настроенный, но несуществующий файл означает то
+же значение по умолчанию.
+
 Добавьте `.cache/` в `.gitignore` проекта **до запуска аудита**, сохранив существующие
 правила, и создайте каталог, чтобы первый аудит проверил игнорирование только каталога
 раньше, чем в него запишет любой сканер:
@@ -147,8 +152,10 @@ useDefault = true
 python -c "from pathlib import Path; Path('.cache').mkdir(exist_ok=True)"
 ```
 
-Ровно эти стартовые файлы лежат и в [examples/audit](examples/audit/README.md) (English).
-Ни один сканер в этом примере не отключён. Затем:
+Стартовый файл лежит в [examples/minimal](examples/minimal/relkit.toml): один файл, который
+заодно объявляет генератор журнала изменений для `relkit notes --draft`. Политика сканера
+выше лежит в [examples/audit](examples/audit/README.md) (English). Ни один сканер в этих
+примерах не отключён. Затем:
 
 ```text
 relkit audit

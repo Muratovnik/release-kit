@@ -97,8 +97,12 @@ every event except a schedule. A job whose layout the audit cannot read, such as
 flow mapping or a merge key, fails as `hosted-ci` instead of passing. Only the current
 tree is checked.
 
-The defaults enable secret/link checks. A normal `.betterleaks.toml` extends
-maintained defaults:
+The defaults enable secret/link checks. A project needs no `.betterleaks.toml`:
+without one, Betterleaks scans with its maintained default rules, explicitly selected
+so the result does not depend on a configuration found in the environment or in your
+home directory. The same applies when `betterleaks_config` names a file that does not
+exist. The guard pins that absence, so adding the file later is a reviewed change, not
+a silent one. A normal `.betterleaks.toml` extends maintained defaults:
 
 ```toml
 title = "project secret scanning"

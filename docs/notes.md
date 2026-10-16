@@ -80,9 +80,19 @@ uses a level-one heading for a non-patch release and can add sections for breaki
 `refactor`, `docs` and other types. Adapt those writer choices to this profile, or use
 `strict` when the project's own layout is intentional.
 
-`git-cliff` reads its own `cliff.toml` from the project root, so the template stays
-yours. A starter that satisfies the profile is in
-[examples/changelog](../examples/changelog/cliff.toml). Whatever the generator emits,
+With the `conventional-changelog` profile, `cliff.toml` is optional. Without a
+`cliff.toml`, `.cliff.toml` or `.config/cliff.toml` in the project, and without
+`GIT_CLIFF_CONFIG` set, release-kit passes git-cliff a built-in template that produces
+this profile's layout. Entries link to the GitHub repository named by `[release]
+repository` when it is set, otherwise by the `origin` remote; if neither names a GitHub
+repository the draft stops and asks for one of them or for your own template. The
+built-in run is offline: it reads no hosting metadata, so a private or unpublished
+repository drafts as well as a public one.
+
+To change the template, copy the starter in
+[examples/changelog](../examples/changelog/cliff.toml) to the project root. From then on
+`git-cliff` reads that file and the template is yours; the built-in one is not merged
+with it. Other profiles never use the built-in template. Whatever the generator emits,
 `--draft` refuses it unless it satisfies the configured profile.
 
 By default, git-cliff drafts the changes after the latest local tag. To select the

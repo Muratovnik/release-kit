@@ -121,11 +121,13 @@ Create `relkit.toml`, merging deliberately if the file already exists:
 
 ```toml
 [exposure]
-betterleaks_config = ".betterleaks.toml"
 required_ignores = [".cache"]
 ```
 
-Create `.betterleaks.toml`:
+That is the whole policy. Without a `.betterleaks.toml`, the secret scan uses
+Betterleaks' maintained default rules, so no scanner configuration is needed to start.
+Add the file only to change the scan, for example to pin `betterleaksMinVersion` or to
+add a narrow allowlist:
 
 ```toml
 title = "project secret scanning"
@@ -135,6 +137,9 @@ betterleaksMinVersion = "1.8.1"
 useDefault = true
 ```
 
+Name another path with `betterleaks_config`; a configured file that does not exist
+means the same default.
+
 Add `.cache/` to the project's `.gitignore` **before running the audit**, keeping any
 existing rules, and create the directory so the first audit validates the directory-only
 ignore before any scanner writes to it:
@@ -143,8 +148,10 @@ ignore before any scanner writes to it:
 python -c "from pathlib import Path; Path('.cache').mkdir(exist_ok=True)"
 ```
 
-These exact starter files also live in [examples/audit](examples/audit/README.md). No
-scanner is disabled in this example. Then:
+The starter lives in [examples/minimal](examples/minimal/relkit.toml): one file, which
+also declares the changelog generator for `relkit notes --draft`. The scanner policy
+above is in [examples/audit](examples/audit/README.md). No scanner is disabled in
+either. Then:
 
 ```text
 relkit audit

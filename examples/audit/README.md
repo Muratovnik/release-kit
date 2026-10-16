@@ -1,8 +1,12 @@
 # Minimal audit policy
 
 These are the exact files used by the [CLI quick start](../../README.md#first-check-in-an-existing-project).
-Copy `relkit.toml` and `.betterleaks.toml` to the target Git root and merge `.cache/`
-into its `.gitignore`; do not overwrite an existing policy or ignore file blindly.
+Copy `relkit.toml` to the target Git root and merge `.cache/` into its `.gitignore`; do
+not overwrite an existing policy or ignore file blindly. `.betterleaks.toml` is optional:
+without it Betterleaks scans with its maintained default rules, which is what this file
+selects explicitly. Copy it only to have a place to pin `betterleaksMinVersion` or add a
+narrow allowlist. For a project that also drafts release notes, see
+[examples/minimal](../minimal/relkit.toml).
 Place a reviewed `relkit.pyz` at `.github/relkit.pyz` as described in that guide.
 Before the first audit, create the ignored directory explicitly:
 

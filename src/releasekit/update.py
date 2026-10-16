@@ -395,10 +395,17 @@ def _load_receipt(path: Path) -> dict[str, object]:
     return receipt
 
 
+def _input_digest(root: Path, relative: str, *, optional: bool = False) -> str:
+    path = root / relative
+    if optional and not os.path.lexists(path):
+        return protection.ABSENT
+    return protection._sha256(_safe_path(path, root))
+
+
 def _check_inputs(root: Path, inputs: dict[str, str]) -> None:
     for relative, digest in inputs.items():
-        path = _safe_path(root / relative, root)
-        if protection._sha256(path) != digest:
+        # A pinned absence is checked as one, so the file appearing mid-update is refused.
+        if _input_digest(root, relative, optional=digest == protection.ABSENT) != digest:
             raise UpdateError(
                 f"guarded input changed during update: {relative}; refusing to re-pin it"
             )
@@ -598,8 +605,9 @@ def run(
                 f"(sha256:{pinned_projection}) than the working tree holds (sha256:{old.sha256}); "
                 "review that file, then run `relkit update --refresh-guard`"
             )
+        optional = protection.optional_inputs(settings)
         inputs = {
-            relative: protection._sha256(_safe_path(root / relative, root))
+            relative: _input_digest(root, relative, optional=relative in optional)
             for relative in protection.guarded_inputs(settings)
             if relative != PROJECTION
         }
