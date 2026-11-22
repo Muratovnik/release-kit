@@ -541,6 +541,22 @@ class CommitGuardInstallTests(CommitRepository):
         self.assertIn(f"runs {self.hook().parent / protection.COMMIT_COPY}", out.getvalue())
         self.assertIn("owner commit guard is installed", out.getvalue())
 
+    def test_a_dry_run_names_what_it_would_write_and_the_plan_to_apply(self) -> None:
+        # The reviewed plan is what --plan-hash binds; a dry run must show it.
+        plan = protection.install_plan(self.root)
+        out, err = io.StringIO(), io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = cli.main(["protect", "install", "--dry-run", "--root", str(self.root)])
+
+        self.assertEqual(0, code, err.getvalue())
+        self.assertIn(f"would write {plan['path']}", out.getvalue())
+        self.assertIn(
+            f"would write {self.hook()} (runs {self.hook().parent / protection.COMMIT_COPY})",
+            out.getvalue(),
+        )
+        self.assertIn(f"--plan-hash {plan['plan_sha256']}", out.getvalue())
+        self.assertFalse(self.hook().exists())
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -253,6 +253,14 @@ def _protect(arguments: argparse.Namespace) -> int:
                 protection.stale_plan_message(arguments.plan_hash, plan)
             )
         if arguments.dry_run:
+            # The plan hash binds what is reviewed here, so the review has to show it.
+            print(f"relkit protect: would write {plan['path']}")
+            commit = plan["commit_guard"]
+            if commit["status"] == "install":
+                print(f"relkit protect: would write {commit['path']} (runs {commit['copy_path']})")
+            else:
+                print(f"relkit protect: commit guard would be skipped: {commit['reason']}")
+            print(f"relkit protect: apply this plan with --plan-hash {plan['plan_sha256']}")
             print("relkit protect: dry run; no hook written")
             return 0
         path = protection.install(root, plan_hash=plan["plan_sha256"])
