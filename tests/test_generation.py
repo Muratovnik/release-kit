@@ -84,6 +84,23 @@ class GeneratorConfigTests(unittest.TestCase):
     def test_no_generator_leaves_the_project_on_curated_entries(self):
         self.assertIsNone(self.policy('[changelog]\nprofile = "strict"\n').generator)
 
+    def test_draft_units_default_to_commits_and_accept_first_parent(self):
+        self.assertEqual("commits", self.policy('[changelog]\nprofile = "strict"\n').units)
+        for units in ("commits", "first-parent"):
+            with self.subTest(units=units):
+                self.assertEqual(units, self.policy(f'[changelog]\nunits = "{units}"\n').units)
+
+    def test_unknown_draft_units_are_refused_with_the_allowed_values(self):
+        for value in ('"merges"', '"First-Parent"', '""', "1", '["first-parent"]'):
+            with (
+                self.subTest(value=value),
+                self.assertRaisesRegex(
+                    config.ConfigError,
+                    r"^(changelog\.units must be one of: commits, first-parent|units must be a string)$",
+                ),
+            ):
+                self.policy(f"[changelog]\nunits = {value}\n")
+
 
 class DraftTests(unittest.TestCase):
     def setUp(self):
