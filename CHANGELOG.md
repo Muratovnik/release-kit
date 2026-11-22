@@ -2,6 +2,39 @@
 
 ## [Unreleased]
 
+## [0.34.0](https://github.com/Muratovnik/release-kit/compare/v0.33.0...v0.34.0) (2026-11-22)
+
+### Highlights
+
+A private value can now be stopped before the commit that holds it is made.
+`relkit protect install` adds a `commit-msg` guard that runs `relkit audit --commit`:
+it judges only what the commit adds (added lines, new path names, changed binary
+files and the message) against the private owner policy. A commit through the guard
+took 0.7 to 0.8 s in the repositories it was measured in, where running the full
+owner audit from a hook took 8.6 to 14 s. The guard runs a copy of the projection
+taken at install time, so every branch and worktree is judged by the same code.
+After updating, run `relkit protect install` once to add it. A `commit-msg` hook
+release-kit did not write is left alone and can call
+`relkit audit --commit --owner --message "$1"` itself; where `core.hooksPath` points
+elsewhere, that `commit-msg` should declare
+`# git-common-dir-hook-dispatcher: commit-msg v1`, or `relkit protect check` warns.
+
+A private root named by `RELKIT_PRIVATE_ROOT` or the local `releasekit.privateRoot`
+setting now applies to every `audit` scope, to `exposure` and to the release
+coordinator without `--owner`. On an owner checkout an ordinary
+`relkit audit --history` therefore reports owner findings it did not report before.
+A checkout with no configured root, such as a public clone or CI, behaves as before,
+and the sibling `../<name>-private` convention still needs `--owner`.
+
+### Features
+
+- **protect:** check every commit against the owner policy before it is made ([0986da9](https://github.com/Muratovnik/release-kit/commit/0986da9cbe0ab41032a39e59cb8f3c2675389fe0))
+
+### Bug Fixes
+
+- **update:** refuse cleanly when the confirmation prompt meets end of input ([2001b45](https://github.com/Muratovnik/release-kit/commit/2001b4586f5f8d3dda235d390f1011cb67680a94))
+- **protect:** show what a dry run would write and the plan hash to apply ([3f8b790](https://github.com/Muratovnik/release-kit/commit/3f8b7902470458c5092dda649b3d4e5cb11972cd))
+
 ## [0.33.0](https://github.com/Muratovnik/release-kit/compare/v0.32.0...v0.33.0) (2026-10-16)
 
 ### Highlights
