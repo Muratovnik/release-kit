@@ -280,7 +280,8 @@ python .github/relkit.pyz protect check
 push 时，那时包含它的历史已经不得不重写。它运行安装时取得的投影副本拷贝
 `<git-common-dir>/hooks/relkit-commit-guard.pyz`，因此每个分支和工作树都由同一份已复核的代码
 检查，包括投影副本早于 commit 范围的分支；它不固定其他任何内容，因为它应用的策略位于仓库之外。
-提交通过时它不输出任何内容。`relkit update` 之后请再次运行 `protect install` 以刷新这份拷贝。
+提交通过时它不输出任何内容。合并按它带入所在分支的内容检查。`git cherry-pick`、`git rebase`
+与 `git revert --no-edit` 不会运行 `commit-msg`，它们产生的提交由 pre-push 防护检查。`relkit update` 之后请再次运行 `protect install` 以刷新这份拷贝。
 
 提交防护是提前预警；门禁仍是 pre-push 防护。因此当投影副本早于 0.34.0，或 `commit-msg` 是
 release-kit 未写入的钩子时，`protect install` 会跳过提交防护并说明原因。若要保留这样的钩子，

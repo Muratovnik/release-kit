@@ -326,6 +326,10 @@ class CommitGuardTests(CommitRepository):
         self.assertIsNone(protection.commit_guard_problem(self.root))
 
     def commit(self, *arguments: str, root: Path | None = None) -> subprocess.CompletedProcess[str]:
+        return self.hooked("commit", "-q", *arguments, root=root)
+
+    def hooked(self, *arguments: str, root: Path | None = None) -> subprocess.CompletedProcess[str]:
+        """A Git command that runs the installed hooks with this checkout's source."""
         environment = {
             **os.environ,
             "PATH": str(Path(sys.executable).parent) + os.pathsep + os.environ.get("PATH", ""),
@@ -333,7 +337,7 @@ class CommitGuardTests(CommitRepository):
         }
         environment.pop(owner.PRIVATE_ROOT_ENV, None)
         return subprocess.run(
-            ["git", "commit", "-q", *arguments],
+            ["git", *arguments],
             cwd=root or self.root,
             check=False,
             capture_output=True,
@@ -389,6 +393,29 @@ class CommitGuardTests(CommitRepository):
 
         self.assertNotEqual(0, refused.returncode)
         self.assertIn("notes.md: private-value", refused.stderr)
+
+    def test_a_merge_is_judged_by_what_it_brings_into_the_branch(self) -> None:
+        # `git merge` runs commit-msg with the merged index; HEAD is the first parent.
+        self.git("switch", "-q", "-c", "side")
+        self.append("notes.md", f"names {PRIVATE_VALUE}\n")
+        self.committed("docs: a side note made before the guard")
+        self.git("switch", "-q", "main")
+        self.write("other.md", "another note\n")
+        self.git("add", "other.md")
+        self.assertEqual(0, self.commit("-m", "docs: another note").returncode)
+        before = self.head()
+
+        refused = self.hooked("merge", "-q", "--no-ff", "--no-edit", "side")
+
+        self.assertNotEqual(0, refused.returncode)
+        self.assertIn("notes.md: private-value", refused.stderr)
+        self.assertEqual(before, self.head())
+        self.git("merge", "--abort")
+
+        # The side already holds the value, so merging main into it adds nothing to judge.
+        self.git("switch", "-q", "side")
+        merged = self.hooked("merge", "-q", "--no-ff", "--no-edit", "main")
+        self.assertEqual(0, merged.returncode, merged.stderr)
 
     def test_a_linked_worktree_is_guarded_by_the_same_hook(self) -> None:
         linked = self.base / "linked"

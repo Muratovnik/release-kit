@@ -343,8 +343,11 @@ the history holding it already has to be rewritten. It runs a copy of the projec
 taken at install time, `<git-common-dir>/hooks/relkit-commit-guard.pyz`, so every
 branch and worktree is judged by the same reviewed code, including a branch whose
 projection predates the commit scope; it pins nothing else, because the policy it
-applies lives outside the repository. It is silent when a commit passes. Run
-`protect install` again after `relkit update` to refresh the copy.
+applies lives outside the repository. It is silent when a commit passes. A merge
+is judged by what it brings into the branch it is made on. `git cherry-pick`,
+`git rebase` and `git revert --no-edit` do not run `commit-msg`, so the commits
+they make are left to the pre-push guard. Run `protect install` again after
+`relkit update` to refresh the copy.
 
 The commit guard is the early warning; the pre-push guard stays the gate. So
 `protect install` leaves the commit guard out, and says why, when the projection is
