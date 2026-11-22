@@ -130,6 +130,26 @@ def _visible_lines(text: str) -> list[str]:
     return "".join(result).splitlines()
 
 
+def _heading_label(line: str) -> str | None:
+    match = _HEADING.match(line)
+    return normalize(match[1] or match[2]) if match else None
+
+
+def has_entry(changelog: str, version: str) -> bool:
+    """Whether any level-two heading outside code and comments names this version."""
+    version = normalize(version)
+    return any(_heading_label(line) == version for line in _visible_lines(changelog))
+
+
+def first_entry_line(changelog: str) -> int | None:
+    """The zero-based line of the first heading naming a version; `Unreleased` is not one."""
+    for index, line in enumerate(_visible_lines(changelog)):
+        label = _heading_label(line)
+        if label is not None and is_version(label):
+            return index
+    return None
+
+
 def _has_content(lines: list[str]) -> bool:
     return any(
         line.strip()

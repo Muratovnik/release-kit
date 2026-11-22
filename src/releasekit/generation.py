@@ -1,10 +1,11 @@
 """Run a project's declared changelog generator to produce a draft for review.
 
 A draft is not release notes. Publication reads the entry a person reviewed and
-committed. The wrapper validates stdout without inserting it into the changelog or
-authorizing publication. It turns history into a starting point and holds that
-starting point to the same profile the published entry must satisfy. A generator
-that produces an invalid layout is a misconfiguration, not a reason to relax the check.
+committed. The wrapper holds the draft to the same profile the published entry must
+satisfy; a generator that produces an invalid layout is a misconfiguration, not a
+reason to relax the check. On request it also composes the validated entry into the
+changelog file, which still leaves the review and the commit to a person and
+authorizes nothing: publication reads only what was committed.
 
 Two adapters, and the difference between them is who vouches for what runs. A named
 engine is provisioned and verified by release-kit, exactly like the scanners. Anything
@@ -31,7 +32,7 @@ from pathlib import Path
 
 from . import processes, storage, toolchain
 from .config import ChangelogConfig
-from .release.changelog import normalize
+from .release.changelog import first_entry_line, normalize
 
 TIMEOUT = 300
 # Where git-cliff itself looks for a project's configuration, in its own order. When any
@@ -597,3 +598,22 @@ def review_lines(hidden: Iterable[HiddenChange]) -> list[str]:
             lines.append(f"  {change.merge_id[:7]} {change.merge_subject}")
             lines.extend(f"    {commit.id[:7]} {commit.subject}" for commit in change.commits)
     return lines
+
+
+def compose(changelog: str, entry: str) -> str:
+    """Insert an entry before the first version entry, in the changelog's newline style.
+
+    The title and any `Unreleased` section stay above it. Without a version entry the
+    new one goes at the end. Nothing else in the file is touched.
+    """
+    newline = "\r\n" if "\r\n" in changelog else "\n"
+    block = newline.join(entry.replace("\r\n", "\n").rstrip("\n").split("\n")) + newline
+    index = first_entry_line(changelog)
+    lines = changelog.splitlines(keepends=True)
+    head = changelog if index is None else "".join(lines[:index])
+    tail = "" if index is None else "".join(lines[index:])
+    if head and not head.endswith(("\n", "\r")):
+        head += newline
+    if head.strip() and not head.endswith(newline + newline):
+        head += newline
+    return head + block + (newline + tail if tail else "")

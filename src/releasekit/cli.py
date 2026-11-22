@@ -293,6 +293,14 @@ def _notes(arguments: argparse.Namespace) -> int:
         arguments.result.error("generation_error", message)
         print(f"relkit notes: {message}", file=sys.stderr)
         return 2
+    if arguments.write and not arguments.draft:
+        message = (
+            "--write is only valid with --draft; it composes a drafted entry into the "
+            f"changelog: use `relkit notes {arguments.version} --draft --write`"
+        )
+        arguments.result.error("generation_error", message)
+        print(f"relkit notes: {message}", file=sys.stderr)
+        return 2
     try:
         settings = config_module.load(root, required=False)
     except config_module.ConfigError as error:
@@ -300,7 +308,7 @@ def _notes(arguments: argparse.Namespace) -> int:
         print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
     policy = settings.changelog
-    arguments.result.data.update(hidden_changes=None)
+    arguments.result.data.update(hidden_changes=None, written=None)
     if arguments.draft:
         # A draft is held to the profile the published entry must satisfy, so a
         # generator that emits the wrong layout fails here rather than at release.
@@ -360,34 +368,23 @@ def _notes(arguments: argparse.Namespace) -> int:
         )
         return 1
     arguments.result.data.update(version=arguments.version, notes=entry + "\n", output=None)
+    if arguments.write:
+        code = _write_entry(arguments, source_changelog, entry, profile, policy)
+        if code:
+            return code
     if arguments.output:
         output = root / arguments.output
-        temporary: Path | None = None
         try:
             for source_path in (source_changelog, root / config_module.CONFIG_NAME):
                 if output.resolve() == source_path.resolve() or (
                     output.exists() and source_path.exists() and output.samefile(source_path)
                 ):
                     raise OSError("output must not replace the changelog or its policy")
-            with tempfile.NamedTemporaryFile(
-                mode="w",
-                encoding="utf-8",
-                newline="",
-                dir=output.parent,
-                prefix=f".{output.name}.",
-                suffix=".tmp",
-                delete=False,
-            ) as destination:
-                temporary = Path(destination.name)
-                destination.write(entry + "\n")
-            temporary.replace(output)
+            _replace_text(output, entry + "\n")
         except OSError as error:
             arguments.result.error("io_error", error, path=str(output))
             print(f"relkit notes: {output}: {error}", file=sys.stderr)
             return 2
-        finally:
-            if temporary is not None:
-                temporary.unlink(missing_ok=True)
         arguments.result.data["output"] = str(output)
         return 0
     if arguments.json:
@@ -402,6 +399,90 @@ def _notes(arguments: argparse.Namespace) -> int:
         arguments.result.error("io_error", error)
         print(f"relkit notes: stdout: {error}", file=sys.stderr)
         return 2
+    return 0
+
+
+def _replace_text(path: Path, text: str) -> None:
+    """Write beside the destination, then replace it, so a failure leaves it as it was."""
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            encoding="utf-8",
+            newline="",
+            dir=path.parent,
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            delete=False,
+        ) as destination:
+            temporary = Path(destination.name)
+            destination.write(text)
+        temporary.replace(path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
+def _write_entry(
+    arguments: argparse.Namespace,
+    path: Path,
+    entry: str,
+    profile: str,
+    policy: config_module.ChangelogConfig,
+) -> int:
+    """Compose a validated draft into the changelog; the person reviews and commits it."""
+
+    def refuse(message: str, line: int | None = None) -> int:
+        location = {"path": str(path)} | ({"line": line} if line is not None else {})
+        arguments.result.error("write_refused", message, **location)
+        prefix = f"{path}:{line}" if line is not None else str(path)
+        print(f"relkit notes: {prefix}: {message}", file=sys.stderr)
+        return 2
+
+    version = arguments.version
+    try:
+        with path.open(encoding="utf-8", newline="") as source:
+            current = source.read()
+    except FileNotFoundError:
+        return refuse("--write needs an existing changelog; create it with its title first")
+    except (OSError, UnicodeError) as error:
+        arguments.result.error("io_error", error, path=str(path))
+        print(f"relkit notes: {path}: {error}", file=sys.stderr)
+        return 2
+    if changelog_module.has_entry(current, version):
+        return refuse(f"already has an entry for {version}; edit that entry instead")
+    composed = generation.compose(current, entry)
+    try:
+        written = changelog_module.entry_for(
+            composed,
+            version,
+            profile=profile,
+            first_version=policy.first_version,
+            section_aliases=policy.section_aliases,
+        )
+    except changelog_module.ChangelogError as error:
+        return refuse(
+            f"the changelog with this entry would not pass the {profile} profile: {error}",
+            error.line,
+        )
+    if written is None:
+        return refuse(f"the changelog with this entry would still have no entry for {version}")
+    try:
+        _replace_text(path, composed)
+    except OSError as error:
+        arguments.result.error("io_error", error, path=str(path))
+        print(f"relkit notes: {path}: {error}", file=sys.stderr)
+        return 2
+    arguments.result.data["written"] = str(path)
+    highlights = (
+        ", add a Highlights paragraph if readers need context,"
+        if profile == "conventional-changelog"
+        else ""
+    )
+    print(
+        f"relkit notes: wrote the {version} entry into {path}; review it{highlights} and commit it",
+        file=sys.stderr,
+    )
     return 0
 
 
@@ -679,7 +760,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--draft",
         action="store_true",
         help="Produce an entry with the configured generator instead of reading the changelog; "
-        "review and commit it yourself, nothing is written into the changelog",
+        "review and commit it yourself",
+    )
+    notes.add_argument(
+        "--write",
+        action="store_true",
+        help="Draft only: insert the validated entry into the changelog before its newest "
+        "version entry, for you to review and commit; refused when that version has an entry",
     )
     notes.add_argument(
         "--from-tag", default="", help="Draft only: exact previous tag for the complete notes range"
