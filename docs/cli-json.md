@@ -93,7 +93,7 @@ must not be read as proof of no side effects.
 
 Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `check_error`, `check_failed`, `engine_error`, `protection_error`, `invalid_notes`,
-`missing_notes`, `confirmation_required`, `update_error`, `release_error`,
+`missing_notes`, `write_refused`, `confirmation_required`, `update_error`, `release_error`,
 `release_pending`, `engine_cleanup_unconfirmed`, `generation_cleanup_unconfirmed`,
 `update_cleanup_unconfirmed`, `release_cleanup_unconfirmed`, `interrupted`,
 `internal_error` and fallback `command_failed`.
@@ -138,6 +138,19 @@ those processes and inspect the reported scratch before explicit cleanup.
 `notes` returns validated `notes` including its final newline, requested `version`
 and `output` (absolute export path or `null`). An export failure may still return
 validated text, but is not success. Structural notes validation stays Git-free.
+`written` is the absolute changelog path `--draft --write` inserted the entry into, or
+`null`. A `write_refused` error (exit `2`, with `path` and, when known, `line`) means
+the changelog was left untouched: it is missing, already has an entry for the version,
+or would not pass the profile with the new entry.
+
+`hidden_changes` is `null` unless the draft used `units = "first-parent"`; then it is a
+list, empty when the entry hides nothing. Each item has `reason`, `merge` (`id`, the
+full commit hash, and `subject`) and `commits`, a list of `id`, `subject` and
+`breaking` (boolean). `reason` is `merge_skipped` when the merge's own subject was
+skipped by the changelog parsers, so the entry has no line for these commits, or
+`breaking_not_marked` when the merge is in the entry but does not carry the break these
+commits declare. It is a review aid, not a failure, and is also printed to stderr. See
+[one line per merge](notes.md#one-line-per-merge).
 `generation_cleanup_unconfirmed` is an exit `2` refusal when a draft generator's
 owned descendants could not be confirmed stopped. It does not export a draft;
 inspect the command and its retained state before retrying.

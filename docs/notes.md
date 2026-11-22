@@ -7,8 +7,9 @@ and does not verify its Git state. With a project projection, replace `relkit` w
 `python .github/relkit.pyz`.
 
 `relkit notes v1.2.0 --draft` produces an entry with the project's configured generator
-and holds it to the same profile a published entry must satisfy. Release-kit does not
-insert it into the changelog; you review the draft, edit it and commit it. A declared
+and holds it to the same profile a published entry must satisfy. With `--write` it also
+inserts the validated entry into the changelog file; either way you review the entry,
+edit it and commit it, and publication reads only the committed entry. A declared
 custom generator is project code and runs with the operator's permissions.
 
 The command reads `[changelog]` from the root's `relkit.toml`. Relative `--changelog`
@@ -112,6 +113,72 @@ ignore-tag settings for that invocation; commit filters and the template still b
 to the project. It does not establish which tags were published. `--from-tag` is
 supported only by the maintained git-cliff adapter; a custom command supplies its own
 range in its declared argv.
+
+### One line per merge
+
+By default every releasable commit in the range is one line of the draft. A project
+whose changes reach the main branch through branches and `--no-ff` merges can make the
+merge the unit instead, the way a pull request title stands for its commits:
+
+```toml
+[changelog]
+profile = "conventional-changelog"
+units = "first-parent"   # default: "commits"
+```
+
+With `first-parent`, the draft lists only the commits on the first-parent line of
+`HEAD` within the range: a merge stands for its whole branch and its own subject is the
+line, a commit made directly on the main branch is its own line, and the commits inside
+a merged branch never appear, including merges of other branches into it. So the merge
+subject is the release note: write it as `feat(api): accept widget sizes`, not as
+`Merge branch 'widgets'`.
+
+git-cliff has no such mode, so release-kit asks it for its context (the range after the
+project's commit parsers and filters), keeps the first-parent commits and renders that
+context with the same template. Range selection, `--from-tag`, your `cliff.toml` or the
+built-in template all behave as with `commits`. `units = "first-parent"` needs the
+git-cliff engine; a custom `command` generator is refused, as with `--from-tag`.
+
+A merge unit can hide a change. The draft reports two cases on stderr, and in
+`data.hidden_changes` of the [JSON result](cli-json.md#version-checks-and-notes):
+
+- a releasable or breaking commit that reached the main line only through a merge whose
+  own subject the parsers skip, such as `chore: tidy the build` or `Merge branch 'x'`.
+  The entry has no line for it. Reword such merges before merging, or write what readers
+  need into the entry;
+- a breaking commit behind a merge that is in the entry but not marked breaking. Describe
+  the break in the entry, for example in a `BREAKING CHANGES` section.
+
+For example:
+
+```text
+relkit notes: review: 1 releasable commit(s) are not in this entry: they reached the main line only through a merge whose subject the changelog parsers skip. Give the merge a releasable subject, or say what readers need in the entry before committing it:
+relkit notes:   4f2a9c1 chore: tidy the build
+relkit notes:     7d03be8 feat(ui): dark mode
+```
+
+The report does not fail the draft. If no commit is left on the first-parent line, the
+draft fails and names that cause, with the number of releasable commits and merges
+involved and the same list by merge, instead of reporting that there is nothing to
+release.
+
+### Compose the entry into the changelog
+
+```text
+relkit notes 1.2.0 --draft --write
+```
+
+`--write` inserts the validated draft into the changelog (`--changelog`, by default
+`CHANGELOG.md`): after the title and any `## [Unreleased]` section, before the first
+existing version entry, or at the end when there is none. The entry takes the file's
+newline style; the rest of the file is unchanged. The command prints where it wrote.
+Then review the entry, add a `Highlights` paragraph when readers need context the
+commit subjects do not give, and commit the file.
+
+`--write` refuses with exit `2` and leaves the file untouched when the file does not
+exist, when it already has an entry for that version (edit that entry instead), or when
+the changelog with the new entry would not pass the configured profile for that
+version. `--write` without `--draft` is refused.
 
 A generated bullet is a commit subject, which is written for a reviewer rather than for
 a reader of the release. Put what a reader needs in a `Highlights` section: it is
@@ -240,8 +307,8 @@ consumers also need the [guard refresh](updates.md#already-updated-files-and-gua
 for reviewed policy/artifact changes.
 
 Exit `0` means successful export; `1` means absent/invalid entry, with file, line and
-reason; `2` means configuration/I/O failure. Validation failure creates/overwrites
-no file. `--output` writes a temporary file before replacement, refuses the source
+reason; `2` means configuration/I/O failure or a refused `--write`. Validation failure
+creates/overwrites no file. `--output` writes a temporary file before replacement, refuses the source
 changelog/policy, and does not create parent directories. Prefer it to shell
 redirection, which truncates an existing destination before validation can fail.
 

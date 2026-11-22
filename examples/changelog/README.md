@@ -22,10 +22,15 @@ Then draft an entry for the version you are about to release:
 relkit notes 1.2.0 --draft
 ```
 
-Nothing is written into `CHANGELOG.md`. Review the draft, add a `Highlights` section if
-the commit subjects do not say what a reader needs, paste it in and commit it. The
-reviewed entry remains in the changelog for `relkit notes` to extract. The release
-coordinator publishes the committed entry.
+This prints the entry and changes no file. Add `--write` to insert it into
+`CHANGELOG.md` before the newest version entry instead of pasting it in yourself. Then
+review it, add a `Highlights` section if the commit subjects do not say what a reader
+needs, and commit it. The reviewed entry remains in the changelog for `relkit notes` to
+extract. The release coordinator publishes the committed entry.
+
+When changes reach the main branch through merges, `units = "first-parent"` in
+`[changelog]` makes each merge one line; see
+[one line per merge](../../docs/notes.md#one-line-per-merge).
 
 For the declared first release, the starter emits its release-tag link. For later
 releases it emits a comparison. If local tags include release candidates or
