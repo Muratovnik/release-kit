@@ -239,6 +239,19 @@ class GitHub:
             ]
         )
 
+    def edit_notes(self, release_id: int, body: str, directory: Path) -> dict:
+        """Replace the body of a published release and return GitHub's answer.
+
+        GitHub lets the body of an immutable release change; its tag and assets stay.
+        The body travels in a request file under `directory`, never in argv.
+        """
+        request = directory / "notes.request.json"
+        request.write_text(json.dumps({"body": body}), encoding="utf-8")
+        try:
+            return self.api(f"/releases/{int(release_id)}", method="PATCH", payload=request)
+        finally:
+            request.unlink(missing_ok=True)
+
     def release_attestation(self, tag: str) -> dict:
         """The statement GitHub signs about an immutable release and its exact assets.
 

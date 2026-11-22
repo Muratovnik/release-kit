@@ -164,10 +164,17 @@ def notes_for(
     tag: str,
     sha: str,
     previous: dict | None,
+    *,
+    changelog_at: str = "",
 ) -> str:
+    """The validated entry for `version`, released at `sha`.
+
+    `changelog_at` reads the entry from a later commit instead, for notes republished
+    after the release; every link check still uses the release boundary `sha`.
+    """
     profile = "strict" if policy.changelog.profile == "legacy" else policy.changelog.profile
     entry = changelog.entry_for(
-        source(runner, sha, release.changelog),
+        source(runner, changelog_at or sha, release.changelog),
         version,
         profile=profile,
         first_version=policy.changelog.first_version,
@@ -704,6 +711,10 @@ def read_state(runner: Runner, path: Path, tag: str, *, same_version: bool) -> d
         }
     ):
         raise ReleaseError("malformed saved release state")
+    if "notes_revisions" in saved:
+        from . import republish
+
+        republish.check_revisions(saved)
     for temporary in [saved.get("temporary"), *saved.get("retained_temporaries", [])]:
         if temporary:
             storage.inside(runner.root, Path(temporary))
@@ -738,6 +749,7 @@ def record_result(result: Result, state: dict, path: Path, *, saved: bool = Fals
                 "ci",
                 "release_id",
                 "artifacts",
+                "notes_revisions",
                 "verified_at",
                 "smoke_platform",
                 "local_changes",
@@ -1380,7 +1392,19 @@ def asset_set(assets: list[dict], names: list[str]) -> list[dict]:
     return identities
 
 
-def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str) -> dict:
+def body_text(release: dict) -> str:
+    """A hosted release body as the notes comparison reads it."""
+    return (release.get("body") or "").replace("\r\n", "\n").rstrip("\n")
+
+
+def _published_identity(
+    github: GitHub, value: dict, release: dict, tag_oid: str, notes: str
+) -> dict:
+    """The identity of a publication whose body must equal `notes`.
+
+    `notes` is the plan's entry, or the entry of the latest recorded notes revision
+    extracted again from Git (see `republish.expected_notes`).
+    """
     directory = value["settings"].get("publisher") == "directory"
     if (
         release["draft"]
@@ -1392,7 +1416,7 @@ def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str
         )
     if release["tag_name"] != value["tag"]:
         raise ReleaseError("published release names another tag")
-    if (release.get("body") or "").replace("\r\n", "\n").rstrip("\n") != value["notes"]:
+    if body_text(release) != notes:
         raise ReleaseError("published notes differ from the committed changelog entry")
     assets = asset_set(github.assets(release["id"]), value["assets"])
     if directory:
@@ -1401,7 +1425,7 @@ def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str
         return {
             "release_id": release["id"],
             "assets": assets,
-            "notes_sha256": fingerprint(value["notes"]),
+            "notes_sha256": fingerprint(notes),
         }
     # Everything above came from an unsigned REST response. GitHub also signs a
     # statement about an immutable release and its exact asset set; require the two
@@ -1414,7 +1438,7 @@ def _published_identity(github: GitHub, value: dict, release: dict, tag_oid: str
     return {
         "release_id": release["id"],
         "assets": assets,
-        "notes_sha256": fingerprint(value["notes"]),
+        "notes_sha256": fingerprint(notes),
     }
 
 
@@ -1519,8 +1543,13 @@ def _verify(
     state["verification"] = "running"
     _stage(path, state, "publication-verification")
     with stagelog.stage(runner, "publication-verification"):
-        identity = _published_identity(github, value, release, state["tag_oid"])
-        if state.get("artifacts") and state["artifacts"] != identity:
+        from . import republish
+
+        notes = republish.expected_notes(runner, state)
+        identity = _published_identity(github, value, release, state["tag_oid"], notes)
+        if state.get("artifacts") and not republish.same_artifacts(
+            state, state["artifacts"], identity
+        ):
             raise ReleaseError("published artifact identity changed across resume")
         state["artifacts"] = identity
         _save(path, state)
@@ -1582,7 +1611,10 @@ def _verify(
         if storage.digest(directory / asset["name"]) != asset["digest"][7:]:
             raise ReleaseError("downloaded artifact changed during smoke")
     _, latest = _reconcile(runner, github, state)
-    if latest is None or _published_identity(github, value, latest, state["tag_oid"]) != identity:
+    if (
+        latest is None
+        or _published_identity(github, value, latest, state["tag_oid"], notes) != identity
+    ):
         raise ReleaseError(
             "publication changed during verification (notes remain editable even on immutable releases)"
         )
@@ -1912,6 +1944,52 @@ def run(
                 f"relkit release: recorded {tag} as abandoned; a new run may reuse the "
                 f"version once its local tag is gone; receipt: {path}"
             )
+            return 0
+        if action == "notes":
+            from . import republish
+
+            if plan_hash or no_download:
+                raise ReleaseError("release notes accepts only --publish, --root and --json")
+            path = storage.checked(_state_path(root, tag))
+            if not path.is_file():
+                raise ReleaseError(
+                    f"no release receipt for {tag} in this checkout ({path}); notes are "
+                    "republished only for a release this checkout published"
+                )
+            if publish:
+                lock = _acquire_lock(root, tag)
+                lock_identity = storage.identity(lock)
+            saved = read_state(runner, path, tag, same_version=False)
+            validate_saved_plan(runner, saved["plan"])
+            github = publisher(runner, settings.parse(saved["plan"]["settings"]), github)
+            data = republish.notes(runner, github, saved, path, publish=publish)
+            result.data["notes"] = {**data, "receipt": str(path)}
+            if not publish:
+                print(
+                    f"relkit release: notes of {tag} (release {data['release_id']}) from "
+                    f"{data['changelog']} at {data['source']}: "
+                    + (
+                        "differ from the hosted body; release notes --publish replaces it"
+                        if data["differs"]
+                        else "already equal the hosted body"
+                    )
+                    + ("" if data["recorded"] else "; a revision would be recorded"),
+                )
+                print(f"  Hosted notes SHA-256: {data['hosted_notes_sha256']}")
+                print(f"  Entry SHA-256: {data['notes_sha256']}")
+                if human:
+                    print(data["notes"])
+                print("relkit release: plan only; the hosted release and the receipt are unchanged")
+            else:
+                print(
+                    f"relkit release: notes of {tag} "
+                    + ("replaced and read back" if data["edited"] else "already published")
+                    + (
+                        f"; revision from {data['source']} recorded in {path}"
+                        if data["revision"]
+                        else "; no new revision to record"
+                    )
+                )
             return 0
         if action not in {"run", "resume", "verify"}:
             raise ReleaseError("unknown release action")

@@ -425,6 +425,9 @@ def build_parser() -> argparse.ArgumentParser:
         "to prepare and publish in one invocation. After interruption, "
         "use status VERSION (saved local facts) and resume VERSION --publish. "
         "Use verify VERSION to download and smoke-test an existing publication without pushing. "
+        "Notes VERSION shows the committed changelog entry against the published notes; "
+        "notes VERSION --publish replaces the published notes with it and records that "
+        "in the receipt. "
         "Abandon closes an unpublished attempt with --reason; it never deletes tags. "
         "Unlock removes a stale release lock only after proving its owner and commands are gone.",
     )
@@ -441,6 +444,7 @@ def build_parser() -> argparse.ArgumentParser:
             "resume",
             "status",
             "verify",
+            "notes",
             "abandon",
             "unlock",
         ),
