@@ -237,8 +237,13 @@ class ChangelogConfig:
     # profile above is already the current one, so nothing downstream has to know.
     deprecated_profile: str = ""
     section_aliases: dict[str, str] = field(default_factory=dict)
+    # What one line of a draft stands for: every releasable commit, or each commit on
+    # the first-parent line of HEAD, where a merge stands for its whole branch.
+    units: str = "commits"
 
 
+# The draft units a project may choose; `commits` is the original behaviour.
+CHANGELOG_UNITS = ("commits", "first-parent")
 # Only a tool this project provisions and verifies may be named instead of spelled out.
 # A short name for anything else would have to guess at the operator's environment —
 # npx or a global install, which package manager, which version — and guessing is the
@@ -296,7 +301,9 @@ def _changelog(raw: dict[str, object]) -> ChangelogConfig:
     section = raw.get("changelog", {})
     if not isinstance(section, dict):
         raise ConfigError("[changelog] must be a table")
-    unknown = sorted(set(section) - {"profile", "first_version", "generator", "section_aliases"})
+    unknown = sorted(
+        set(section) - {"profile", "first_version", "generator", "section_aliases", "units"}
+    )
     if unknown:
         raise ConfigError(f"unknown [changelog] key(s): {', '.join(unknown)}")
     profile = _string(section, "profile", "legacy")
@@ -313,12 +320,16 @@ def _changelog(raw: dict[str, object]) -> ChangelogConfig:
         validate_section_aliases(aliases)
     except (TypeError, ValueError) as error:
         raise ConfigError(str(error)) from error
+    units = _string(section, "units", "commits")
+    if units not in CHANGELOG_UNITS:
+        raise ConfigError(f"changelog.units must be one of: {', '.join(CHANGELOG_UNITS)}")
     return ChangelogConfig(
         profile=profile,
         first_version=first_version,
         section_aliases=dict(aliases),
         generator=_generator(section),
         deprecated_profile=deprecated,
+        units=units,
     )
 
 

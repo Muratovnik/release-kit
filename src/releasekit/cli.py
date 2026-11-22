@@ -300,11 +300,12 @@ def _notes(arguments: argparse.Namespace) -> int:
         print(f"relkit notes: {root / config_module.CONFIG_NAME}: {error}", file=sys.stderr)
         return 2
     policy = settings.changelog
+    arguments.result.data.update(hidden_changes=None)
     if arguments.draft:
         # A draft is held to the profile the published entry must satisfy, so a
         # generator that emits the wrong layout fails here rather than at release.
         try:
-            text = generation.draft(
+            drafted = generation.draft_entry(
                 policy,
                 arguments.version,
                 root=root,
@@ -319,6 +320,14 @@ def _notes(arguments: argparse.Namespace) -> int:
             arguments.result.error("generation_error", error)
             print(f"relkit notes: {error}", file=sys.stderr)
             return 2
+        text = drafted.text
+        if drafted.units == "first-parent":
+            # A review hint, not a verdict: the draft is still held to the profile below.
+            arguments.result.data["hidden_changes"] = [
+                change.as_json() for change in drafted.hidden
+            ]
+            for line in generation.review_lines(drafted.hidden):
+                print(f"relkit notes: {line}", file=sys.stderr)
         path = root / "<generated>"
     else:
         try:

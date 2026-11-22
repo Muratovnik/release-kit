@@ -337,7 +337,9 @@ class DefaultTemplateTests(TemporaryRepository):
             "([abcdef0](https://github.com/declared/repository/commit/abcdef0))\n"
         )
         with (
-            patch.object(cli.generation, "draft", return_value=entry) as draft,
+            patch.object(
+                cli.generation, "draft_entry", return_value=generation.Draft(entry)
+            ) as draft,
             redirect_stdout(io.StringIO()),
             redirect_stderr(io.StringIO()),
         ):
