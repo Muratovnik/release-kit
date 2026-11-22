@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+## [0.36.0](https://github.com/Muratovnik/release-kit/compare/v0.35.0...v0.36.0) (2026-11-22)
+
+### Highlights
+
+relkit now composes the changelog entry instead of only printing a draft.
+`relkit notes VERSION --draft --write` inserts the validated draft into the changelog
+before its newest entry, for you to review and commit; it refuses when that version
+already has an entry. A project whose changes reach the main branch through merges can
+set `units = "first-parent"` in `[changelog]`: the draft then has one line per merge,
+taken from the merge subject the way a pull request title stands for its commits, and
+one per commit made directly on the main branch. The draft names the releasable
+commits a merge hides because its own subject is not a release note, and breaking
+commits behind a merge not marked breaking. The default stays one line per commit.
+
+### Features
+
+- **notes:** draft one line per merge with `units = "first-parent"` and name the changes a merge hides ([c3cccfc](https://github.com/Muratovnik/release-kit/commit/c3cccfc8ee71ea8aa04fa83db0c598d606d46b7c))
+- **notes:** insert a drafted entry into the changelog with `notes --draft --write` ([15c5622](https://github.com/Muratovnik/release-kit/commit/15c5622d21850898160ebbc4e8ced324e6236ea8))
+
 ## [0.35.0](https://github.com/Muratovnik/release-kit/compare/v0.34.0...v0.35.0) (2026-11-22)
 
 ### Highlights
