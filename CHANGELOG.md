@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+## [0.35.0](https://github.com/Muratovnik/release-kit/compare/v0.34.0...v0.35.0) (2026-11-22)
+
+### Highlights
+
+The notes of a published release can now follow a changelog rewritten after the
+release. `relkit release notes VERSION` compares the entry in the committed changelog
+with the published notes and changes nothing. With `--publish` it replaces the
+published notes with that entry, reads them back and records the change in the
+release receipt, so `relkit release verify` keeps passing for that release. Only
+GitHub publications can be changed this way: the directory publisher refuses, because
+its manifest identifies the release.
+
+### Features
+
+- **release:** republish the notes of a published release from the committed changelog ([49e07c9](https://github.com/Muratovnik/release-kit/commit/49e07c9697a87e7ae2e986844842b9064a7fcf50))
+
 ## [0.34.0](https://github.com/Muratovnik/release-kit/compare/v0.33.0...v0.34.0) (2026-11-22)
 
 ### Highlights
