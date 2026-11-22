@@ -20,10 +20,17 @@ from releasekit.release import coordinator, lockfile
 from releasekit.release.backend import Pending
 from releasekit.result import Result
 
+# Windows reuses a PID once no handle to its process is open, and the parallel
+# suite starts processes all the time: a released PID once came back to a live
+# process and the lock looked held. Keeping each finished child's handle keeps
+# its PID reserved while it still reads as stopped.
+_FINISHED: list[subprocess.Popen] = []
+
 
 def dead_pid() -> int:
     finished = subprocess.Popen([sys.executable, "-c", "pass"])
     finished.wait()
+    _FINISHED.append(finished)
     return finished.pid
 
 
