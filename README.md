@@ -227,6 +227,7 @@ names and configuration keys are never translated.
 | Missing `relkit.toml` or secret policy | Run from the intended project root; check both files from the starter example |
 | History refuses local changes | Use `audit` or `audit --staged` while editing; commit reviewed changes before `--history` |
 | A push is refused over local changes or another branch (older owner guard) | Run `relkit protect check`; `relkit protect install` adopts the guard that checks only the pushed commits |
+| A commit is refused over a private value | Remove it from the staged lines, path or message the output names; the [commit guard](docs/audit.md#repository-guard) judges only what the commit adds |
 | A machine install and a project pin disagree | Prefer the project form for CI and hooks; compare `relkit --version` with the pinned copy |
 | Existing projection or guard drift | Use the [update guide](docs/updates.md), not an overwrite or `--no-verify` |
 

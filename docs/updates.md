@@ -133,6 +133,12 @@ afterwards `relkit protect check` reports the guard as outdated, and
 `relkit protect install` with the new projection adopts the current one. A project
 without a guard is not held to this threshold.
 
+An update does not touch the [commit guard](audit.md#repository-guard): it keeps
+running the projection copy taken when it was installed, whatever the update moves
+the projection to. After the first update to 0.34.0 or newer, `relkit protect install`
+with the new projection adds the commit guard; after later updates, the same command
+refreshes its copy.
+
 ## First update and rollback
 
 Older embedded versions have no update command. Build or obtain a trusted 0.6.0+

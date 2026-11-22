@@ -1156,9 +1156,8 @@ def _prepare(
             # This focused metadata check avoids re-running both complete engine scans.
             from ..exposure.audit import _reference_metadata_failures
 
-            private = (
-                owner.discover(runner.root).load() if release.owner_audit else owner.OwnerRules()
-            )
+            selected = owner.select(runner.root, required=release.owner_audit)
+            private = selected.load() if selected is not None else owner.OwnerRules()
             problems = _reference_metadata_failures(
                 runner.root,
                 names=private.private_values,

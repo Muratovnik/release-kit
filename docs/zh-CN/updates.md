@@ -105,6 +105,10 @@ python .github/relkit.pyz protect check
 自己的模板。此后 `relkit protect check` 会报告防护已过时，用新投影副本运行 `relkit protect install`
 即可采用当前模板。没有防护的项目不受此门槛限制。
 
+更新不会触及[提交防护](audit.md#仓库防护)：无论更新把投影副本升到哪个版本，它都继续运行
+安装时取得的投影副本拷贝。首次更新到 0.34.0 或更新版本之后，用新投影副本运行
+`relkit protect install` 会加上提交防护；之后的更新，同一命令会刷新它的拷贝。
+
 ## 首次更新与回滚
 
 更旧的内嵌版本没有 update 命令。请先构建或获取一份受信任的 0.6.0+ zipapp，用它来更新那份更

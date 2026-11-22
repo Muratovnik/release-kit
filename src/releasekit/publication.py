@@ -11,9 +11,25 @@ from typing import cast
 from . import config as config_module
 from . import engines, owner, processes, protection, stages, toolchain
 from .exposure import audit
+from .exposure import commit as commit_module
 from .overlay import manifest as manifest_module
 from .overlay import verify as verify_module
 from .result import Result
+
+
+def mount_private_paths(root: Path, policy: owner.OwnerPolicy | None) -> list[str]:
+    """The checkout paths the owner's overlay manifest links private surfaces into."""
+    if policy is None or not policy.manifest_path.is_file():
+        return []
+    answer: list[str] = []
+    for mount in manifest_module.read(policy.manifest_path):
+        link = mount.link_path(policy.root)
+        try:
+            derived = link.absolute().relative_to(root)
+        except ValueError:
+            continue
+        answer.append(derived.as_posix())
+    return answer
 
 
 def _mounted_private_paths(
@@ -21,24 +37,17 @@ def _mounted_private_paths(
     root: Path,
     policy: owner.OwnerPolicy | None,
 ) -> list[str]:
-    private_paths = list(settings.exposure.private_paths)
-    if policy is None or not policy.manifest_path.is_file():
-        return private_paths
-    mounts = manifest_module.read(policy.manifest_path)
-    for mount in mounts:
-        link = mount.link_path(policy.root)
-        try:
-            derived = link.absolute().relative_to(root)
-        except ValueError:
-            continue
-        private_paths.append(derived.as_posix())
-    return private_paths
+    return [*settings.exposure.private_paths, *mount_private_paths(root, policy)]
 
 
 def _load_policy(root: Path, *, staged: bool, with_owner: bool):
-    """The adopter's configuration and, when asked for, the private owner policy."""
+    """The adopter's configuration and the private owner policy.
+
+    The policy is loaded when the caller requires it and whenever this checkout
+    configures one: see `owner.select`.
+    """
     settings = config_module.load(root, staged=staged)
-    policy = owner.discover(root) if with_owner else None
+    policy = owner.select(root, required=with_owner)
     owner_rules = policy.load() if policy is not None else owner.OwnerRules()
     names = owner_rules.private_values
     providers = {
@@ -130,7 +139,7 @@ def run_push(
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
     result.data["pushed_commits"] = scope.commits
-    if policy is not None and (guard_problem := protection.problem(root)):
+    if owner_mode and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
     if settings.exposure.check_secrets and scope.commits:
         try:
@@ -175,6 +184,70 @@ def run_push(
         return 1
     suffix = " (owner policy enforced)" if policy is not None else ""
     print(f"relkit audit: passed ({scope.commits} pushed commit(s) checked){suffix}")
+    return 0
+
+
+def run_commit(
+    root: Path,
+    *,
+    message: Path | None,
+    owner_mode: bool,
+    result: Result | None = None,
+) -> int:
+    """Judge what the next commit adds against the owner's private policy.
+
+    Nothing the commit does not add is read: not the rest of the index, not the
+    worktree, not `relkit.toml` and no engine. The full audit and the push guard keep
+    those verdicts; this one has to be fast enough to run on every commit.
+    """
+    result = result or Result()
+    result.data.update(scope="commit", changed_paths=0, message_checked=False)
+    result.data["owner_policy"] = False
+    try:
+        policy = owner.select(root, required=owner_mode)
+        if policy is None:
+            print(
+                "relkit audit: this checkout configures no owner policy; "
+                "the commit check has nothing to judge"
+            )
+            return 0
+        owner_rules = policy.load()
+        private_paths = mount_private_paths(root, policy)
+    except (manifest_module.ManifestError, owner.OwnerPolicyError) as error:
+        result.error("configuration_error", error)
+        print(f"relkit audit: {error}", file=sys.stderr)
+        return 2
+    result.data["owner_policy"] = True
+    try:
+        verdict = commit_module.judge(
+            root,
+            names=owner_rules.private_values,
+            owner_workflows=owner_rules.owner_workflows,
+            private_patterns=owner_rules.patterns,
+            private_paths=private_paths,
+            message=message,
+        )
+    except (OSError, RuntimeError) as error:
+        result.error("check_error", error)
+        print(f"relkit audit: {error}", file=sys.stderr)
+        return 2
+    result.data.update(changed_paths=verdict.changed_paths, message_checked=message is not None)
+    if verdict.findings:
+        print("relkit audit: failed", file=sys.stderr)
+        for finding in verdict.findings:
+            result.error("check_failed", finding)
+            print(f"  {finding}", file=sys.stderr)
+        print(
+            "relkit audit: only what this commit adds was checked; remove the finding from "
+            "the staged change or the message, then commit again",
+            file=sys.stderr,
+        )
+        return 1
+    message_part = " and the message" if message is not None else ""
+    print(
+        f"relkit audit: passed ({verdict.changed_paths} staged path(s){message_part} checked) "
+        "(owner policy enforced)"
+    )
     return 0
 
 
@@ -432,8 +505,15 @@ def run(
         return 2
     result.exposure(report)
     failures = list(report.failures)
-    if policy is not None and (guard_problem := protection.problem(root)):
+    # The policy's rules apply whenever it is configured; the guard and the overlay are
+    # this workstation's set-up, which only an explicit owner check asks about.
+    explicit = owner_mode or require_overlay
+    if explicit and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
+    if explicit and (commit_problem := protection.commit_guard_problem(root)):
+        # A warning, not a failure: the pre-push guard still stops the publication.
+        result.warnings.append({"code": "commit_guard", "message": commit_problem})
+        print(f"relkit audit: {commit_problem}")
     if strict:
         failures.extend(str(finding) for finding in report.baselined)
     if history:
@@ -444,7 +524,7 @@ def run(
             print(f"relkit audit: {error}", file=sys.stderr)
             return 2
 
-    if policy is not None and policy.manifest_path.is_file():
+    if explicit and policy is not None and policy.manifest_path.is_file():
         if policy.root.is_dir():
             try:
                 mounts = manifest_module.read(policy.manifest_path)

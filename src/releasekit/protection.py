@@ -1,4 +1,4 @@
-"""Install and verify the owner-side pre-push publication guard."""
+"""Install and verify the owner-side guards: pre-push for publication, commit-msg per commit."""
 
 from __future__ import annotations
 
@@ -19,6 +19,15 @@ PROJECTION_PATH = ".github/relkit.pyz"
 # The release that added `audit --push`, which the current guard template calls. A guard
 # pinned to an older projection would fail every push with a usage error.
 PUSH_AUDIT_VERSION = "0.33.0"
+COMMIT_MARKER = "# managed by release-kit: owner commit guard v1"
+COMMIT_DISPATCHER_MARKER = "# git-common-dir-hook-dispatcher: commit-msg v1"
+# The release that added `audit --commit`, which the commit guard runs.
+COMMIT_AUDIT_VERSION = "0.34.0"
+# The projection copy the commit guard runs, beside the hooks in the common Git
+# directory. Every branch and worktree is then judged by the code the owner installed,
+# not by whatever projection it has checked out: a branch still on an older release
+# would otherwise refuse each commit over an option its projection does not know.
+COMMIT_COPY = "relkit-commit-guard.pyz"
 # Pinned in place of a digest for an optional input that is not there: the guard then
 # refuses the push if the file appears, exactly as it does when a pinned file changes.
 ABSENT = ""
@@ -144,27 +153,32 @@ def _hook_v1(expected: str) -> str:
     )
 
 
+# `python` is not on every PATH, and a Windows Store alias is not an interpreter: probe
+# the candidates instead of failing with a shell error that names neither release-kit
+# nor the missing runtime. Its bytes are part of every template since the second.
+_INTERPRETER_PROBE = (
+    "relkit_python=\n"
+    "for relkit_candidate in python python3 py; do\n"
+    '  if command -v "$relkit_candidate" >/dev/null 2>&1 &&'
+    ' "$relkit_candidate" -c "" >/dev/null 2>&1; then\n'
+    "    relkit_python=$relkit_candidate\n"
+    "    break\n"
+    "  fi\n"
+    "done\n"
+    'if [ -z "$relkit_python" ]; then\n'
+    '  echo "release-kit guard needs a working python, python3 or py on PATH" >&2\n'
+    "  exit 2\n"
+    "fi\n"
+)
+
+
 def _hook_with_interpreter_probe(expected: str, audit_arguments: str) -> str:
-    """`python` is not on every PATH, and a Windows Store alias is not an
-    interpreter: probe the candidates instead of failing the push with a shell error
-    that names neither release-kit nor the missing runtime."""
     return (
         "#!/bin/sh\n"
         f"{MARKER}\n"
         "root=$(git rev-parse --show-toplevel) || exit 2\n"
-        "relkit_python=\n"
-        "for relkit_candidate in python python3 py; do\n"
-        '  if command -v "$relkit_candidate" >/dev/null 2>&1 &&'
-        ' "$relkit_candidate" -c "" >/dev/null 2>&1; then\n'
-        "    relkit_python=$relkit_candidate\n"
-        "    break\n"
-        "  fi\n"
-        "done\n"
-        'if [ -z "$relkit_python" ]; then\n'
-        '  echo "release-kit guard needs a working python, python3 or py on PATH" >&2\n'
-        "  exit 2\n"
-        "fi\n"
-        '"$relkit_python" - "$root" <<\'PY\' || exit 2\n'
+        + _INTERPRETER_PROBE
+        + '"$relkit_python" - "$root" <<\'PY\' || exit 2\n'
         + _HOOK_BODY_HEAD
         + expected
         + _HOOK_BODY_TAIL
@@ -213,7 +227,7 @@ def _git(root: Path, arguments: list[str]) -> subprocess.CompletedProcess[str]:
         raise ProtectionError(f"Git hook lookup could not run: {error}") from error
 
 
-def hook_path(root: Path) -> Path:
+def hook_path(root: Path, name: str = "pre-push") -> Path:
     # The workstation may use a global hooksPath dispatcher. Repository-owned hooks
     # still live in the common Git directory; the dispatcher and ordinary Git both
     # use this stable location, without release-kit replacing somebody else's hook.
@@ -222,54 +236,67 @@ def hook_path(root: Path) -> Path:
         raise ProtectionError(result.stderr.strip() or "Git hook path is unavailable")
     common = Path(result.stdout.strip())
     common = common if common.is_absolute() else root / common
-    return (common / "hooks" / "pre-push").resolve()
+    return (common / "hooks" / name).resolve()
 
 
-def effective_hook_path(root: Path) -> Path:
-    result = _git(root, ["rev-parse", "--git-path", "hooks/pre-push"])
+def effective_hook_path(root: Path, name: str = "pre-push") -> Path:
+    result = _git(root, ["rev-parse", "--git-path", f"hooks/{name}"])
     if result.returncode:
         raise ProtectionError(result.stderr.strip() or "effective Git hook path is unavailable")
     path = Path(result.stdout.strip())
     return (path if path.is_absolute() else root / path).resolve()
 
 
-def _write_managed(path: Path, content: str, marker: str, description: str) -> None:
-    if path.exists():
-        existing = path.read_text(encoding="utf-8", errors="replace")
-        if marker not in existing and existing.replace("\r\n", "\n") != content:
-            raise ProtectionError(
-                f"refusing to replace an unmanaged {description}: {path}; "
-                "move it aside or fold its checks into a compatible dispatcher, then retry"
-            )
+def _replace(path: Path, payload: bytes) -> None:
+    """Write a file whole or not at all, executable as a hook needs to be."""
     path.parent.mkdir(parents=True, exist_ok=True)
     descriptor, name = tempfile.mkstemp(prefix=".relkit-hook-", dir=path.parent)
     temporary = Path(name)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8", newline="\n") as stream:
-            stream.write(content)
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(payload)
         os.chmod(temporary, 0o755)
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
 
 
-def _dispatcher_problem(path: Path) -> str | None:
+def _unmanaged(path: Path, content: str, marker: str) -> bool:
+    """A hook at this path that release-kit did not write and must not replace."""
+    if not path.exists():
+        return False
+    existing = path.read_text(encoding="utf-8", errors="replace")
+    return marker not in existing and existing.replace("\r\n", "\n") != content
+
+
+def _write_managed(path: Path, content: str, marker: str, description: str) -> None:
+    if _unmanaged(path, content, marker):
+        raise ProtectionError(
+            f"refusing to replace an unmanaged {description}: {path}; "
+            "move it aside or fold its checks into a compatible dispatcher, then retry"
+        )
+    _replace(path, content.encode("utf-8"))
+
+
+def _dispatcher_problem(
+    path: Path, name: str = "pre-push", marker: str = COMPATIBLE_DISPATCHER_MARKER
+) -> str | None:
     try:
         text = path.read_text(encoding="utf-8")
     except FileNotFoundError:
         return (
-            f"compatible pre-push dispatcher is not installed at {path}; "
-            f"install an executable dispatcher containing `{COMPATIBLE_DISPATCHER_MARKER}`"
+            f"compatible {name} dispatcher is not installed at {path}; "
+            f"install an executable dispatcher containing `{marker}`"
         )
     except OSError as error:
-        return f"compatible pre-push dispatcher cannot be read at {path}: {error}"
-    if COMPATIBLE_DISPATCHER_MARKER not in text.replace("\r\n", "\n").splitlines():
+        return f"compatible {name} dispatcher cannot be read at {path}: {error}"
+    if marker not in text.replace("\r\n", "\n").splitlines():
         return (
-            f"effective pre-push hook is not a compatible repository dispatcher: {path}; "
-            f"expected `{COMPATIBLE_DISPATCHER_MARKER}`"
+            f"effective {name} hook is not a compatible repository dispatcher: {path}; "
+            f"expected `{marker}`"
         )
     if not os.access(path, os.X_OK):
-        return f"compatible pre-push dispatcher is not executable: {path}"
+        return f"compatible {name} dispatcher is not executable: {path}"
     return None
 
 
@@ -414,6 +441,7 @@ def install_plan(root: Path) -> dict:
         "inputs": inputs,
         "effective_hook": str(effective),
         "dispatcher_sha256": _sha256(effective) if effective != path else None,
+        "commit_guard": commit_guard_plan(root),
     }
     return {**plan, "plan_sha256": canonical.fingerprint(plan)}
 
@@ -426,4 +454,150 @@ def install(root: Path, *, plan_hash: str = "") -> Path:
     _write_managed(
         path, hook_content(root, digests=plan["inputs"]), MARKER, "repository pre-push hook"
     )
+    commit = plan["commit_guard"]
+    if commit["status"] == "install":
+        payload = (root / PROJECTION_PATH).read_bytes()
+        if hashlib.sha256(payload).hexdigest() != commit["copy_after_sha256"]:
+            raise ProtectionError(
+                f"{PROJECTION_PATH} changed while the guards were installed; review it and "
+                "run `relkit protect install` again"
+            )
+        # The copy first: a guard that finds no copy refuses the commit and names it.
+        _replace(Path(commit["copy_path"]), payload)
+        _write_managed(
+            Path(commit["path"]),
+            commit_hook_content(),
+            COMMIT_MARKER,
+            "repository commit-msg hook",
+        )
     return path
+
+
+def commit_hook_content() -> str:
+    """The commit guard. It pins nothing: the copy it runs is the reviewed code, and the
+    owner policy it applies lives outside the repository, so no branch can change it."""
+    return (
+        "#!/bin/sh\n"
+        f"{COMMIT_MARKER}\n"
+        "root=$(git rev-parse --show-toplevel) || exit 2\n"
+        "common=$(git rev-parse --path-format=absolute --git-common-dir) || exit 2\n"
+        f'copy="$common/hooks/{COMMIT_COPY}"\n'
+        'if [ ! -f "$copy" ]; then\n'
+        '  echo "release-kit commit guard: $copy is missing; run relkit protect install" >&2\n'
+        "  exit 2\n"
+        "fi\n"
+        + _INTERPRETER_PROBE
+        # Silent when the commit passes; a refusal and its fix are written to stderr.
+        + 'exec "$relkit_python" "$copy" audit --commit --owner --root "$root" --message "$1"'
+        " >/dev/null\n"
+    )
+
+
+def _projection_version(payload: bytes) -> str | None:
+    """The release-kit version a projection declares, or None when it is not inspectable."""
+    try:
+        return distribution.inspect(payload).version
+    except distribution.DistributionError:
+        return None
+
+
+def commit_guard_plan(root: Path) -> dict:
+    """What `protect install` does to the commit guard, and why when it does nothing.
+
+    The commit guard is the fast early warning; the pre-push guard stays the gate. So a
+    commit-msg hook that belongs to someone else, or a projection too old to run the
+    check, leaves the commit guard out with a reason instead of refusing the install.
+    """
+    try:
+        path = hook_path(root, "commit-msg")
+        copy = path.parent / COMMIT_COPY
+        storage.inside(root, path)
+        storage.inside(root, copy)
+    except storage.StorageError as error:
+        raise ProtectionError(str(error)) from error
+    content = commit_hook_content()
+    plan: dict = {
+        "path": str(path),
+        "copy_path": str(copy),
+        "status": "install",
+        "reason": None,
+        "before_sha256": _sha256(path) if path.exists() else None,
+        "after_sha256": hashlib.sha256(content.encode()).hexdigest(),
+        "copy_before_sha256": _sha256(copy) if copy.exists() else None,
+        "copy_after_sha256": None,
+    }
+    try:
+        payload = (root / PROJECTION_PATH).read_bytes()
+    except OSError as error:
+        return {**plan, "status": "skipped", "reason": f"{PROJECTION_PATH} is unreadable: {error}"}
+    version = _projection_version(payload)
+    # A file that is not an inspectable release-kit archive is not judged here, as for
+    # the pre-push guard: the commit guard runs it and fails closed if it cannot.
+    if version is not None and distribution.version_tuple(version) < distribution.version_tuple(
+        COMMIT_AUDIT_VERSION
+    ):
+        return {
+            **plan,
+            "status": "skipped",
+            "reason": (
+                f"release-kit {version} has no `audit --commit` (added in "
+                f"{COMMIT_AUDIT_VERSION}); run `relkit update`, then `relkit protect install`"
+            ),
+        }
+    if _unmanaged(path, content, COMMIT_MARKER):
+        return {
+            **plan,
+            "status": "skipped",
+            "reason": (
+                f"{path} is a commit-msg hook release-kit did not write; call "
+                '`relkit audit --commit --owner --message "$1"` from it, or move it aside and '
+                "run `relkit protect install` again"
+            ),
+        }
+    return {**plan, "copy_after_sha256": hashlib.sha256(payload).hexdigest()}
+
+
+def commit_guard_problem(root: Path) -> str | None:
+    """Why commits are not being checked against the owner policy, or None.
+
+    An adopter's own commit-msg hook that runs `audit --commit` is accepted: chaining the
+    check into an existing hook is the documented alternative to the managed guard.
+    """
+    try:
+        path = hook_path(root, "commit-msg")
+        effective = effective_hook_path(root, "commit-msg")
+    except ProtectionError as error:
+        return f"owner commit guard cannot be verified: {error}"
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+    except FileNotFoundError:
+        return f"owner commit guard is not installed at {path}; run `relkit protect install`"
+    except OSError as error:
+        return f"owner commit guard cannot be read at {path}: {error}"
+    if COMMIT_MARKER in text:
+        if text != commit_hook_content():
+            return f"owner commit guard has drifted: {path}; run `relkit protect install`"
+        copy = path.parent / COMMIT_COPY
+        try:
+            version = _projection_version(copy.read_bytes())
+        except OSError:
+            return f"owner commit guard runs {copy}, which is missing; run `relkit protect install`"
+        if version is not None and distribution.version_tuple(version) < distribution.version_tuple(
+            COMMIT_AUDIT_VERSION
+        ):
+            return (
+                f"owner commit guard runs release-kit {version}, which has no `audit --commit`; "
+                "run `relkit protect install`"
+            )
+    elif "audit --commit" not in text:
+        return (
+            f"commit-msg hook {path} does not run `relkit audit --commit`; commits are not "
+            "checked against the owner policy"
+        )
+    if not os.access(path, os.X_OK):
+        return f"owner commit guard is not executable: {path}; run `relkit protect install`"
+    if effective != path and (
+        problem := _dispatcher_problem(effective, "commit-msg", COMMIT_DISPATCHER_MARKER)
+    ):
+        return f"{problem}; Git may never run the commit guard at {path}"
+    return None

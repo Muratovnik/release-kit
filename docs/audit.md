@@ -125,6 +125,7 @@ python .github/relkit.pyz audit
 python .github/relkit.pyz audit --staged
 python .github/relkit.pyz audit --history
 python .github/relkit.pyz audit --push --remote origin   # lines on standard input
+python .github/relkit.pyz audit --commit --message .git/COMMIT_EDITMSG
 ```
 
 Worktree scope includes tracked files and untracked/unignored publication candidates.
@@ -176,20 +177,35 @@ value that lives only in a local branch that is never pushed does not surface at
 The release and `audit --history` still judge the whole history, so run that before
 publishing.
 
+Commit scope is what the [commit guard](#repository-guard) runs on every commit. It
+judges only what the next commit adds against the [private owner
+policy](#private-owner-policy): the lines the staged diff adds, the names of paths it
+creates or renames, the whole of each changed file Git shows as binary (archives
+included), and, with `--message`, the commit message Git will record, without its
+comment lines or the diff `git commit --verbose` appends. A value already in a file is
+not judged again when a commit edits another line. Public rules, both engines,
+`relkit.toml`, the baseline and the guards are not read: a repository that still fails
+a public rule can keep committing, and the full audit keeps those verdicts. Its cost
+follows the size of the change rather than of the repository, so it is fast enough
+for a hook. Without a configured policy and without `--owner`, it passes with a
+notice that it had nothing to judge. `--strict` and `--require-overlay` do not apply.
+
 Fetch host-only refs before a recovery review: local checks cannot inspect objects
 the checkout does not possess. Neither Git history scanning nor its link checker
 covers hosted issues, Actions logs or independently uploaded release files. See
 [publication review](publication-review.md) for those separate surfaces.
 
 CI normally uses `--history` without `--owner`; a public clone cannot know private
-owner values. On the owner's reviewed installation use:
+owner values. On the owner's checkout, a [configured policy](#private-owner-policy)
+applies to every scope without a flag. Before a release, use:
 
 ```text
 python .github/relkit.pyz audit --history --owner
 python .github/relkit.pyz audit --history --owner --require-overlay
 ```
 
-Owner mode additionally requires the private policy and a valid installed guard.
+Owner mode additionally requires the private policy and a valid installed pre-push
+guard, and reports a commit guard that is missing or cannot run as a warning.
 `--require-overlay` also demands the exact mounted-link manifest. These flags are
 not required for the [basic public-policy audit](../README.md#first-check-in-an-existing-project).
 
@@ -231,8 +247,16 @@ the policy root in this order:
    configuration. A relative value resolves from the public checkout root.
 3. The conventional `../<checkout-name>-private` sibling.
 
-CLI owner and overlay commands, the installed owner guard and coordinator owner audits
+CLI owner and overlay commands, the installed owner guards and coordinator owner audits
 all use this same selection order.
+
+When the first or second source names a root, `audit` in every scope, `exposure` and
+the release coordinator apply its rules without `--owner`: a check its callers must
+remember to ask for is the one they forget. A named root that is missing or invalid
+still refuses. The sibling convention is a guess, so on its own it never turns the
+policy on; `--owner` still follows it. `--owner` is what additionally requires the
+installed pre-push guard and verifies the overlay, so an ordinary audit on the owner's
+checkout is not refused while a guard waits for its reviewed refresh.
 
 Set the persistent repository choice without creating a tracked project file:
 
@@ -311,6 +335,26 @@ refreshed; guards from before this scope judge the whole history at every push, 
 `protect check` names `relkit protect install` to adopt the current one. The guard runs
 the projection the repository pins, so update the projection first. For pre-0.5.0 ownership, follow the
 [migration procedure](updates.md#migrating-the-guard-owner).
+
+`protect install` also writes the commit guard, `<git-common-dir>/hooks/commit-msg`,
+which runs the [commit scope](#scopes), `audit --commit --owner`, on every commit. It
+catches a private value while the commit is still unmade, instead of at the push, when
+the history holding it already has to be rewritten. It runs a copy of the projection
+taken at install time, `<git-common-dir>/hooks/relkit-commit-guard.pyz`, so every
+branch and worktree is judged by the same reviewed code, including a branch whose
+projection predates the commit scope; it pins nothing else, because the policy it
+applies lives outside the repository. It is silent when a commit passes. Run
+`protect install` again after `relkit update` to refresh the copy.
+
+The commit guard is the early warning; the pre-push guard stays the gate. So
+`protect install` leaves the commit guard out, and says why, when the projection is
+older than 0.34.0 or `commit-msg` is a hook release-kit did not write. To keep such a
+hook, call `relkit audit --commit --owner --message "$1"` from it; `protect check`
+accepts a hook that does. Where `core.hooksPath` redirects Git, the external owner's
+`commit-msg` should declare `# git-common-dir-hook-dispatcher: commit-msg v1`. A
+missing, outdated or unreachable commit guard is a warning from `protect check` and
+`audit --owner`, not a refusal. `git commit --no-verify` skips it, as it skips every
+commit hook; the push still judges the commit.
 
 The local pre-push guard is not server-side branch protection. Do not bypass it or
 weaken owner policy to make a release pass.

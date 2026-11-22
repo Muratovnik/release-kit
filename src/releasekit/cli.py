@@ -53,28 +53,15 @@ def _exposure(arguments: argparse.Namespace) -> int:
     providers = {
         name: provider.allowed_surfaces for name, provider in settings.exposure.providers.items()
     }
-    policy = None
-    if arguments.owner:
-        try:
-            policy = owner.discover(root)
-            owner_rules = policy.load()
-            names = owner_rules.private_values
-            mounts = (
-                manifest_module.read(policy.manifest_path) if policy.manifest_path.is_file() else ()
-            )
-        except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
-            arguments.result.error("configuration_error", error)
-            print(f"relkit exposure: {error}", file=sys.stderr)
-            return 2
-        for mount in mounts:
-            try:
-                derived = mount.link_path(policy.root).absolute().relative_to(root)
-            except ValueError:
-                continue
-            private_paths.append(derived.as_posix())
-    else:
-        names = ()
-        owner_rules = owner.OwnerRules()
+    try:
+        policy = owner.select(root, required=arguments.owner)
+        owner_rules = policy.load() if policy is not None else owner.OwnerRules()
+        private_paths += publication.mount_private_paths(root, policy)
+    except (owner.OwnerPolicyError, manifest_module.ManifestError) as error:
+        arguments.result.error("configuration_error", error)
+        print(f"relkit exposure: {error}", file=sys.stderr)
+        return 2
+    names = owner_rules.private_values
     try:
         report = audit.scan(
             root,
@@ -154,7 +141,31 @@ def _audit_push(arguments: argparse.Namespace) -> int:
     )
 
 
+def _audit_commit(arguments: argparse.Namespace) -> int:
+    if arguments.strict or arguments.require_overlay:
+        message = (
+            "--commit judges what the commit adds against the owner policy only; "
+            "it does not take --strict or --require-overlay"
+        )
+        arguments.result.error("invalid_arguments", message)
+        print(f"relkit audit: {message}", file=sys.stderr)
+        return 2
+    return publication.run_commit(
+        Path(arguments.root).resolve(),
+        message=Path(arguments.message) if arguments.message else None,
+        owner_mode=arguments.owner,
+        result=arguments.result,
+    )
+
+
 def _audit(arguments: argparse.Namespace) -> int:
+    if arguments.message and not arguments.commit:
+        message = "--message is only valid with --commit"
+        arguments.result.error("invalid_arguments", message)
+        print(f"relkit audit: {message}", file=sys.stderr)
+        return 2
+    if arguments.commit:
+        return _audit_commit(arguments)
     if arguments.push or arguments.remote:
         if not arguments.push:
             message = "--remote is only valid with --push"
@@ -215,6 +226,13 @@ def _protect(arguments: argparse.Namespace) -> int:
             return 1
         arguments.result.data["guard"] = "valid"
         print("relkit protect: owner pre-push guard is installed")
+        commit_problem = protection.commit_guard_problem(root)
+        arguments.result.data["commit_guard"] = "invalid" if commit_problem else "valid"
+        if commit_problem:
+            arguments.result.warnings.append({"code": "commit_guard", "message": commit_problem})
+            print(f"relkit protect: {commit_problem}")
+        else:
+            print("relkit protect: owner commit guard is installed")
         if protection.outdated_template(root):
             message = (
                 "the installed guard is an older release-kit template: it pins the current "
@@ -244,6 +262,14 @@ def _protect(arguments: argparse.Namespace) -> int:
         return 2
     arguments.result.data.update(guard="installed", path=str(path))
     print(f"relkit protect: installed {path}")
+    commit = plan["commit_guard"]
+    if commit["status"] == "install":
+        arguments.result.data["commit_guard"] = "installed"
+        print(f"relkit protect: installed {commit['path']} (runs {commit['copy_path']})")
+    else:
+        arguments.result.data["commit_guard"] = "skipped"
+        arguments.result.warnings.append({"code": "commit_guard", "message": commit["reason"]})
+        print(f"relkit protect: commit guard not installed: {commit['reason']}")
     return 0
 
 
@@ -564,8 +590,19 @@ def build_parser() -> argparse.ArgumentParser:
         help="Inspect only the commits a push publishes, from pre-push hook input on "
         "standard input; needs --remote, not a clean worktree",
     )
+    scope.add_argument(
+        "--commit",
+        action="store_true",
+        help="Judge only what the next commit adds (staged diff, new paths, message) against "
+        "the owner policy; fast enough for a commit hook",
+    )
     publication_audit.add_argument(
         "--remote", default="", help="With --push: the destination remote Git passes the hook"
+    )
+    publication_audit.add_argument(
+        "--message",
+        default="",
+        help="With --commit: the commit message file Git passes a commit-msg hook",
     )
     publication_audit.add_argument(
         "--strict", action="store_true", help="Fail on every baselined policy finding"
@@ -573,7 +610,8 @@ def build_parser() -> argparse.ArgumentParser:
     publication_audit.add_argument(
         "--owner",
         action="store_true",
-        help="Require the private sibling policy and the managed pre-push guard",
+        help="Require the private owner policy and the managed guards; without it the policy "
+        "still applies when this checkout configures releasekit.privateRoot",
     )
     publication_audit.add_argument(
         "--require-overlay",
@@ -594,7 +632,8 @@ def build_parser() -> argparse.ArgumentParser:
     exposure.add_argument(
         "--owner",
         action="store_true",
-        help="Load private values from the sibling owner policy",
+        help="Require the private owner policy; without it the policy still applies when "
+        "this checkout configures releasekit.privateRoot",
     )
     exposure.add_argument(
         "--strict",
@@ -634,7 +673,8 @@ def build_parser() -> argparse.ArgumentParser:
     overlay.set_defaults(handler=_overlay)
 
     protect = subcommands.add_parser(
-        "protect", help="Install or verify the owner-side pre-push publication guard."
+        "protect",
+        help="Install or verify the owner-side guards: pre-push publication and per-commit.",
     )
     protect.add_argument("action", choices=("install", "check"))
     protect.add_argument("--root", default=".", help="Repository to protect (default: .)")

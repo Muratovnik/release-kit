@@ -96,7 +96,11 @@ class PushRepository(unittest.TestCase):
 
     def commit(self, message: str, *, environment: dict[str, str] | None = None) -> str:
         self.git("add", "-A")
-        self.git("commit", "-q", "--allow-empty", "-m", message, environment=environment)
+        # These tests build the histories a push carries, findings included, so the
+        # commit guard `install_guard` also writes must not stop them; it has its own.
+        self.git(
+            "commit", "-q", "--no-verify", "--allow-empty", "-m", message, environment=environment
+        )
         return self.git("rev-parse", "HEAD")
 
     def install_guard(self) -> Path:

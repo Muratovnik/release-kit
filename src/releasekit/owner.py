@@ -176,16 +176,40 @@ def _configured_private_root(public_root: Path) -> str | None:
     return value
 
 
+def select(public_root: Path, *, required: bool) -> OwnerPolicy | None:
+    """The owner policy a command applies: always when required, else when configured.
+
+    A checkout whose owner named a private root, in its local `releasekit.privateRoot`
+    or in `RELKIT_PRIVATE_ROOT`, gets the policy from every command without a flag:
+    a check its callers have to remember to ask for is the check they forget. A named
+    root that is missing still fails closed. The sibling convention is a guess, so on
+    its own it never turns the policy on; `--owner` still finds it.
+    """
+    override, configured = _selection(public_root)
+    if not (required or override or configured):
+        return None
+    return _resolve(public_root, override, configured)
+
+
 def discover(public_root: Path) -> OwnerPolicy:
     """Resolve an explicit, repository-local, or conventional owner-policy root."""
+    return _resolve(public_root, *_selection(public_root))
+
+
+def _selection(public_root: Path) -> tuple[str, str | None]:
+    """The process override and, only without one, this checkout's local setting."""
     override = os.environ.get(PRIVATE_ROOT_ENV, "").strip()
+    return override, None if override else _configured_private_root(public_root)
+
+
+def _resolve(public_root: Path, override: str, configured: str | None) -> OwnerPolicy:
     if override:
         candidate = Path(override).expanduser()
         private_root = (
             candidate if candidate.is_absolute() else public_root.parent / candidate
         ).resolve()
         selected_by = PRIVATE_ROOT_ENV
-    elif configured := _configured_private_root(public_root):
+    elif configured:
         candidate = Path(configured).expanduser()
         private_root = (candidate if candidate.is_absolute() else public_root / candidate).resolve()
         selected_by = f"repository-local {PRIVATE_ROOT_CONFIG}"

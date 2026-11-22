@@ -114,6 +114,7 @@ python .github/relkit.pyz audit
 python .github/relkit.pyz audit --staged
 python .github/relkit.pyz audit --history
 python .github/relkit.pyz audit --push --remote origin   # 行由标准输入提供
+python .github/relkit.pyz audit --commit --message .git/COMMIT_EDITMSG
 ```
 
 工作树范围包括被跟踪的文件，以及未被跟踪但也未被忽略的待发布候选文件。暂存范围读取 Git
@@ -143,19 +144,29 @@ push 范围由[仓库防护](#仓库防护)运行。它读取 Git 写入 `pre-pu
 不适用。push 范围是有意收窄的：只存在于从未推送的本地分支中的私有值，在 push 时不会
 暴露。发布流程与 `audit --history` 仍会检查全部历史，因此请在发布前运行它。
 
+commit 范围是[提交防护](#仓库防护)在每次提交时运行的检查。它只依据
+[私有所有者策略](#私有所有者策略)检查下一次提交新增的内容：暂存 diff 新增的行、它创建或重命名
+的路径名、Git 显示为二进制的每个已修改文件的全部内容（包括压缩包），以及在给出 `--message`
+时 Git 将记录的提交信息（不含注释行，也不含 `git commit --verbose` 附加的 diff）。当提交只修改
+另一行时，文件中已有的取值不会被再次检查。它不读取公开规则、两个引擎、`relkit.toml`、基线和
+防护：仍未通过某条公开规则的仓库可以继续提交，这些判定仍由完整审计负责。它的开销取决于改动的
+大小而不是仓库的大小，因此足够快，可以放进钩子。没有已配置的策略、也没有 `--owner` 时，它会
+通过并提示没有可检查的内容。`--strict` 与 `--require-overlay` 不适用。
+
 在做恢复性复核之前，请先拉取仅存在于托管端的引用：本地检查无法检查克隆中并不存在的对象。
 Git 历史扫描及其链接检查都不覆盖托管的 issues、Actions 日志和单独上传的发布文件。这些独立
 的发布面参见 [publication review](../publication-review.md)（英文）。
 
-CI 通常使用不带 `--owner` 的 `--history`：公开克隆无从得知私有的所有者取值。在所有者已复核
-的安装上使用：
+CI 通常使用不带 `--owner` 的 `--history`：公开克隆无从得知私有的所有者取值。在所有者的克隆中，
+[已配置的策略](#私有所有者策略)无需参数即适用于所有范围。发布之前使用：
 
 ```text
 python .github/relkit.pyz audit --history --owner
 python .github/relkit.pyz audit --history --owner --require-overlay
 ```
 
-所有者模式额外要求私有策略和一份有效的已安装防护。`--require-overlay` 还要求精确的挂载
+所有者模式额外要求私有策略和一份有效的已安装 pre-push 防护，并把缺失或无法运行的提交防护
+作为警告报告。`--require-overlay` 还要求精确的挂载
 链接清单。
 [基础的公开策略审计](../../README.zh-CN.md#在既有项目中的第一次检查)并不需要这些参数。
 
@@ -192,6 +203,12 @@ Git LFS 指针与子模块 gitlink 会失败，因为它们的外部内容并不
 
 面向所有者与 overlay 的 CLI 命令、已安装的所有者防护以及协调器的所有者审计，都使用同一套
 选择顺序。
+
+当第一个或第二个来源指定了根目录时，所有范围的 `audit`、`exposure` 和发布协调器无需
+`--owner` 就会应用其中的规则：需要调用方记得去要求的检查，正是他们会忘记的那一项。指定的根目录
+不存在或无效时，仍然会拒绝。同级目录约定只是一种猜测，因此它本身从不开启策略；`--owner` 仍会
+沿用它。`--owner` 额外要求已安装的 pre-push 防护并校验 overlay，因此在防护等待复核后的刷新时，
+所有者克隆中的普通审计不会被拒绝。
 
 在不新增被跟踪项目文件的前提下，为仓库设置持久选择：
 
@@ -257,6 +274,21 @@ python .github/relkit.pyz protect check
 每次 push 时检查全部历史，`protect check` 会指明用 `relkit protect install` 换用当前版本。
 防护运行的是仓库固定的投影副本，因此请先更新投影副本。关于 0.5.0 之前的归属
 模型，请遵循[迁移流程](updates.md#迁移防护钩子的所有者)。
+
+`protect install` 还会写入提交防护 `<git-common-dir>/hooks/commit-msg`，它在每次提交时运行
+[commit 范围](#范围)，即 `audit --commit --owner`。它在提交尚未生成时就拦下私有值，而不是等到
+push 时，那时包含它的历史已经不得不重写。它运行安装时取得的投影副本拷贝
+`<git-common-dir>/hooks/relkit-commit-guard.pyz`，因此每个分支和工作树都由同一份已复核的代码
+检查，包括投影副本早于 commit 范围的分支；它不固定其他任何内容，因为它应用的策略位于仓库之外。
+提交通过时它不输出任何内容。`relkit update` 之后请再次运行 `protect install` 以刷新这份拷贝。
+
+提交防护是提前预警；门禁仍是 pre-push 防护。因此当投影副本早于 0.34.0，或 `commit-msg` 是
+release-kit 未写入的钩子时，`protect install` 会跳过提交防护并说明原因。若要保留这样的钩子，
+请在其中调用 `relkit audit --commit --owner --message "$1"`；`protect check` 会接受这样做的
+钩子。若 `core.hooksPath` 重定向了 Git，外部所有者的 `commit-msg` 应声明
+`# git-common-dir-hook-dispatcher: commit-msg v1`。缺失、过时或无法触达的提交防护是
+`protect check` 与 `audit --owner` 的警告，而不是拒绝。`git commit --no-verify` 会跳过它，正如
+它跳过所有提交钩子；push 仍会检查该提交。
 
 本地的 pre-push 防护不是服务端的分支保护。不要绕过它，也不要为了让发布通过而削弱所有者
 策略。

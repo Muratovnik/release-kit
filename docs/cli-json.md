@@ -115,7 +115,7 @@ still needs reconciliation.
 `exposure` returns `data.exposure`: `new` and `baselined` findings with `path`,
 `kind`, `detail`, plus `stale`, `unreadable` and `excluded` string arrays.
 
-`audit` adds `scope` (`worktree`, `staged`, `history`, `push`) and `engines`, mapping
+`audit` adds `scope` (`worktree`, `staged`, `history`, `push`, `commit`) and `engines`, mapping
 engine names to native exit codes or `null` when not completed. Release-kit sets
 Betterleaks' findings exit code to `10`; Lychee uses `2` for link findings.
 Those codes produce audit exit `1`. Other nonzero engine codes mean an
@@ -125,7 +125,11 @@ publication findings. History adds
 tracked-tree precondition; configured worktree candidate checks still apply.
 Native engine diagnostics are not invented structured findings. The top-level
 exit also includes history, guard and overlay failures. Push scope adds `remote` and
-`pushed_commits` (commits the push publishes) and runs no link engine.
+`pushed_commits` (commits the push publishes) and runs no link engine. Commit scope
+(`commit`) runs no engine and adds `changed_paths` (staged paths judged),
+`message_checked` and `owner_policy` (`false` when no policy was configured, so
+nothing was judged); each finding is a `check_failed` error. Owner-mode audits report
+a commit guard problem as a `commit_guard` warning.
 
 `engine_cleanup_unconfirmed` is an exit `2` refusal: owned engine descendants
 could not be confirmed stopped. The entire scanner workspace is retained. Verify
@@ -148,8 +152,12 @@ active. `install --dry-run` returns `data.plan` with exact before/after hook
 hashes, guarded inputs, dispatcher identity and `plan_sha256`, without writing a
 hook. Pass `install --plan-hash HASH` to reject drift. `install` and its dry run
 refuse (`protection_error`) when the pinned projection is older than 0.33.0, whose
-`audit --push` the guard calls; the message names the fix, `relkit update`. Review
-project-required hook permission separately. [Guard updates](updates.md) retain backup/recovery.
+`audit --push` the guard calls; the message names the fix, `relkit update`.
+`protect` also returns `commit_guard`: `valid` or `invalid` from `check`, `installed`
+or `skipped` from `install`; an invalid or skipped commit guard adds a `commit_guard`
+warning naming the reason and does not change the exit code. The plan's `commit_guard`
+object holds its `status`, `reason`, hook and copy paths and their before/after hashes.
+Review project-required hook permission separately. [Guard updates](updates.md) retain backup/recovery.
 
 ### Release planning and execution
 
