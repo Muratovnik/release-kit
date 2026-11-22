@@ -249,6 +249,32 @@ report `ci_verdict = not-required`, not a fabricated passing CI run. Missing
 publication, identity drift and invalid signatures remain failures.
 `next_action` suggests `verify` for an unverified publication, without `--publish`.
 
+### Release notes: republish published notes
+
+```text
+python .github/relkit.pyz release notes v1.2.0 --json
+python .github/relkit.pyz release notes v1.2.0 --publish --json
+```
+
+Returns `data.notes` with `tag`, `release_id`, `source` (the `HEAD` commit the entry
+was read from), `changelog` (its path), `notes` (the entry), `notes_sha256`,
+`hosted_notes_sha256` (the published body before any edit), `differs`, `recorded`
+(the receipt already expects this entry), `edited` (this invocation replaced the
+body), `revision` (the revision this invocation recorded, else `null`) and
+`receipt`. Without `--publish`, `edited` is `false` and `revision` is `null`: the
+release and the receipt are unchanged. Refusals and a read-back that differs are a
+`release_error` with exit `2`; a hosting timeout is `release_pending` with exit `3`.
+
+The receipt keeps schema `1` and gains an optional `notes_revisions` list, oldest
+first; `release status` and `release run/resume/verify` report it in
+`data.release.notes_revisions`, `null` for a receipt without revisions. Each entry
+holds `source`, `notes_sha256`, `previous_notes_sha256`, `edited`, `at` (UTC, ISO
+8601) and `tool_version`. Both digests are computed like `artifacts.notes_sha256`:
+the SHA-256 of the body as a canonical JSON string, with CRLF read as LF and
+trailing line ends removed. A release-kit without this field verifies such a
+receipt against the entry at the tag and therefore reports the republished notes
+as different.
+
 ### Update and rollback
 
 `update` returns `data.plan`, `plan_sha256` and `state` (`planned`, `unchanged`,

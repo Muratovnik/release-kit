@@ -264,6 +264,9 @@ relkit release resume v1.0.0 --publish
 relkit release resume v1.0.0 --publish --accept-ci-attempt 2
 # Only after the owner removed the remote tag of an attempt that will never publish:
 relkit release abandon v1.0.0 --reason "CI cancelled; remote tag removed"
+# After committing a rewritten changelog entry for a published release:
+relkit release notes v1.0.0
+relkit release notes v1.0.0 --publish
 ```
 
 For a vendored projection, replace `relkit` with `python .github/relkit.pyz`.
@@ -351,6 +354,44 @@ new local edits are left alone and reported separately; they do not become relea
 inputs. A repeated resume re-verifies publication without pushing or publishing
 again. It can therefore detect later edits to notes, which GitHub still allows on
 immutable releases.
+
+### Republish the notes of a published release
+
+The notes of a release are the changelog entry at its tag commit. A rewrite of that
+entry committed later reaches the published release only through `notes`:
+
+- `relkit release notes vX.Y.Z` changes nothing. It reads the local receipt, takes
+  the entry for the version from the changelog committed at the current `HEAD`, reads
+  the published release and shows the release ID, the SHA-256 of the published body
+  and of the entry, whether they differ and whether a revision would be recorded.
+- `relkit release notes vX.Y.Z --publish` takes the repository lock, replaces the
+  published body with that entry, reads the release back and requires the body to
+  equal the entry. It then appends a revision to the receipt. When the body already
+  equals the entry it edits nothing, and records the revision only if the receipt
+  does not yet expect that entry.
+
+Both forms refuse with exit `2`, before any edit, unless all of these hold: the
+receipt records `publication = published` for this checkout; the changelog
+file has no uncommitted changes; `HEAD` descends from the tag commit; and the entry
+passes the checks publication applied at the tag: the `[changelog]` profile in the
+`relkit.toml` committed at `HEAD`, and commit links inside the release's own range.
+The changelog path, repository and release boundary stay the ones pinned by the
+plan. Notes are the only thing that changes: the tag, the assets and the receipt's
+plan stay as they are.
+
+`verify` and `resume` then expect the entry at the source commit of the latest
+recorded revision, extracted from Git again rather than read from the receipt. If
+that entry no longer matches the digest the revision recorded, the receipt and the
+repository disagree and verification fails. A notes digest that a recorded
+revision explains is not an identity change. A body edited by hand without the
+command still fails with "published notes differ from the committed changelog
+entry". A receipt without revisions verifies against the entry at the tag, as
+before.
+
+The GitHub adapters edit the body with `PATCH /repos/OWNER/REPO/releases/ID`; GitHub
+allows that on an immutable release. The directory publisher refuses: its manifest
+holds the notes and identifies the publication, which is never rewritten, so a
+corrected text belongs to a new version there.
 
 ## Evidence and boundaries
 
@@ -524,7 +565,9 @@ publication test is authorized by running the isolated test suite.
 `release status vX.Y.Z` reads the saved receipt without changing files or checking
 GitHub. Its exit `0` means the read succeeded, not that the published release is
 currently valid. `release abandon` exits `0` once the outcome is recorded and `2`
-when it is refused. All commands accept the opt-in [structured CLI contract](cli-json.md);
+when it is refused. `release notes` exits `0` for a plan or a completed republish,
+`2` when it is refused or the read-back differs, and `3` when a hosting call timed
+out; run it again to reconcile. All commands accept the opt-in [structured CLI contract](cli-json.md);
 recorded publication, verification and cleanup remain separate fields.
 Status can also inspect a receipt whose process cleanup is unconfirmed. The
 retained release lock continues to block execution until the operator confirms

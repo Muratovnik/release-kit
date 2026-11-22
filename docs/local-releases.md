@@ -80,7 +80,12 @@ relkit release plan 1.0.0
 relkit release run 1.0.0 --publish --plan-hash REVIEWED
 relkit release status 1.0.0
 relkit release verify 1.0.0
+relkit release notes 1.0.0 --publish
 ```
+
+`release notes` republishes the notes of a release published to GitHub from a
+changelog entry rewritten and committed later; the directory publisher refuses it.
+See [republish the notes of a published release](release-coordinator.md#republish-the-notes-of-a-published-release).
 
 Prepare runs checks, publication audits, build and smoke before creating a release
 tag. Its receipt binds source SHA, settings, version and all file sizes/digests.

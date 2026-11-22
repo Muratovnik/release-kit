@@ -249,6 +249,24 @@ Output is UTF-8. Strict profiles preserve entry content and internal line ending
 trim trailing blank line endings and append one final LF. Publication never
 regenerates or reformats human edits.
 
+## Republish the notes of a published release
+
+A release coordinated by `relkit release` publishes the entry committed at its tag.
+To correct or rewrite that entry afterwards, edit it in the changelog, commit it, then:
+
+```bash
+relkit release notes v1.2.0            # compare the committed entry with the published notes
+relkit release notes v1.2.0 --publish  # replace the published notes and record it
+```
+
+The entry is validated as it was at publication, read from the changelog committed
+at `HEAD`, and the published body is read back after the edit. The receipt records
+which commit the published notes came from, so `relkit release verify` keeps passing
+for the new text and still fails for a hand edit on the hosting side. Only the GitHub
+adapters can edit notes; the directory publisher refuses. See
+[republish the notes of a published release](release-coordinator.md#republish-the-notes-of-a-published-release)
+for the preconditions and exit codes.
+
 ## Python API
 
 `releasekit.release.changelog.entry_for(text, version, profile="conventional-changelog", first_version="0.1.0", section_aliases={"Исправлено": "fixes"})`
