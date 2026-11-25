@@ -159,6 +159,18 @@ def _audit_commit(arguments: argparse.Namespace) -> int:
 
 
 def _audit(arguments: argparse.Namespace) -> int:
+    if arguments.sandbox and (arguments.push or arguments.commit):
+        # A push publishes, and the guard is what judges it: a switch that skips the
+        # guard's own check must never reach that path.
+        message = (
+            "--sandbox is for a full audit of a disposable clone; --push publishes and "
+            "keeps its guard check"
+            if arguments.push
+            else "--sandbox is for a full audit of a disposable clone; --commit checks no guard"
+        )
+        arguments.result.error("invalid_arguments", message)
+        print(f"relkit audit: {message}", file=sys.stderr)
+        return 2
     if arguments.message and not arguments.commit:
         message = "--message is only valid with --commit"
         arguments.result.error("invalid_arguments", message)
@@ -181,6 +193,7 @@ def _audit(arguments: argparse.Namespace) -> int:
         owner_mode=arguments.owner,
         require_overlay=arguments.require_overlay,
         allow_download=not arguments.no_download,
+        sandbox=arguments.sandbox,
         result=arguments.result,
     )
 
@@ -719,6 +732,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--require-overlay",
         action="store_true",
         help="Also require and verify the private sibling's mount manifest",
+    )
+    publication_audit.add_argument(
+        "--sandbox",
+        action="store_true",
+        help="This checkout is a disposable clone: do not require the owner's pre-push and "
+        "commit guards, which a clone does not carry; every verdict on content stays. "
+        "Refused with --push and --commit",
     )
     publication_audit.add_argument(
         "--no-download",

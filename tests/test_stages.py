@@ -39,6 +39,31 @@ class Clock:
 
 
 class StageLogTests(unittest.TestCase):
+    def test_timings_keep_each_ended_stage_and_mark_the_ones_run_on_another_thread(self):
+        clock = Clock()
+        log = stages.StageLog(io.StringIO(), heartbeat=None, clock=clock)
+        with log.stage("snapshot"):
+            clock.value += 1.5
+
+        def beside():
+            with log.stage("policy-rules"):
+                pass
+
+        worker = threading.Thread(target=beside)
+        worker.start()
+        worker.join()
+        with contextlib.suppress(RuntimeError), log.stage("betterleaks"):
+            clock.value += 0.25
+            raise RuntimeError("an engine that raised still took its time")
+        self.assertEqual(
+            [
+                stages.Timing("snapshot", 1.5, concurrent=False),
+                stages.Timing("policy-rules", 0.0, concurrent=True),
+                stages.Timing("betterleaks", 0.25, concurrent=False),
+            ],
+            log.timings(),
+        )
+
     def test_start_and_done_lines_carry_an_offset_timestamp_and_the_duration(self):
         sink, clock = io.StringIO(), Clock()
         moment = datetime(2026, 10, 16, 12, 34, 56, 789000, tzinfo=timezone(timedelta(hours=3)))

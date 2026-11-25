@@ -170,6 +170,15 @@ python .github/relkit.pyz audit --history --owner --require-overlay
 链接清单。
 [基础的公开策略审计](../../README.zh-CN.md#在既有项目中的第一次检查)并不需要这些参数。
 
+为了离开工作克隆审计历史而建立的一次性克隆不带这些防护，所以在那里运行的所有者审计总会因此
+被拒绝。给这样的运行加上 `--sandbox`：pre-push 防护与提交防护不再检查，输出和一条
+`guards_not_checked` 警告会说明这一点，而对内容的每一项判定都保持不变，私有策略与 overlay
+也包括在内。判定推送所发布内容的 `--push` 以及 `--commit` 会拒绝这个参数。
+
+```text
+python .github/relkit.pyz audit --history --owner --sandbox
+```
+
 ### 压缩包与外部对象
 
 ZIP 系列容器在工作树、索引和可达历史中按内容识别：`.zip`、`.whl`、`.jar`、`.pyz`、
@@ -352,7 +361,10 @@ YAML 转 JSON 原地迁移必须完整保留整份 Dotbot 文档，而不只是�
 
 审计的每个阶段（`policy-rules`、`history`、`overlay`、`provision`、`snapshot`、`betterleaks`、`lychee`）
 都会向 stderr 写入带时间戳的 `start` 与 `done (X.Xs)` 行，阶段运行期间至少每 30 秒输出一次
-心跳，便于事后把耗时归到具体阶段。每条命令还会以
+心跳，便于事后把耗时归到具体阶段。策略阶段与引擎并行运行，所以它们的耗时相互重叠，加起来
+并不等于审计的总耗时；审计报告最后一行先给出经过的时间，再依次列出各阶段，最后列出同时运行的
+阶段：`relkit audit: 14.1s elapsed; provision 0.5s, snapshot 3.9s, betterleaks 0.7s,
+lychee 0.6s; at the same time: policy-rules 7.7s`。每条命令还会以
 `relkit <command>: <status> (exit N, X.Xs)` 结束：它是 stdout 的最后一行；使用 `--json` 时
 写入 stderr，stdout 始终恰好是一个 JSON 对象。参见
 [契约](../cli-json.md#summary-line-and-stage-lines)（英文）。

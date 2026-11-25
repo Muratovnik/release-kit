@@ -209,6 +209,17 @@ guard, and reports a commit guard that is missing or cannot run as a warning.
 `--require-overlay` also demands the exact mounted-link manifest. These flags are
 not required for the [basic public-policy audit](../README.md#first-check-in-an-existing-project).
 
+A disposable clone made to audit history away from the working checkout carries none
+of these guards, so an owner audit there would always be refused for them. Add
+`--sandbox` to such a run: the pre-push and commit guards are not checked, the output
+and a `guards_not_checked` warning say so, and every verdict on content stays, the
+private policy and the overlay included. `--push`, which judges what a push publishes,
+and `--commit` refuse the flag.
+
+```text
+python .github/relkit.pyz audit --history --owner --sandbox
+```
+
 ### Archives and external objects
 
 ZIP-family containers are recognized by content in worktree, index and reachable
@@ -425,7 +436,11 @@ public interface. A configuration or execution error is not evidence of safety.
 Each stage of an audit (`policy-rules`, `history`, `overlay`, `provision`,
 `snapshot`, `betterleaks`, `lychee`) writes timestamped `start` and `done (X.Xs)` lines to stderr,
 with a heartbeat at least every 30 seconds while it runs, so a slow audit can be
-attributed to a stage afterwards. Every command also ends with
+attributed to a stage afterwards. The policy stages run beside the engines, so their
+times overlap and do not add up to the audit's; its report ends with one line that
+names the elapsed time, then each stage in turn, then those that ran at the same time:
+`relkit audit: 14.1s elapsed; provision 0.5s, snapshot 3.9s, betterleaks 0.7s, lychee
+0.6s; at the same time: policy-rules 7.7s`. Every command also ends with
 `relkit <command>: <status> (exit N, X.Xs)`: the last line of stdout, or of stderr
 under `--json`, where stdout stays exactly one JSON object. See
 [the contract](cli-json.md#summary-line-and-stage-lines).

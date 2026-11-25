@@ -22,6 +22,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, TextIO
 
@@ -32,6 +33,19 @@ def timestamp(moment: datetime | None = None) -> str:
     """Local time with its UTC offset, to the second: `2026-10-16T12:34:56+03:00`."""
     moment = moment or datetime.now().astimezone()
     return moment.astimezone().isoformat(timespec="seconds")
+
+
+@dataclass(frozen=True)
+class Timing:
+    """How long one stage took, and whether it ran beside the log owner's own stages.
+
+    A `concurrent` stage ran on another thread than the one that made the log, at the
+    same time as the owner's, so stage times do not add up to the elapsed time.
+    """
+
+    name: str
+    seconds: float
+    concurrent: bool = False
 
 
 class Stage:
@@ -50,7 +64,8 @@ class StageLog:
     `heartbeat` is the longest silence in seconds while a stage runs; `None` or zero
     disables it. `clock` supplies monotonic seconds and `now` the wall time of a line,
     so a test controls both. Heartbeats run on one daemon thread per running stage,
-    which `stage` stops and joins before it returns.
+    which `stage` stops and joins before it returns. `timings` keeps each ended
+    stage's time for a caller's own report.
     """
 
     def __init__(
@@ -66,6 +81,13 @@ class StageLog:
         self._clock = clock
         self._now = now
         self._lock = threading.Lock()
+        self._owner = threading.get_ident()
+        self._finished: list[Timing] = []
+
+    def timings(self) -> list[Timing]:
+        """Every stage that has ended, in the order they ended."""
+        with self._lock:
+            return list(self._finished)
 
     def _write(self, text: str) -> None:
         stream = self._sink if self._sink is not None else sys.stderr
@@ -107,4 +129,9 @@ class StageLog:
             if worker is not None:
                 worker.join(timeout=5.0)
             outcome = "failed" if handle.failed else "done"
-            self._write(f"stage {name}: {outcome} ({self._clock() - started:.1f}s)")
+            seconds = self._clock() - started
+            with self._lock:
+                self._finished.append(
+                    Timing(name, seconds, concurrent=threading.get_ident() != self._owner)
+                )
+            self._write(f"stage {name}: {outcome} ({seconds:.1f}s)")

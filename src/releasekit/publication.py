@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import sys
 import threading
+import time
 from collections.abc import Callable
 from pathlib import Path
 from typing import cast
@@ -366,6 +367,35 @@ def _run_engines(
             engine_errors.append(f"Lychee could not complete (exit {engine_results['lychee']})")
 
 
+def _report_timing(result: Result, log: stages.StageLog, elapsed: float) -> None:
+    """Name the audit's wall time and each stage's, keeping apart the ones that overlap.
+
+    The policy stages run beside the engines, so the stage times add up to more than
+    the audit took; a reader who sums them gets a wrong total. The elapsed time is the
+    audit's own, and the overlapping stages are listed after it on their own.
+    """
+    timings = log.timings()
+    if not timings:
+        return
+    result.data["timing"] = {
+        "elapsed_seconds": round(elapsed, 1),
+        "stages": [
+            {"name": item.name, "seconds": round(item.seconds, 1), "concurrent": item.concurrent}
+            for item in timings
+        ],
+    }
+
+    def listed(items: list[stages.Timing]) -> str:
+        return ", ".join(f"{item.name} {item.seconds:.1f}s" for item in items)
+
+    line = f"relkit audit: {elapsed:.1f}s elapsed"
+    if sequential := [item for item in timings if not item.concurrent]:
+        line += f"; {listed(sequential)}"
+    if concurrent := [item for item in timings if item.concurrent]:
+        line += f"; at the same time: {listed(concurrent)}"
+    print(line)
+
+
 def run(
     root: Path,
     *,
@@ -375,10 +405,48 @@ def run(
     owner_mode: bool,
     require_overlay: bool,
     allow_download: bool,
+    sandbox: bool = False,
     result: Result | None = None,
 ) -> int:
+    """The full audit of the worktree, the index or the history.
+
+    `sandbox` is for a disposable clone: it carries none of the owner's guards, so the
+    guard checks an owner audit adds are skipped and said to be; every verdict on
+    content stays. The push scope, which publishes, has no such switch.
+    """
     result = result or Result()
     log = stages.StageLog()
+    started = time.monotonic()
+    try:
+        return _run(
+            root,
+            history=history,
+            staged=staged,
+            strict=strict,
+            owner_mode=owner_mode,
+            require_overlay=require_overlay,
+            allow_download=allow_download,
+            sandbox=sandbox,
+            result=result,
+            log=log,
+        )
+    finally:
+        _report_timing(result, log, time.monotonic() - started)
+
+
+def _run(
+    root: Path,
+    *,
+    history: bool,
+    staged: bool,
+    strict: bool,
+    owner_mode: bool,
+    require_overlay: bool,
+    allow_download: bool,
+    sandbox: bool,
+    result: Result,
+    log: stages.StageLog,
+) -> int:
     result.data.update(scope="history" if history else "staged" if staged else "worktree")
     result.data["engines"] = {"betterleaks": None, "lychee": None}
     if history:
@@ -508,9 +576,17 @@ def run(
     # The policy's rules apply whenever it is configured; the guard and the overlay are
     # this workstation's set-up, which only an explicit owner check asks about.
     explicit = owner_mode or require_overlay
-    if explicit and (guard_problem := protection.problem(root)):
+    if sandbox:
+        notice = (
+            "sandbox: this checkout's pre-push and commit guards were not checked; "
+            "the verdict covers its content only"
+        )
+        result.data["sandbox"] = True
+        result.warnings.append({"code": "guards_not_checked", "message": notice})
+        print(f"relkit audit: {notice}")
+    elif explicit and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
-    if explicit and (commit_problem := protection.commit_guard_problem(root)):
+    if explicit and not sandbox and (commit_problem := protection.commit_guard_problem(root)):
         # A warning, not a failure: the pre-push guard still stops the publication.
         result.warnings.append({"code": "commit_guard", "message": commit_problem})
         print(f"relkit audit: {commit_problem}")

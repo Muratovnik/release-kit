@@ -68,7 +68,16 @@ The time is local with its UTC offset, to the second; the outcome is `done` or
 `failed`; a heartbeat appears at least every 30 seconds while a stage runs. `audit`
 reports `policy-rules`, `history`, `overlay`, `provision`, `snapshot`, `betterleaks`
 and `lychee` as they run; the policy stages run beside the engine stages, so their
-lines interleave. When the release coordinator audits, the same lines land in its run log,
+lines interleave and their times overlap. Once a stage has run, the audit ends its own
+output, before the summary line, with one line naming its elapsed time, each stage that
+ran in turn and, after `at the same time:`, the stages that overlapped them (on stdout,
+or stderr under `--json`):
+
+```text
+relkit audit: 14.1s elapsed; provision 0.5s, snapshot 3.9s, betterleaks 0.7s, lychee 0.6s; at the same time: policy-rules 7.7s
+```
+
+When the release coordinator audits, the same lines land in its run log,
 and the coordinator writes its own [stage lines](release-coordinator.md#stage-lines-in-the-logs)
 there. Names and wording are not stable identifiers.
 
@@ -97,7 +106,7 @@ Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `release_pending`, `engine_cleanup_unconfirmed`, `generation_cleanup_unconfirmed`,
 `update_cleanup_unconfirmed`, `release_cleanup_unconfirmed`, `interrupted`,
 `internal_error` and fallback `command_failed`.
-`lock_retained` is a warning.
+`lock_retained` and `guards_not_checked` are warnings.
 
 `release_cleanup_unconfirmed` retains the release lock and recovery evidence.
 `data.process_cleanup` and, when available, `data.release.process_cleanup` are
@@ -123,6 +132,11 @@ operational failure and produce audit exit `2`, even if another check found
 publication findings. History adds
 `untracked_present`: untracked entries do not by themselves violate the clean
 tracked-tree precondition; configured worktree candidate checks still apply.
+Worktree, staged and history scope add `timing` once a stage has run:
+`elapsed_seconds`, the audit's wall time, and `stages`, objects with `name`,
+`seconds` and `concurrent` (`true` for a stage that ran beside the others, so the
+stage times do not add up to `elapsed_seconds`). `--sandbox` adds `sandbox: true`
+and a `guards_not_checked` warning; push and commit scope refuse it.
 Native engine diagnostics are not invented structured findings. The top-level
 exit also includes history, guard and overlay failures. Push scope adds `remote` and
 `pushed_commits` (commits the push publishes) and runs no link engine. Commit scope
