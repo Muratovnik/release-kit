@@ -29,6 +29,11 @@ IMPORT_PATHS = (str(ROOT / "src"), str(ROOT / "tests"))
 MAX_WORKERS = 16
 
 
+def default_jobs() -> int:
+    """The worker count `--jobs 0` selects: one per core, up to `MAX_WORKERS`."""
+    return min(os.cpu_count() or 1, MAX_WORKERS)
+
+
 class CompletedCasesMixin:
     """Track completed unittest cases without comparing methods with subtest skips."""
 
@@ -163,7 +168,7 @@ def main(argv: list[str] | None = None) -> int:
     if not names:
         print(f"tests: no tests discovered in {start}", flush=True)
         return 2
-    jobs = arguments.jobs or min(os.cpu_count() or 1, MAX_WORKERS)
+    jobs = arguments.jobs or default_jobs()
     jobs = max(1, min(jobs, len(names) or 1))
 
     print(f"tests: {len(names)} across {jobs} process(es)", flush=True)

@@ -1,0 +1,22 @@
+# Release Kit's heavy runs, for a machine-wide heavy-process gate where one is installed.
+#
+# The gate (`heavy-gate`, protocol 1) admits a heavy run by the machine's measured
+# load and by what earlier runs of its kind used, and grants a kind with `workers` a
+# worker count K. It reads this file from the repository a command runs in.
+# `tools/check.py` runs the test suite through the gate's `run` with this file's kind
+# when it finds the gate's `heavy-gate.json` on PATH, and hands K to
+# `tools/parallel_tests.py` as `--jobs`; without the gate it runs the suite directly.
+# The gate's refusal hook turns away `tools/parallel_tests.py` started by hand outside
+# the gate and offers the same command through it, with `--jobs={k}`.
+
+schema = 1
+project = "release-kit"
+
+# The whole unittest suite, spread over K processes. `tools/check.py` asks for the
+# runner's own default, one process per core up to 16; past that the disk is the limit.
+# No seed: the first run goes alone, and the gate learns the kind's profile from it.
+[[kind]]
+name = "tests"
+commands = ["python tools/parallel_tests.py"]
+workers = { min = 1, want = 16, max = 16 }
+suggest = "--jobs={k}"

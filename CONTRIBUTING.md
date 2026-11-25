@@ -45,6 +45,10 @@ Keep cache/temp overrides local to this shell, not global settings.
 
 For CLI development, run `python tools/check.py`. It runs stdlib tests, Ruff lint
 and format checks with a canonical temporary path, important on macOS.
+On a machine with a heavy-process gate (`heavy-gate.json` on PATH, protocol 1), the
+tests run through it as the `tests` kind of `.heavy-gate.toml`, with the worker count
+it grants; when it has no room the check exits 75 and says why, and
+`HEAVY_GATE_WAIT=1` waits instead. Everywhere else they run directly.
 
 For the full development check, install `uv` on PATH using its
 [official instructions](https://docs.astral.sh/uv/getting-started/installation/), then run:
