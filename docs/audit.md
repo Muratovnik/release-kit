@@ -173,7 +173,9 @@ holds, a path its trees name, a commit it has. A new commit that inherits such a
 unchanged is listed with it. A new blob that keeps the same line is new content and is
 refused, as are ref names, annotated tags, the tree a release ships and every public rule.
 A tag alone counts for nothing: a release creates its tag before it pushes. Remote-tracking
-refs are trusted as push scope trusts them; a stale one only lists less. Nothing counts
+refs are trusted as push scope trusts them: one behind the host lists less, and one for a
+branch the host has since deleted counts until a prune removes it, because what that
+branch held was published. Nothing counts
 when the remote is a path on this machine (a clone of the working checkout has the
 checkout's local branches as `origin`), has no remote-tracking refs or is not configured.
 The output names what counted, then one line per path, `commit message` or
