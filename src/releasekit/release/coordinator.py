@@ -1009,6 +1009,10 @@ def _audit(runner: Runner, release: settings.Settings, *, history: bool, no_down
             + (f"\n  ... and {more} more" if more > 0 else "")
             + f"\nfull output: {runner.log}"
         )
+    # The audit's own lines went to the stage log; name what it listed where it is seen.
+    for warning in audit_result.warnings:
+        if warning["code"] == "already_published":
+            print(f"relkit release: {warning['message']}; listed in {runner.log}", flush=True)
 
 
 def _local_checks(runner, value, workspace, no_download, path=None, state=None):

@@ -401,12 +401,14 @@ def _blob_history_failures(
     scope: PushScope | None = None,
     inventory: _BlobInventory | None = None,
     cancelled: threading.Event | None = None,
+    listed: PublishedFindings | None = None,
 ) -> list[str]:
     """Judge the content of every historical blob.
 
     ``inventory`` is the caller's own listing of the same history, so it is read once;
     ``cancelled`` lets a caller that no longer needs the answer stop the scan between
-    batches, in which case what is returned is not a verdict.
+    batches, in which case what is returned is not a verdict. ``listed`` takes the owner
+    policy's findings in blobs a remote already holds instead of returning them.
     """
     wrapped_names = tuple(name for name in names if len(name.split()) > 1)
     wrapped_workflows = tuple(name for name in owner_workflows if len(name.split()) > 1)
@@ -588,6 +590,8 @@ def _blob_history_failures(
                         )
                     )
                 for kind, detail in sorted(details.items()):
+                    if listed is not None and listed.blob(kind, object_id, relative):
+                        continue
                     suffix = f" ({detail})" if detail else ""
                     failures.append(f"history blob {object_id[:12]}:{relative}: {kind}{suffix}")
     return failures
@@ -772,6 +776,7 @@ def _commit_metadata_failures(
     forbid_internal_planning: bool,
     forbid_machine_observations: bool,
     attribution_exempt: Collection[str] = frozenset(),
+    listed: PublishedFindings | None = None,
 ) -> list[str]:
     """Inspect raw commit headers, including embedded merge-tag metadata."""
     failures: list[str] = []
@@ -806,7 +811,9 @@ def _commit_metadata_failures(
                 rules.MACHINE_OBSERVATION,
             }
             failures.extend(
-                f"history {object_id[:12]}: commit-metadata: {kind}" for kind in sorted(kinds)
+                f"history {object_id[:12]}: commit-metadata: {kind}"
+                for kind in sorted(kinds)
+                if listed is None or not listed.commit(kind, object_id, "commit header")
             )
     return failures
 
@@ -1718,6 +1725,133 @@ def push_scope(root: Path, remote: str, updates: Sequence[PushedRef]) -> PushSco
     )
 
 
+@dataclass(frozen=True)
+class PublishedHistory:
+    """What one remote already holds, as its remote-tracking refs record it.
+
+    Only objects reachable from ``refs/remotes/<remote>/*`` count. A tag does not make
+    its commit published: a release creates its tag before it pushes, and nothing in a
+    checkout tells a fetched tag from a local one without asking the remote.
+    """
+
+    remote: str
+    commits: frozenset[str]
+    blobs: frozenset[str]
+    paths: frozenset[str]
+
+
+def _local_url(url: str) -> bool:
+    """Whether Git reaches ``url`` on this machine, by Git's own reading of a URL."""
+    if "://" in url:
+        return url.split("://", 1)[0].casefold() == "file"
+    colon, slash = url.find(":"), url.find("/")
+    if colon < 0 or 0 <= slash < colon:
+        return True
+    # `C:/x` is a drive on Windows and an ssh host named C everywhere else.
+    return os.name == "nt" and re.match(r"[A-Za-z]:", url) is not None
+
+
+def published_history(root: Path, remote: str) -> tuple[PublishedHistory | None, str]:
+    """What ``remote`` already holds, or ``None``, with a line saying which and why.
+
+    A remote at a path on this machine publishes nothing: a clone made from the working
+    checkout has every local branch of that checkout under its ``origin``, so counting
+    those as published would pass the whole unpublished history.
+    """
+    if not PUSH_REMOTE_NAME.fullmatch(remote):
+        return None, f"no history counts as published: {remote!r} cannot name a Git remote"
+    url = _git(root, ["remote", "get-url", remote])
+    if url.returncode:
+        return None, f"no history counts as published: {remote} is not a configured remote"
+    if _local_url(url.stdout.strip()):
+        return None, (
+            f"no history counts as published: {remote} is a path on this machine, "
+            "which publishes nothing"
+        )
+    references = _git(root, ["for-each-ref", "--format=%(objectname)", f"refs/remotes/{remote}"])
+    if references.returncode:
+        raise RuntimeError(references.stderr.strip() or "Git remote-tracking ref lookup failed")
+    tips = tuple(sorted(set(references.stdout.split())))
+    if not tips:
+        return None, (
+            f"no history counts as published: {remote} has no remote-tracking refs; "
+            f"`git fetch {remote}` records what it holds"
+        )
+    selection = (f"--remotes={remote}",)
+    commits = _git(root, ["rev-list", *selection])
+    if commits.returncode:
+        raise RuntimeError(commits.stderr.strip() or "Git published revision inventory failed")
+    blobs = _changed_blob_paths(root, (), scope=PushScope(selection, (), tips))
+    published = PublishedHistory(
+        remote,
+        frozenset(commits.stdout.split()),
+        frozenset(blobs),
+        frozenset(path for paths in blobs.values() for path in paths if path),
+    )
+    return published, (
+        f"published history: {len(published.commits)} commit(s) reachable from "
+        f"refs/remotes/{remote}/"
+    )
+
+
+class PublishedFindings:
+    """The owner policy's findings in history a remote already holds: listed, not refused.
+
+    Rewriting what a remote holds cannot take it back, and a remote that keeps immutable
+    releases does not let it be rewritten at all, so refusing it would refuse every audit
+    from then on. Anything else stays a refusal: new content, a ref name, an annotated tag,
+    and every public rule. ``machine-observation`` is listed only while the public rule
+    that also reports it is off, since a finding cannot tell which of the two made it.
+    """
+
+    def __init__(self, published: PublishedHistory, *, forbid_machine_observations: bool) -> None:
+        self.published = published
+        self.kinds = frozenset(
+            {rules.DECLARED_NAME, rules.OWNER_WORKFLOW, rules.PERSONAL_DATA}
+            | (set() if forbid_machine_observations else {rules.MACHINE_OBSERVATION})
+        )
+        self.counts: Counter[tuple[str, str]] = Counter()
+        # The blob scan runs on its own thread beside the other history stages.
+        self._lock = threading.Lock()
+
+    def _take(self, kind: str, subject: str, *, held: bool) -> bool:
+        if not held or kind not in self.kinds:
+            return False
+        with self._lock:
+            self.counts[(subject, kind)] += 1
+        return True
+
+    def blob(self, kind: str, object_id: str, relative: str) -> bool:
+        """Whether a finding in this blob's content is listed instead of refused."""
+        return self._take(kind, relative, held=object_id in self.published.blobs)
+
+    def path(self, kind: str, relative: str) -> bool:
+        """Whether a finding in this path's name is listed instead of refused."""
+        return self._take(kind, relative, held=relative in self.published.paths)
+
+    def commit(self, kind: str, commit: str, subject: str) -> bool:
+        """Whether a finding this commit carries is listed instead of refused."""
+        return self._take(kind, subject, held=commit in self.published.commits)
+
+    def entries(self) -> list[tuple[str, str, int]]:
+        return [(subject, kind, count) for (subject, kind), count in sorted(self.counts.items())]
+
+
+def _object_ids(root: Path, names: Sequence[str]) -> list[str | None]:
+    """The object each ``<revision>:<path>`` name resolves to, or ``None``, in order."""
+    result = _git(
+        root,
+        ["cat-file", "--batch-check=%(objectname)"],
+        stdin="".join(f"{name}\n" for name in names),
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "Git object name lookup failed")
+    lines = result.stdout.splitlines()
+    if len(lines) != len(names):
+        raise RuntimeError("Git object name lookup returned an unexpected record count")
+    return [line if PUSH_OBJECT.fullmatch(line) else None for line in lines]
+
+
 def _head_has_owner_author(root: Path, owners: Collection[str]) -> bool:
     people = _git(root, ["log", "HEAD", "--format=%an <%ae>"])
     return people.returncode == 0 and bool(owners & set(people.stdout.splitlines()))
@@ -1822,17 +1956,25 @@ def history_failures(
     inspect_archives: bool = True,
     forbid_png_metadata: bool = False,
     scope: PushScope | None = None,
+    listed: PublishedFindings | None = None,
 ) -> list[str]:
     """Rules that must hold for every reachable commit before publication.
 
     ``scope`` narrows every inventory below to one push, so the same rules judge only
     the commits, ref names and tag objects that push publishes.
 
+    ``listed`` takes the owner policy's findings in history its remote already holds,
+    by object: a blob the remote holds, a path its trees name, a commit it has. A new
+    commit that inherits such a blob unchanged is listed with it; a new blob that still
+    carries the same line is new content and is refused.
+
     ``owner_identities`` narrows the commit-level attribution rule to the owners' own
     commits. Attribution is a statement its author makes: an owner's commit must not
     credit an AI, while a contributor's pull request, and the merge a host synthesizes
     to test it, carries whatever the contributor chose to state.
     """
+    if scope is not None and listed is not None:
+        raise ValueError("a push publishes what it carries; nothing in it is listed")
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
     revisions = HISTORY_REFS if scope is None else scope.revisions
@@ -1866,6 +2008,7 @@ def history_failures(
             scope=scope,
             inventory=inventory,
             cancelled=cancelled,
+            listed=listed,
         )
     )
     for relative in sorted(history_paths):
@@ -1881,7 +2024,8 @@ def history_failures(
                 )
                 & OWNER_PRIVACY_KINDS
             ):
-                failures.append(f"history {relative}: {kind}")
+                if listed is None or not listed.path(kind, relative):
+                    failures.append(f"history {relative}: {kind}")
             continue
         for kind in sorted(
             rules.kinds_in_path(
@@ -1895,7 +2039,8 @@ def history_failures(
                 providers=provider_surfaces,
             )
         ):
-            failures.append(f"history {relative}: {kind}")
+            if listed is None or not listed.path(kind, relative):
+                failures.append(f"history {relative}: {kind}")
         for kind, detail in sorted(
             _provenance_details(
                 relative,
@@ -2003,7 +2148,8 @@ def history_failures(
                 rules.MACHINE_OBSERVATION,
             }
             for kind in sorted(message_kinds):
-                failures.append(f"history {commit[:12]}: commit-message: {kind}")
+                if listed is None or not listed.commit(kind, commit, "commit message"):
+                    failures.append(f"history {commit[:12]}: commit-message: {kind}")
 
     reachable = _git(root, ["rev-list", *revisions])
     if reachable.returncode != 0:
@@ -2023,6 +2169,7 @@ def history_failures(
             forbid_internal_planning=forbid_internal_planning,
             forbid_machine_observations=forbid_machine_observations,
             attribution_exempt=attribution_exempt,
+            listed=listed,
         )
     )
     patterns = [r"[A-Za-z]:[\\/]+(Users|Documents and Settings)[\\/]+", r"/(Users|home)/"]
@@ -2031,6 +2178,10 @@ def history_failures(
     patterns.extend(re.escape(name) for name in provider_surfaces)
     expression = "(" + "|".join(patterns) + ")"
     seen: set[str] = set()
+    # A line the owner policy flags in a commit the remote does not have still comes from
+    # content the remote holds when that commit inherits the file's blob unchanged. Which
+    # blob it is takes one lookup, made once for all such lines after the search.
+    unresolved: list[tuple[str, str, str, str]] = []
     # Each batch is an independent Git process searching whole trees; running a few
     # at once keeps the order of the results, which are still read batch by batch.
     batches = [commits[offset : offset + 24] for offset in range(0, len(commits), 24)]
@@ -2076,9 +2227,28 @@ def history_failures(
                     providers=provider_surfaces,
                 )
             for kind in sorted(kinds):
+                if listed is not None and kind in listed.kinds:
+                    if not listed.commit(kind, commit, relative):
+                        unresolved.append((commit, relative, line_number, kind))
+                    continue
                 finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
                 if finding not in seen:
                     seen.add(finding)
                     failures.append(finding)
+    if listed is not None and unresolved:
+        names = sorted({f"{commit}:{relative}" for commit, relative, _, _ in unresolved})
+        try:
+            blobs = dict(zip(names, _object_ids(root, names), strict=True))
+        except RuntimeError as error:
+            failures.append(str(error))
+            blobs = {}
+        for commit, relative, line_number, kind in unresolved:
+            blob = blobs.get(f"{commit}:{relative}")
+            if blob is not None and listed.blob(kind, blob, relative):
+                continue
+            finding = f"history {commit[:12]}:{relative}:{line_number}: {kind}"
+            if finding not in seen:
+                seen.add(finding)
+                failures.append(finding)
     failures.extend(blob_scan.result())
     return failures

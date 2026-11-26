@@ -161,6 +161,23 @@ Git grafts, and disables replacement semantics in its Git/scanner processes.
 Public refs pointing directly to a tree or blob are included even when no commit contains
 that object; tree entries retain every path and symlink mode for policy checks.
 
+A rewrite cannot take back what a remote already holds, and a host that keeps releases
+immutable allows none. So history scope, and the release that runs it, lists the
+[private owner policy](#private-owner-policy)'s findings in that history instead of
+refusing them: `private-value`, `owner-workflow`, `personal-data`, and
+`machine-observation` while `forbid_machine_observations` is off, since that public rule
+reports the same kind. The remote is `[release] remote`, or `origin`. It holds what its
+remote-tracking refs, `refs/remotes/<remote>/*`, reach, judged by object: a blob it
+holds, a path its trees name, a commit it has. A new commit that inherits such a blob
+unchanged is listed with it. A new blob that keeps the same line is new content and is
+refused, as are ref names, annotated tags, the tree a release ships and every public rule.
+A tag alone counts for nothing: a release creates its tag before it pushes. Remote-tracking
+refs are trusted as push scope trusts them; a stale one only lists less. Nothing counts
+when the remote is a path on this machine (a clone of the working checkout has the
+checkout's local branches as `origin`), has no remote-tracking refs or is not configured.
+The output names what counted, then one line per path, `commit message` or
+`commit header`, and kind, with its number of occurrences.
+
 Push scope is what the [repository guard](#repository-guard) runs. It reads the lines
 Git writes to a `pre-push` hook (`<local ref> <local sha> <remote ref> <remote sha>`) and
 `--remote`, the destination Git names as the hook's first argument, and judges only what
@@ -175,7 +192,7 @@ inherits unchanged from the remote are not read again. `--strict` and
 `--require-overlay` do not apply. Push scope narrows the verdict on purpose: a private
 value that lives only in a local branch that is never pushed does not surface at push.
 The release and `audit --history` still judge the whole history, so run that before
-publishing.
+publishing. Push scope lists nothing: it judges every owner finding in what it reads.
 
 Commit scope is what the [commit guard](#repository-guard) runs on every commit. It
 judges only what the next commit adds against the [private owner
@@ -240,7 +257,8 @@ are non-excludable inspection failures.
 Git LFS pointers and submodule gitlinks fail because their external content is not
 contained in the inspected Git blobs. Audit external repositories as separate roots;
 review/migrate LFS material explicitly. Those failures and private owner-policy
-findings cannot be accepted through a baseline or structural exclusion.
+findings cannot be accepted through a baseline or structural exclusion. Owner findings
+in history the remote already holds are [listed instead](#scopes), not accepted.
 
 `--no-download` makes missing verified engine caches an operational failure. For
 platform pins, cache integrity and explicit executable overrides, read

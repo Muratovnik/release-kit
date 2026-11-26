@@ -91,6 +91,58 @@ def _history_arguments(settings, owner_rules, names, providers, private_paths) -
     }
 
 
+def _history_with_published(
+    root: Path,
+    settings: config_module.Config,
+    owner_rules: owner.OwnerRules,
+    arguments: dict,
+) -> tuple[list[str], audit.PublishedFindings | None, str]:
+    """The history verdict, with the owner policy's findings the remote already holds apart.
+
+    The remote is the one the project releases to, `[release] remote`, or `origin`.
+    Without owner rules there is nothing to set apart, so nothing is looked up.
+    """
+    listed: audit.PublishedFindings | None = None
+    basis = ""
+    if not owner_rules.empty:
+        remote = settings.release.remote if settings.release is not None else "origin"
+        published, basis = audit.published_history(root, remote)
+        if published is not None:
+            listed = audit.PublishedFindings(
+                published,
+                forbid_machine_observations=settings.exposure.forbid_machine_observations,
+            )
+    return audit.history_failures(root, **arguments, listed=listed), listed, basis
+
+
+def _report_published(result: Result, listed: audit.PublishedFindings | None, basis: str) -> None:
+    """Say what counted as published and list the owner policy's findings in it."""
+    result.data["already_published"] = None
+    if basis:
+        print(f"relkit audit: {basis}")
+    if listed is None:
+        return
+    entries = listed.entries()
+    remote = listed.published.remote
+    result.data["already_published"] = {
+        "remote": remote,
+        "commits": len(listed.published.commits),
+        "findings": [
+            {"subject": subject, "kind": kind, "count": count} for subject, kind, count in entries
+        ],
+    }
+    if not entries:
+        return
+    total = sum(count for _subject, _kind, count in entries)
+    message = (
+        f"{total} owner-policy finding(s) in history {remote} already holds are listed, not refused"
+    )
+    result.warnings.append({"code": "already_published", "message": message})
+    print(f"relkit audit: {message}:")
+    for subject, kind, count in entries:
+        print(f"  {subject}: {kind} ({count})")
+
+
 def run_push(
     root: Path,
     *,
@@ -520,12 +572,14 @@ def _run(
             hosted_ci_mode=settings.exposure.hosted_ci,
         )
 
-    def history_scan() -> list[str]:
+    def history_scan() -> tuple[list[str], audit.PublishedFindings | None, str]:
         return log.call(
             "history",
-            audit.history_failures,
+            _history_with_published,
             root,
-            **_history_arguments(settings, owner_rules, names, providers, private_paths),
+            settings,
+            owner_rules,
+            _history_arguments(settings, owner_rules, names, providers, private_paths),
         )
 
     # The policy checks run beside the engines; their outcomes are read below in
@@ -594,11 +648,15 @@ def _run(
         failures.extend(str(finding) for finding in report.baselined)
     if history:
         try:
-            failures.extend(cast(list[str], background.result(1)))
+            history_failures, listed, basis = cast(
+                tuple[list[str], audit.PublishedFindings | None, str], background.result(1)
+            )
         except RuntimeError as error:
             result.error("check_error", error)
             print(f"relkit audit: {error}", file=sys.stderr)
             return 2
+        failures.extend(history_failures)
+        _report_published(result, listed, basis)
 
     if explicit and policy is not None and policy.manifest_path.is_file():
         if policy.root.is_dir():

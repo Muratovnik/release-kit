@@ -106,7 +106,7 @@ Error codes include `invalid_arguments`, `configuration_error`, `io_error`,
 `release_pending`, `engine_cleanup_unconfirmed`, `generation_cleanup_unconfirmed`,
 `update_cleanup_unconfirmed`, `release_cleanup_unconfirmed`, `interrupted`,
 `internal_error` and fallback `command_failed`.
-`lock_retained` and `guards_not_checked` are warnings.
+`lock_retained`, `guards_not_checked` and `already_published` are warnings.
 
 `release_cleanup_unconfirmed` retains the release lock and recovery evidence.
 `data.process_cleanup` and, when available, `data.release.process_cleanup` are
@@ -132,6 +132,12 @@ operational failure and produce audit exit `2`, even if another check found
 publication findings. History adds
 `untracked_present`: untracked entries do not by themselves violate the clean
 tracked-tree precondition; configured worktree candidate checks still apply.
+History also adds `already_published`: `null` when no history counted as published
+(no owner policy, or a remote that is local, unconfigured or without remote-tracking
+refs), otherwise `remote`, `commits` (how many it holds) and `findings`, objects with
+`subject` (a path, `commit message` or `commit header`), `kind` and `count`. These
+owner-policy findings are listed, not failures; when there are any, an
+`already_published` warning gives their total.
 Worktree, staged and history scope add `timing` once a stage has run:
 `elapsed_seconds`, the audit's wall time, and `stages`, objects with `name`,
 `seconds` and `concurrent` (`true` for a stage that ran beside the others, so the
