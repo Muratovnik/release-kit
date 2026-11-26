@@ -73,7 +73,7 @@ it to `uv`; `pipx` works the same way in its place.
 To install without `gh`, name the release in the URL:
 
 ```text
-uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.36.0/release_kit-0.36.0-py3-none-any.whl
+uv tool install https://github.com/Muratovnik/release-kit/releases/download/v0.37.0/release_kit-0.37.0-py3-none-any.whl
 ```
 
 That one command cannot say `latest`: a wheel's filename must carry its version, and

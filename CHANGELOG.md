@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+## [0.37.0](https://github.com/Muratovnik/release-kit/compare/v0.36.0...v0.37.0) (2026-11-26)
+
+### Highlights
+
+A project can now tighten its private owner policy without rewriting history it has
+already published. `audit --history`, `release prepare` and the pre-push guard list an
+owner-policy finding in content the remote already holds (a blob, a path or a commit
+its remote-tracking refs reach) with its path, kind and count, instead of refusing it.
+New content that repeats the same value is still refused, as are public rules, secrets,
+ref names, annotated tags and the tree a release ships. A tag alone does not count as
+published, and a remote that is a path on this machine counts nothing.
+
+### Features
+
+- **audit:** name the elapsed and per-engine times, and audit a disposable clone with --sandbox ([2434321](https://github.com/Muratovnik/release-kit/commit/2434321660516f181acb6db5f55efc9bd4c80c22))
+- **audit:** list owner-policy findings in history the remote already holds instead of refusing them ([2b7992a](https://github.com/Muratovnik/release-kit/commit/2b7992ae49cc5566ac17df43a6cc624baf611173))
+
+### Bug Fixes
+
+- **audit:** stop refusing a push for owner-policy findings in blobs its destination already holds ([8ddd83b](https://github.com/Muratovnik/release-kit/commit/8ddd83be798f34932195831e4c8fe234a4a240c9))
+- **audit:** stop asking to rewrite pushed commits when only the push guard is missing ([cff153b](https://github.com/Muratovnik/release-kit/commit/cff153bd17c2a3158198d890adffe1c8eb2848fc))
+
 ## [0.36.0](https://github.com/Muratovnik/release-kit/compare/v0.35.0...v0.36.0) (2026-11-22)
 
 ### Highlights
