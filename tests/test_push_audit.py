@@ -150,6 +150,16 @@ class PushRepository(unittest.TestCase):
 
 
 class PushRangeTests(PushRepository):
+    def test_a_missing_guard_alone_does_not_ask_to_rewrite_the_pushed_commits(self) -> None:
+        self.write("notes.txt", "nothing private\n")
+        tip = self.commit("docs: add notes")
+
+        code, _out, err = self.audit_push(update("refs/heads/main", tip, "refs/heads/main", ZERO))
+
+        self.assertEqual(1, code)
+        self.assertIn("pre-push guard is not installed", err)
+        self.assertNotIn("git commit --amend", err)
+
     def test_an_update_judges_only_the_commits_the_remote_does_not_have(self) -> None:
         self.write("notes.txt", f"early draft mentions {PRIVATE_VALUE}\n")
         early = self.commit("docs: early draft")

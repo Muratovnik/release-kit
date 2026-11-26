@@ -210,7 +210,8 @@ def run_push(
         return 2
     result.data["pushed_commits"] = scope.commits
     _report_published(result, listed, basis)
-    if owner_mode and (guard_problem := protection.problem(root)):
+    guard_problem = protection.problem(root) if owner_mode else None
+    if guard_problem:
         failures.append(guard_problem)
     if settings.exposure.check_secrets and scope.commits:
         try:
@@ -246,12 +247,14 @@ def run_push(
         for failure in sorted(dict.fromkeys(failures)):
             result.error("check_failed", failure)
             print(f"  {failure}", file=sys.stderr)
-        print(
-            "relkit audit: only the commits being pushed were checked; remove the finding "
-            "from them (for example with `git commit --amend` or an interactive rebase), "
-            "then push again",
-            file=sys.stderr,
-        )
+        # A guard problem names its own fix; rewriting the commits does not cure it.
+        if any(failure != guard_problem for failure in failures):
+            print(
+                "relkit audit: only the commits being pushed were checked; remove the finding "
+                "from them (for example with `git commit --amend` or an interactive rebase), "
+                "then push again",
+                file=sys.stderr,
+            )
         return 1
     suffix = " (owner policy enforced)" if policy is not None else ""
     print(f"relkit audit: passed ({scope.commits} pushed commit(s) checked){suffix}")
