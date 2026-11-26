@@ -15,6 +15,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
+from git_fixtures import commit_without_hooks
+
 from releasekit import cli
 from releasekit.exposure import audit, rules
 
@@ -42,7 +44,7 @@ def _commit(root: Path, message: str = "test: fixture") -> None:
         ("user.email", "writer@example.invalid"),
     ):
         subprocess.run(["git", "config", key, value], cwd=root, check=True)
-    subprocess.run(["git", "commit", "-qm", message], cwd=root, check=True)
+    commit_without_hooks(root, message)
 
 
 WRITER = ("Example Writer", "writer@example.invalid")
@@ -67,12 +69,7 @@ def _as(author: tuple[str, str], committer: tuple[str, str]) -> dict[str, str]:
 def _commit_as(
     root: Path, message: str, *, author: tuple[str, str], committer: tuple[str, str]
 ) -> None:
-    subprocess.run(
-        ["git", "commit", "-q", "--allow-empty", "-m", message],
-        cwd=root,
-        check=True,
-        env=_as(author, committer),
-    )
+    commit_without_hooks(root, message, environment=_as(author, committer))
 
 
 class ArchivePngTests(unittest.TestCase):

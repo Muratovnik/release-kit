@@ -20,6 +20,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
+from git_fixtures import commit_without_hooks
+
 from releasekit import cli, owner, protection, publication
 from releasekit.exposure import audit
 
@@ -488,7 +490,8 @@ class PushIdentityTests(PushRepository):
 
     def test_an_owner_commit_in_the_push_may_not_credit_an_agent(self) -> None:
         self.write("clean.txt", "clean\n")
-        tip = self.commit(f"feat: the clean change\n\n{AGENT_TRAILER}")
+        self.git("add", "-A")
+        tip = commit_without_hooks(self.root, f"feat: the clean change\n\n{AGENT_TRAILER}")
         text = update("refs/heads/main", tip, "refs/heads/main", self.remote_main())
 
         failures = self.failures(text, **self.options)
@@ -500,7 +503,7 @@ class PushIdentityTests(PushRepository):
 
     def test_an_unpushed_agent_attribution_is_not_a_finding(self) -> None:
         self.git("switch", "-q", "-c", "scratch")
-        self.commit(f"wip: scratch\n\n{AGENT_TRAILER}")
+        commit_without_hooks(self.root, f"wip: scratch\n\n{AGENT_TRAILER}")
         self.git("switch", "-q", "main")
         self.write("clean.txt", "clean\n")
         tip = self.commit("feat: the clean change")
