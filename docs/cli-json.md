@@ -144,8 +144,9 @@ Worktree, staged and history scope add `timing` once a stage has run:
 stage times do not add up to `elapsed_seconds`). `--sandbox` adds `sandbox: true`
 and a `guards_not_checked` warning; push and commit scope refuse it.
 Native engine diagnostics are not invented structured findings. The top-level
-exit also includes history, guard and overlay failures. Push scope adds `remote` and
-`pushed_commits` (commits the push publishes) and runs no link engine. Commit scope
+exit also includes history, guard and overlay failures. Push scope adds `remote`,
+`pushed_commits` (commits the push publishes) and `already_published`, as history does,
+for the push's destination, and runs no link engine. Commit scope
 (`commit`) runs no engine and adds `changed_paths` (staged paths judged),
 `message_checked` and `owner_policy` (`false` when no policy was configured, so
 nothing was judged); each finding is a `check_failed` error. Owner-mode audits report

@@ -162,11 +162,12 @@ Public refs pointing directly to a tree or blob are included even when no commit
 that object; tree entries retain every path and symlink mode for policy checks.
 
 A rewrite cannot take back what a remote already holds, and a host that keeps releases
-immutable allows none. So history scope, and the release that runs it, lists the
-[private owner policy](#private-owner-policy)'s findings in that history instead of
+immutable allows none. So history scope, the release that runs it, and push scope list
+the [private owner policy](#private-owner-policy)'s findings in that history instead of
 refusing them: `private-value`, `owner-workflow`, `personal-data`, and
 `machine-observation` while `forbid_machine_observations` is off, since that public rule
-reports the same kind. The remote is `[release] remote`, or `origin`. It holds what its
+reports the same kind. The remote is `[release] remote`, or `origin`, for history scope,
+and the destination of the push for push scope. It holds what its
 remote-tracking refs, `refs/remotes/<remote>/*`, reach, judged by object: a blob it
 holds, a path its trees name, a commit it has. A new commit that inherits such a blob
 unchanged is listed with it. A new blob that keeps the same line is new content and is
@@ -187,12 +188,13 @@ neither needs a clean worktree nor reads any other ref, so one session's unfinis
 edits, or another branch's finding, cannot refuse a clean push. An update is judged
 from the remote's current tip; a new ref, or a tip this checkout never fetched, from
 what the remote-tracking refs of that remote do not hold, so the first push to an empty
-remote is judged in full. Deletions and empty input pass. Files a pushed commit
-inherits unchanged from the remote are not read again. `--strict` and
-`--require-overlay` do not apply. Push scope narrows the verdict on purpose: a private
-value that lives only in a local branch that is never pushed does not surface at push.
-The release and `audit --history` still judge the whole history, so run that before
-publishing. Push scope lists nothing: it judges every owner finding in what it reads.
+remote is judged in full. Deletions and empty input pass. A path no pushed commit
+changes is not read again. `--strict` and `--require-overlay` do not apply. Push scope
+narrows the verdict on purpose: a private value that lives only in a local branch that
+is never pushed does not surface at push. The release and `audit --history` still judge
+the whole history, so run that before publishing. An owner finding in a blob the
+destination already holds is [listed](#scopes), whether a pushed commit inherits that
+blob, a merge brings it in or a revert restores it: the push does not publish it again.
 
 Commit scope is what the [commit guard](#repository-guard) runs on every commit. It
 judges only what the next commit adds against the [private owner

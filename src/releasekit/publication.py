@@ -91,6 +91,28 @@ def _history_arguments(settings, owner_rules, names, providers, private_paths) -
     }
 
 
+def _published_findings(
+    root: Path,
+    settings: config_module.Config,
+    owner_rules: owner.OwnerRules,
+    remote: str,
+) -> tuple[audit.PublishedFindings | None, str]:
+    """What `remote` already holds, to set the owner policy's findings in it apart.
+
+    Without owner rules there is nothing to set apart, so nothing is looked up.
+    """
+    if owner_rules.empty:
+        return None, ""
+    published, basis = audit.published_history(root, remote)
+    if published is None:
+        return None, basis
+    listed = audit.PublishedFindings(
+        published,
+        forbid_machine_observations=settings.exposure.forbid_machine_observations,
+    )
+    return listed, basis
+
+
 def _history_with_published(
     root: Path,
     settings: config_module.Config,
@@ -100,18 +122,9 @@ def _history_with_published(
     """The history verdict, with the owner policy's findings the remote already holds apart.
 
     The remote is the one the project releases to, `[release] remote`, or `origin`.
-    Without owner rules there is nothing to set apart, so nothing is looked up.
     """
-    listed: audit.PublishedFindings | None = None
-    basis = ""
-    if not owner_rules.empty:
-        remote = settings.release.remote if settings.release is not None else "origin"
-        published, basis = audit.published_history(root, remote)
-        if published is not None:
-            listed = audit.PublishedFindings(
-                published,
-                forbid_machine_observations=settings.exposure.forbid_machine_observations,
-            )
+    remote = settings.release.remote if settings.release is not None else "origin"
+    listed, basis = _published_findings(root, settings, owner_rules, remote)
     return audit.history_failures(root, **arguments, listed=listed), listed, basis
 
 
@@ -182,16 +195,21 @@ def run_push(
         return 2
     try:
         scope = audit.push_scope(root, remote, updates)
+        # A pushed commit can carry a blob the remote already holds, inherited unchanged
+        # or brought back by a merge or a revert. The push does not publish it again.
+        listed, basis = _published_findings(root, settings, owner_rules, remote)
         failures = audit.history_failures(
             root,
             **_history_arguments(settings, owner_rules, names, providers, private_paths),
             scope=scope,
+            listed=listed,
         )
     except RuntimeError as error:
         result.error("check_error", error)
         print(f"relkit audit: {error}", file=sys.stderr)
         return 2
     result.data["pushed_commits"] = scope.commits
+    _report_published(result, listed, basis)
     if owner_mode and (guard_problem := protection.problem(root)):
         failures.append(guard_problem)
     if settings.exposure.check_secrets and scope.commits:

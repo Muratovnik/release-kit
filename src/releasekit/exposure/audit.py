@@ -1966,15 +1966,14 @@ def history_failures(
     ``listed`` takes the owner policy's findings in history its remote already holds,
     by object: a blob the remote holds, a path its trees name, a commit it has. A new
     commit that inherits such a blob unchanged is listed with it; a new blob that still
-    carries the same line is new content and is refused.
+    carries the same line is new content and is refused. With ``scope`` this is what a
+    push carries without publishing it again: a blob a merge or a revert brings back.
 
     ``owner_identities`` narrows the commit-level attribution rule to the owners' own
     commits. Attribution is a statement its author makes: an owner's commit must not
     credit an AI, while a contributor's pull request, and the merge a host synthesizes
     to test it, carries whatever the contributor chose to state.
     """
-    if scope is not None and listed is not None:
-        raise ValueError("a push publishes what it carries; nothing in it is listed")
     provider_surfaces = providers or {}
     provenance_declarations = provenance or {}
     revisions = HISTORY_REFS if scope is None else scope.revisions

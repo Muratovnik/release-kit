@@ -17,7 +17,7 @@ import types
 from contextlib import redirect_stderr, redirect_stdout
 from unittest.mock import patch
 
-from test_push_audit import PRIVATE_VALUE, PushRepository
+from test_push_audit import PRIVATE_VALUE, ZERO, PushRepository, update
 
 from releasekit import cli, config, publication
 from releasekit.exposure import audit, rules
@@ -187,14 +187,93 @@ class PublishedHistoryTests(PublishedRepository):
         self.assertEqual([], allowed)
         self.assertTrue(any(rules.MACHINE_OBSERVATION in item for item in refused), refused)
 
-    def test_a_push_lists_nothing(self) -> None:
-        published, _basis = audit.published_history(self.root, "origin")
-        assert published is not None
-        listed = audit.PublishedFindings(published, forbid_machine_observations=False)
-        scope = self.scope(f"refs/heads/main {self.head()} refs/heads/main {self.head()}\n")
 
-        with self.assertRaises(ValueError):
-            audit.history_failures(self.root, scope=scope, listed=listed)
+class PublishedPushTests(PublishedRepository):
+    """The pre-push guard does not refuse a push for content the remote already holds.
+
+    Field case: with the owner's extended policy, pushing the next release's line, whose
+    unpublished history was already clean, was refused thousands of times. The search
+    read every pushed tree at every path some pushed commit changed, so a commit that only
+    inherited a published file was judged for it, and a merge listed the other parent's
+    published blobs as changed.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.install_guard()
+
+    def pushed(self, tip: str, *, branch: str = "main", creates: bool = False) -> str:
+        remote = ZERO if creates else self.remote_main()
+        return update(f"refs/heads/{branch}", tip, f"refs/heads/{branch}", remote)
+
+    def test_a_pushed_commit_that_inherits_a_published_file_passes(self) -> None:
+        self.publish_value()
+        self.write("other.txt", "an unrelated change\n")
+        inherits = self.commit("feat: change something else")
+        self.write("notes.md", "first line\n")
+        tip = self.commit("docs: drop the name from the notes")
+
+        code, out, err = self.audit_push(self.pushed(tip))
+
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn("already holds are listed, not refused", out)
+        self.assertIn(f"  notes.md: {rules.DECLARED_NAME} (1)", out)
+        # Control: without the split the inherited file is judged in the pushed commit.
+        self.assertIn(
+            f"history {inherits[:12]}:notes.md:2: {rules.DECLARED_NAME}",
+            self.failures(self.pushed(tip)),
+        )
+
+    def test_a_merge_that_brings_in_published_blobs_passes(self) -> None:
+        start = self.head()
+        self.publish_value()
+        self.git("switch", "-q", "-c", "topic", start)
+        self.write("topic.txt", "a topic change\n")
+        self.commit("feat: a topic change")
+        self.git("merge", "-q", "--no-edit", "--no-verify", "main")
+
+        code, out, err = self.audit_push(self.pushed(self.head(), branch="topic", creates=True))
+
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn(f"  notes.md: {rules.DECLARED_NAME}", out)
+
+    def test_a_revert_that_restores_a_published_blob_passes(self) -> None:
+        self.publish_value()
+        self.write("notes.md", "first line\n")
+        self.commit("docs: drop the name from the notes")
+        self.push()
+        # What `git revert` would commit, without the commit guard this fixture installs.
+        self.write("notes.md", f"first line\nnames {PRIVATE_VALUE}\n")
+        self.commit("revert: bring the name back")
+
+        code, out, err = self.audit_push(self.pushed(self.head()))
+
+        self.assertEqual((0, ""), (code, err), out)
+        self.assertIn(f"  notes.md: {rules.DECLARED_NAME}", out)
+
+    def test_a_pushed_blob_that_keeps_a_published_line_is_refused(self) -> None:
+        self.publish_value()
+        self.write("notes.md", f"first line\nnames {PRIVATE_VALUE}\nthird line\n")
+        tip = self.commit("docs: add a line")
+
+        code, _out, err = self.audit_push(self.pushed(tip))
+
+        self.assertEqual(1, code, err)
+        self.assertIn(f"history {tip[:12]}:notes.md:2: {rules.DECLARED_NAME}", err)
+
+    def test_a_push_to_a_path_on_this_machine_lists_nothing(self) -> None:
+        self.publish_value()
+        self.write("other.txt", "an unrelated change\n")
+        self.commit("feat: change something else")
+        self.write("notes.md", "first line\n")
+        tip = self.commit("docs: drop the name from the notes")
+        self.git("remote", "set-url", "origin", str(self.remote))
+
+        code, out, err = self.audit_push(self.pushed(tip))
+
+        self.assertEqual(1, code, out)
+        self.assertIn("is a path on this machine, which publishes nothing", out)
+        self.assertIn(f":notes.md:2: {rules.DECLARED_NAME}", err)
 
 
 class NothingPublishedTests(PushRepository):
